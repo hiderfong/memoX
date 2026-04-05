@@ -382,6 +382,37 @@ class ChromaVectorStore:
             "persist_directory": str(self.persist_directory),
         }
 
+    def update_metadata_by_doc_id(
+        self,
+        doc_id: str,
+        metadata_patch: dict,
+        collection_name: str = "documents",
+    ) -> int:
+        """批量更新某文档所有 chunk 的 metadata 字段"""
+        collection = self.get_or_create_collection(collection_name)
+        results = collection.get(where={"doc_id": doc_id}, include=["metadatas"])
+        if not results["ids"]:
+            return 0
+        new_metadatas = [{**m, **metadata_patch} for m in results["metadatas"]]
+        collection.update(ids=results["ids"], metadatas=new_metadatas)
+        return len(results["ids"])
+
+    def migrate_add_group_id(self, collection_name: str = "documents") -> int:
+        """为所有没有 group_id 的 chunk 补写 group_id='ungrouped'（启动时调用一次）"""
+        collection = self.get_or_create_collection(collection_name)
+        results = collection.get(include=["metadatas"])
+        if not results["ids"]:
+            return 0
+        ids_to_update: list[str] = []
+        updated_metadatas: list[dict] = []
+        for chunk_id, meta in zip(results["ids"], results["metadatas"]):
+            if not meta.get("group_id"):
+                ids_to_update.append(chunk_id)
+                updated_metadatas.append({**meta, "group_id": "ungrouped"})
+        if ids_to_update:
+            collection.update(ids=ids_to_update, metadatas=updated_metadatas)
+        return len(ids_to_update)
+
 
 # 默认向量存储实例
 _vector_store: ChromaVectorStore | None = None
