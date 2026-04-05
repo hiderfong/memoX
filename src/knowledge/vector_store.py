@@ -355,6 +355,7 @@ class ChromaVectorStore:
                     "type": metadata.get("type", "unknown"),
                     "created_at": metadata.get("created_at", ""),
                     "file_size": metadata.get("file_size", 0),
+                    "group_id": metadata.get("group_id", "ungrouped"),
                     "_count": 0,
                 }
             doc_map[doc_id]["_count"] += 1
@@ -369,6 +370,7 @@ class ChromaVectorStore:
                 "chunk_count": d["_count"],
                 "created_at": d["created_at"],
                 "file_size": d["file_size"],
+                "group_id": d.get("group_id", "ungrouped"),
             })
 
         return documents
