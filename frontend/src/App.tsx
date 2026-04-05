@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, createContext, useContext } from 'react';
-import { Layout, Menu, Typography, Card, Button, Upload, List, Space, Avatar, Input, message, Spin, Tag, Progress, Badge, Drawer, Timeline, Alert, Empty, Tooltip, Form, Divider } from 'antd';
+import { Layout, Menu, Typography, Card, Button, Upload, List, Space, Avatar, Input, message, Spin, Tag, Progress, Badge, Drawer, Timeline, Alert, Empty, Tooltip, Form, Divider, Checkbox } from 'antd';
 import { UploadOutlined, FileTextOutlined, RobotOutlined, MessageOutlined, TeamOutlined, SettingOutlined, CloudUploadOutlined, DeleteOutlined, SendOutlined, LoadingOutlined, BulbOutlined, ThunderboltOutlined, ClockCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, InboxOutlined, UserOutlined, LockOutlined, LogoutOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
 import { useNavigate, Routes, Route, Link, Navigate } from 'react-router-dom';
 import axios from 'axios';
@@ -89,14 +89,14 @@ const api = {
   deleteDocument: (id: string) => axios.delete(`${API_BASE}/documents/${id}`),
   
   // 聊天
-  chat: (message: string, sessionId?: string, useRag: boolean = true) =>
-    axios.post(`${API_BASE}/chat`, { message, session_id: sessionId, use_rag: useRag, stream: false }),
+  chat: (message: string, sessionId?: string, useRag: boolean = true, activeGroupIds?: string[] | null) =>
+    axios.post(`${API_BASE}/chat`, { message, session_id: sessionId, use_rag: useRag, stream: false, active_group_ids: activeGroupIds }),
   chatStream: (message: string, sessionId?: string, useRag: boolean = true) =>
     axios.post(`${API_BASE}/chat/stream`, { message, session_id: sessionId, use_rag: useRag, stream: true }),
   
   // 任务
-  createTask: (description: string, context?: object) =>
-    axios.post(`${API_BASE}/tasks`, { description, context, generate_suggestions: true }),
+  createTask: (description: string, context?: object, activeGroupIds?: string[] | null) =>
+    axios.post(`${API_BASE}/tasks`, { description, context, generate_suggestions: true, active_group_ids: activeGroupIds }),
   listTasks: () => axios.get(`${API_BASE}/tasks`),
   getTask: (id: string) => axios.get(`${API_BASE}/tasks/${id}`),
   
@@ -462,6 +462,116 @@ const DocumentsPage: React.FC = () => {
           />
         )}
       </Card>
+
+      {/* 分组管理抽屉 */}
+      <Drawer
+        title="管理分组"
+        placement="right"
+        open={groupDrawerOpen}
+        onClose={() => { setGroupDrawerOpen(false); setEditingGroup(null); setNewGroupName(''); }}
+        width={360}
+      >
+        <div style={{ marginBottom: 16 }}>
+          <Input
+            placeholder="新分组名称"
+            value={newGroupName}
+            onChange={e => setNewGroupName(e.target.value)}
+            style={{ marginBottom: 8 }}
+          />
+          <Space>
+            <input
+              type="color"
+              value={newGroupColor}
+              onChange={e => setNewGroupColor(e.target.value)}
+              style={{ width: 40, height: 32, cursor: 'pointer', border: 'none' }}
+            />
+            <Button
+              type="primary"
+              disabled={!newGroupName.trim()}
+              onClick={async () => {
+                try {
+                  await api.createGroup(newGroupName.trim(), newGroupColor);
+                  message.success('分组已创建');
+                  setNewGroupName('');
+                  await fetchGroups();
+                } catch (err: any) {
+                  message.error(err.response?.data?.detail || '创建失败');
+                }
+              }}
+            >
+              创建分组
+            </Button>
+          </Space>
+        </div>
+        <Divider />
+        <List
+          dataSource={groups}
+          renderItem={g => (
+            <List.Item
+              actions={g.id === 'ungrouped' ? [] : [
+                <Button
+                  key="del"
+                  type="text"
+                  danger
+                  size="small"
+                  icon={<DeleteOutlined />}
+                  onClick={async () => {
+                    try {
+                      await api.deleteGroup(g.id);
+                      message.success('分组已删除，文档已归回未分组');
+                      await fetchGroups();
+                      await fetchDocuments();
+                    } catch (err: any) {
+                      message.error(err.response?.data?.detail || '删除失败');
+                    }
+                  }}
+                />,
+              ]}
+            >
+              {editingGroup?.id === g.id ? (
+                <Space>
+                  <Input
+                    size="small"
+                    value={editGroupName}
+                    onChange={e => setEditGroupName(e.target.value)}
+                    style={{ width: 120 }}
+                  />
+                  <Button
+                    size="small"
+                    type="primary"
+                    onClick={async () => {
+                      try {
+                        await api.updateGroup(g.id, { name: editGroupName });
+                        setEditingGroup(null);
+                        await fetchGroups();
+                      } catch (err: any) {
+                        message.error(err.response?.data?.detail || '更新失败');
+                      }
+                    }}
+                  >
+                    保存
+                  </Button>
+                  <Button size="small" onClick={() => setEditingGroup(null)}>取消</Button>
+                </Space>
+              ) : (
+                <Space
+                  style={{ cursor: g.id !== 'ungrouped' ? 'pointer' : 'default' }}
+                  onClick={() => {
+                    if (g.id !== 'ungrouped') {
+                      setEditingGroup(g);
+                      setEditGroupName(g.name);
+                    }
+                  }}
+                >
+                  <Tag color={g.color}>{g.name}</Tag>
+                  <Text type="secondary">{g.doc_count} 篇文档</Text>
+                  {g.id !== 'ungrouped' && <Text type="secondary" style={{ fontSize: 11 }}>（点击重命名）</Text>}
+                </Space>
+              )}
+            </List.Item>
+          )}
+        />
+      </Drawer>
     </div>
   );
 };
@@ -482,6 +592,8 @@ const ChatPage: React.FC = () => {
   const [sessionId, setSessionId] = useState<string>('');
   const [sources, setSources] = useState<any[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [groups, setGroups] = useState<KnowledgeGroup[]>([]);
+  const [activeGroupIds, setActiveGroupIds] = useState<string[]>([]);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -490,6 +602,13 @@ const ChatPage: React.FC = () => {
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  useEffect(() => {
+    api.listGroups().then(res => {
+      setGroups(res.data);
+      setActiveGroupIds(res.data.map((g: KnowledgeGroup) => g.id));
+    }).catch(() => {});
+  }, []);
 
   const handleSend = async () => {
     if (!input.trim() || loading) return;
@@ -506,7 +625,9 @@ const ChatPage: React.FC = () => {
     setSources([]);
 
     try {
-      const res = await api.chat(input, sessionId || undefined);
+      const allGroupIds = groups.map(g => g.id);
+      const isAllSelected = activeGroupIds.length === allGroupIds.length;
+      const res = await api.chat(input, sessionId || undefined, true, isAllSelected ? null : activeGroupIds);
       const data = res.data;
       
       if (data.session_id && !sessionId) {
@@ -608,6 +729,16 @@ const ChatPage: React.FC = () => {
         />
       )}
 
+      {groups.length > 1 && (
+        <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 12, marginBottom: 4 }}>
+          <Text type="secondary" style={{ fontSize: 12, marginRight: 8 }}>激活分组：</Text>
+          <Checkbox.Group
+            value={activeGroupIds}
+            onChange={vals => setActiveGroupIds(vals as string[])}
+            options={groups.map(g => ({ label: <Tag color={g.color}>{g.name}</Tag>, value: g.id }))}
+          />
+        </div>
+      )}
       <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 16 }}>
         <Space.Compact style={{ width: '100%' }}>
           <TextArea
@@ -636,6 +767,8 @@ const TasksPage: React.FC = () => {
   const [executing, setExecuting] = useState(false);
   const [currentTask, setCurrentTask] = useState<any>(null);
   const [suggestions, setSuggestions] = useState<any[]>([]);
+  const [groups, setGroups] = useState<KnowledgeGroup[]>([]);
+  const [activeGroupIds, setActiveGroupIds] = useState<string[]>([]);
 
   const fetchTasks = async () => {
     try {
@@ -648,6 +781,10 @@ const TasksPage: React.FC = () => {
 
   useEffect(() => {
     fetchTasks();
+    api.listGroups().then(res => {
+      setGroups(res.data);
+      setActiveGroupIds(res.data.map((g: KnowledgeGroup) => g.id));
+    }).catch(() => {});
   }, []);
 
   const handleExecute = async () => {
@@ -657,7 +794,9 @@ const TasksPage: React.FC = () => {
     setSuggestions([]);
     
     try {
-      const res = await api.createTask(taskInput);
+      const allGroupIds = groups.map(g => g.id);
+      const isAllSelected = activeGroupIds.length === allGroupIds.length;
+      const res = await api.createTask(taskInput, undefined, isAllSelected ? null : activeGroupIds);
       const data = res.data;
       
       setCurrentTask(data);
@@ -704,6 +843,16 @@ const TasksPage: React.FC = () => {
   return (
     <div>
       <Card title="任务执行">
+        {groups.length > 1 && (
+          <div style={{ marginBottom: 12 }}>
+            <Text type="secondary" style={{ fontSize: 12, marginRight: 8 }}>激活知识库分组：</Text>
+            <Checkbox.Group
+              value={activeGroupIds}
+              onChange={vals => setActiveGroupIds(vals as string[])}
+              options={groups.map(g => ({ label: <Tag color={g.color}>{g.name}</Tag>, value: g.id }))}
+            />
+          </div>
+        )}
         <TextArea
           value={taskInput}
           onChange={e => setTaskInput(e.target.value)}
