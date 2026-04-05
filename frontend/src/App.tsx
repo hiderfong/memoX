@@ -14,6 +14,16 @@ const { Dragger } = Upload;
 
 const API_BASE = '/api';
 
+// ==================== 分组类型 ====================
+
+interface KnowledgeGroup {
+  id: string;
+  name: string;
+  color: string;
+  created_at: string;
+  doc_count: number;
+}
+
 // ==================== 认证状态 ====================
 
 interface AuthUser {
@@ -101,6 +111,16 @@ const api = {
     axios.post(`${API_BASE}/auth/login`, { username, password }),
   logout: () => axios.post(`${API_BASE}/auth/logout`),
   me: () => axios.get(`${API_BASE}/auth/me`),
+
+  // 分组
+  listGroups: () => axios.get(`${API_BASE}/groups`),
+  createGroup: (name: string, color: string) =>
+    axios.post(`${API_BASE}/groups`, { name, color }),
+  updateGroup: (id: string, data: { name?: string; color?: string }) =>
+    axios.put(`${API_BASE}/groups/${id}`, data),
+  deleteGroup: (id: string) => axios.delete(`${API_BASE}/groups/${id}`),
+  moveDocumentGroup: (docId: string, groupId: string) =>
+    axios.put(`${API_BASE}/documents/${docId}/group`, { group_id: groupId }),
 };
 
 // ==================== 登录页 ====================
@@ -252,6 +272,13 @@ const DocumentsPage: React.FC = () => {
   const [documents, setDocuments] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
+  const [groups, setGroups] = useState<KnowledgeGroup[]>([]);
+  const [activeGroupFilter, setActiveGroupFilter] = useState<string>('all');
+  const [groupDrawerOpen, setGroupDrawerOpen] = useState(false);
+  const [newGroupName, setNewGroupName] = useState('');
+  const [newGroupColor, setNewGroupColor] = useState('#1890ff');
+  const [editingGroup, setEditingGroup] = useState<KnowledgeGroup | null>(null);
+  const [editGroupName, setEditGroupName] = useState('');
 
   const fetchDocuments = async () => {
     setLoading(true);
@@ -265,8 +292,18 @@ const DocumentsPage: React.FC = () => {
     }
   };
 
+  const fetchGroups = async () => {
+    try {
+      const res = await api.listGroups();
+      setGroups(res.data);
+    } catch (err) {
+      console.error('获取分组失败', err);
+    }
+  };
+
   useEffect(() => {
     fetchDocuments();
+    fetchGroups();
   }, []);
 
   const handleUpload = async (file: File) => {
@@ -293,6 +330,17 @@ const DocumentsPage: React.FC = () => {
     }
   };
 
+  const handleMoveGroup = async (docId: string, groupId: string) => {
+    try {
+      await api.moveDocumentGroup(docId, groupId);
+      message.success('已移动到新分组');
+      await fetchDocuments();
+      await fetchGroups();
+    } catch (err: any) {
+      message.error(err.response?.data?.detail || '移动失败');
+    }
+  };
+
   const formatSize = (bytes: number) => {
     if (bytes < 1024) return bytes + ' B';
     if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
@@ -301,6 +349,36 @@ const DocumentsPage: React.FC = () => {
 
   return (
     <div>
+      {/* 分组标签栏 */}
+      <Card style={{ marginBottom: 16 }} bodyStyle={{ padding: '12px 16px' }}>
+        <Space wrap>
+          <Tag
+            color={activeGroupFilter === 'all' ? '#1890ff' : 'default'}
+            style={{ cursor: 'pointer', fontSize: 13 }}
+            onClick={() => setActiveGroupFilter('all')}
+          >
+            全部 ({documents.length})
+          </Tag>
+          {groups.map(g => (
+            <Tag
+              key={g.id}
+              color={activeGroupFilter === g.id ? g.color : 'default'}
+              style={{ cursor: 'pointer', fontSize: 13 }}
+              onClick={() => setActiveGroupFilter(g.id)}
+            >
+              {g.name} ({g.doc_count})
+            </Tag>
+          ))}
+          <Button
+            size="small"
+            icon={<SettingOutlined />}
+            onClick={() => setGroupDrawerOpen(true)}
+          >
+            管理分组
+          </Button>
+        </Space>
+      </Card>
+
       <Card
         title="知识库管理"
         extra={
@@ -336,14 +414,24 @@ const DocumentsPage: React.FC = () => {
           <Empty description="暂无文档，请先上传" />
         ) : (
           <List
-            dataSource={documents}
+            dataSource={activeGroupFilter === 'all' ? documents : documents.filter(d => (d.group_id || 'ungrouped') === activeGroupFilter)}
             renderItem={(doc: any) => (
               <List.Item
                 actions={[
-                  <Button 
-                    key="delete" 
-                    type="text" 
-                    danger 
+                  <select
+                    key="move"
+                    value={doc.group_id || 'ungrouped'}
+                    onChange={e => handleMoveGroup(doc.id, e.target.value)}
+                    style={{ fontSize: 12, padding: '2px 4px', borderRadius: 4, border: '1px solid #d9d9d9', cursor: 'pointer' }}
+                  >
+                    {groups.map(g => (
+                      <option key={g.id} value={g.id}>{g.name}</option>
+                    ))}
+                  </select>,
+                  <Button
+                    key="delete"
+                    type="text"
+                    danger
                     icon={<DeleteOutlined />}
                     onClick={() => handleDelete(doc.id)}
                   >
@@ -356,6 +444,10 @@ const DocumentsPage: React.FC = () => {
                   title={doc.filename}
                   description={
                     <Space>
+                      {(() => {
+                        const g = groups.find(x => x.id === (doc.group_id || 'ungrouped'));
+                        return g ? <Tag color={g.color}>{g.name}</Tag> : null;
+                      })()}
                       <Tag>{doc.type}</Tag>
                       <Text type="secondary">{doc.chunk_count} 个片段</Text>
                       <Text type="secondary">{formatSize(doc.size)}</Text>
