@@ -19,6 +19,7 @@ class DocumentInfo:
     chunk_count: int
     created_at: str
     size: int = 0
+    group_id: str = "ungrouped"
 
 
 @dataclass
@@ -82,6 +83,7 @@ class RAGEngine:
         self,
         file_path: Path,
         collection_name: str = "documents",
+        group_id: str = "ungrouped",
     ) -> DocumentInfo:
         """添加文档到知识库"""
         doc_id = str(uuid.uuid4())[:8]
@@ -106,6 +108,7 @@ class RAGEngine:
             chunk.metadata["created_at"] = created_at
             chunk.metadata["file_size"] = file_size
             chunk.metadata["chunk_count"] = len(chunks)
+            chunk.metadata["group_id"] = group_id
         
         # 存储到向量库（分批处理，避免一次性处理过多）
         BATCH_SIZE = 100  # 每批最多处理 100 个 chunks
@@ -131,6 +134,7 @@ class RAGEngine:
             chunk_count=len(chunks),
             created_at=created_at,
             size=file_size,
+            group_id=group_id,
         )
         self._documents[doc_id] = doc_info
         
@@ -170,6 +174,7 @@ class RAGEngine:
                     chunk_count=d.get("chunk_count", 0),
                     created_at=d.get("created_at", ""),
                     size=d.get("file_size", 0),
+                    group_id=d.get("group_id", "ungrouped"),
                 ))
         return result
     
@@ -179,6 +184,7 @@ class RAGEngine:
         collection_name: str = "documents",
         top_k: int | None = None,
         doc_ids: list[str] | None = None,
+        group_ids: list[str] | None = None,
     ) -> list[SearchResult]:
         """检索相关文档片段"""
         k = top_k or self.top_k
@@ -187,6 +193,8 @@ class RAGEngine:
         filter_metadata = None
         if doc_ids:
             filter_metadata = {"doc_id": {"$in": doc_ids}}
+        elif group_ids is not None:
+            filter_metadata = {"group_id": {"$in": group_ids}}
         
         # 执行检索
         results = await self.vector_store.search(
@@ -273,6 +281,20 @@ class RAGEngine:
             del self._sessions[session_id]
             return True
         return False
+
+    def move_document_group(
+        self,
+        doc_id: str,
+        new_group_id: str,
+        collection_name: str = "documents",
+    ) -> bool:
+        """将文档移到指定分组（更新所有 chunk 的 group_id metadata）"""
+        count = self.vector_store.update_metadata_by_doc_id(
+            doc_id, {"group_id": new_group_id}, collection_name
+        )
+        if doc_id in self._documents:
+            self._documents[doc_id].group_id = new_group_id
+        return count > 0
 
 
 # 全局 RAG 引擎实例
