@@ -13,7 +13,7 @@ _src_dir = Path(__file__).parent.parent
 if str(_src_dir) not in sys.path:
     sys.path.insert(0, str(_src_dir))
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, WebSocket, WebSocketDisconnect, Request
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -115,6 +115,7 @@ class ChatRequest(BaseModel):
     session_id: str | None = None
     use_rag: bool = True
     stream: bool = True
+    active_group_ids: list[str] | None = None
 
 
 class URLRequest(BaseModel):
@@ -127,6 +128,7 @@ class TaskRequest(BaseModel):
     description: str
     context: dict | None = None
     generate_suggestions: bool = True
+    active_group_ids: list[str] | None = None
 
 
 class DocumentResponse(BaseModel):
@@ -345,7 +347,10 @@ async def list_documents() -> list[DocumentResponse]:
 
 
 @app.post("/api/documents")
-async def upload_document(file: UploadFile = File(...)) -> DocumentResponse:
+async def upload_document(
+    file: UploadFile = File(...),
+    group_id: str = Form(default="ungrouped"),
+) -> DocumentResponse:
     """上传文档"""
     import traceback
     import asyncio
@@ -367,7 +372,7 @@ async def upload_document(file: UploadFile = File(...)) -> DocumentResponse:
     try:
         # 总超时 300 秒（5分钟），给大文件处理足够时间
         doc_info = await asyncio.wait_for(
-            _rag_engine.add_document(file_path),
+            _rag_engine.add_document(file_path, group_id=group_id),
             timeout=300.0
         )
         print(f"[UPLOAD] Document added: {doc_info.id}")
@@ -378,6 +383,7 @@ async def upload_document(file: UploadFile = File(...)) -> DocumentResponse:
             chunk_count=doc_info.chunk_count,
             created_at=doc_info.created_at,
             size=doc_info.size,
+            group_id=doc_info.group_id,
         )
     except asyncio.TimeoutError:
         print(f"[UPLOAD ERROR] 文档处理超时")
@@ -439,6 +445,7 @@ async def import_url(request: URLRequest) -> DocumentResponse:
         chunk.metadata["doc_id"] = doc_id
         chunk.metadata["filename"] = url
         chunk.metadata["type"] = "webpage"
+        chunk.metadata["group_id"] = "ungrouped"
 
     if chunks:
         BATCH_SIZE = 100
@@ -557,8 +564,8 @@ async def chat(request: ChatRequest) -> dict:
     # RAG 检索
     search_results: list[SearchResult] = []
     if request.use_rag:
-        search_results = await _rag_engine.search(request.message)
-    
+        search_results = await _rag_engine.search(request.message, group_ids=request.active_group_ids)
+
     # 构建提示
     if search_results:
         messages = _rag_engine.build_rag_prompt(request.message, search_results)
@@ -567,7 +574,7 @@ async def chat(request: ChatRequest) -> dict:
             {"role": "system", "content": "你是一个智能助手。"},
             {"role": "user", "content": request.message},
         ]
-    
+
     # 调用 LLM
     coordinator_provider_config = _config.providers.get(_config.coordinator.provider)
     if not coordinator_provider_config:
@@ -640,8 +647,8 @@ async def chat_stream(request: ChatRequest):
         # RAG 检索
         search_results: list[SearchResult] = []
         if request.use_rag:
-            search_results = await _rag_engine.search(request.message)
-            
+            search_results = await _rag_engine.search(request.message, group_ids=request.active_group_ids)
+
             # 先发送检索结果
             yield f"data: {json.dumps({'type': 'sources', 'data': [{'filename': r.metadata.get('filename', 'unknown'), 'score': r.score} for r in search_results]})}\n\n"
         
