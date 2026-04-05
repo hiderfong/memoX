@@ -1,0 +1,115 @@
+# MemoX - 配置文件
+
+# 全局配置
+app:
+  name: "MemoX"
+  debug: true
+  log_level: "INFO"
+  workspace: "./workspace"
+
+# 服务器配置
+server:
+  host: "0.0.0.0"
+  port: 8080
+  cors_origins:
+    - "http://localhost:8080"
+    - "http://localhost:3000"
+
+# Coordinator 配置
+coordinator:
+  model: "MiniMax-M2.7-highspeed"
+  provider: "minimax"
+  temperature: 0.7
+  max_tokens: 4096
+  max_workers: 5  # 最多 5 个 Worker 并行
+  task_timeout: 300
+
+# 默认 Provider 配置
+providers:
+  anthropic:
+    api_key: "${ANTHROPIC_API_KEY}"
+    base_url: "https://api.anthropic.com"
+  openai:
+    api_key: "${OPENAI_API_KEY}"
+    base_url: "https://api.openai.com/v1"
+  google:
+    api_key: "${GOOGLE_API_KEY}"
+    base_url: "https://generativelanguage.googleapis.com"
+  minimax:
+    api_key: "${MINIMAX_API_KEY}"
+    base_url: "https://api.minimaxi.com/anthropic/v1"  # Anthropic 兼容端点 (Token Plan)
+  kimi:
+    api_key: "${KIMI_API_KEY}"
+    base_url: "https://api.kimi.com/coding/v1"  # Kimi Coding Plan
+    headers:
+      User-Agent: "claude-code/0.1.0"  # Kimi Coding Plan requires this header
+  dashscope:
+    api_key: "${DASHSCOPE_API_KEY}"  # 阿里云 DashScope
+    base_url: "https://dashscope.aliyuncs.com/api/v1"
+
+# Worker Agent 模板
+worker_templates:
+  code_worker:
+    model: "MiniMax-M2.7-highspeed"
+    provider: "minimax"
+    temperature: 0.7
+    skills: ["code-review", "frontend-design-3"]
+    tools: ["filesystem", "shell", "git"]
+  
+  research_worker:
+    model: "MiniMax-M2.7-highspeed"
+    provider: "minimax"
+    temperature: 0.3
+    skills: ["data-analysis"]
+    tools: ["web_search", "web_fetch"]
+  
+  writer_worker:
+    model: "kimi-coder"
+    provider: "kimi"
+    temperature: 0.9
+    skills: ["docx", "pdf"]
+    tools: ["filesystem"]
+
+# 知识库配置
+knowledge_base:
+  vector_store: "chroma"
+  persist_directory: "./data/chroma"
+  upload_directory: "./data/uploads"
+  # Embedding 配置
+  # 可选: "sentence-transformer" (本地), "openai", "dashscope"
+  embedding_provider: "dashscope"  # 使用阿里云 DashScope
+  embedding_model: "text-embedding-v3"  # DashScope 模型名称
+  # embedding_model: "sentence-transformers/all-MiniLM-L6-v2"  # 本地模型
+  chunk_size: 500
+  chunk_overlap: 50
+  top_k: 5
+
+# MCP 配置
+mcp:
+  github:
+    enabled: false
+  slack:
+    enabled: false
+
+# 认证配置（开发模式）
+auth:
+  enabled: true
+  # 公开路径（无需登录）
+  public_paths:
+    - "/api/auth/login"
+    - "/api/health"
+    - "/api/docs"
+    - "/api/openapi.json"
+  # 开发测试用户（生产环境应改用数据库）
+  users:
+    - username: "admin"
+      password: "${MEMOX_ADMIN_PASSWORD}"
+      role: "admin"
+      display_name: "管理员"
+
+# 渠道配置
+channels:
+  web:
+    enabled: true
+  cli:
+    enabled: true

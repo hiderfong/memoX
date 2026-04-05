@@ -1,0 +1,17 @@
+# MemoX - 核心依赖
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+pydantic>=2.5.0
+python-multipart>=0.0.6
+httpx>=0.26.0
+loguru>=0.7.0
+pyyaml>=6.0
+
+# 可选依赖（按需安装）
+# pip install pymupdf      # PDF 解析
+# pip install python-docx  # Word 文档（.docx）
+# pip install openpyxl     # Excel 文档（.xlsx/.xls）
+# pip install python-pptx  # PowerPoint 文档（.pptx）
+# pip install beautifulsoup4  # 网页 HTML 解析
+# pip install chromadb     # 向量存储
+# pip install sentence-transformers  # 嵌入模型
