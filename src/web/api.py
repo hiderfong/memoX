@@ -20,6 +20,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from config import load_config, Config
+from dataclasses import asdict
+from knowledge.group_store import GroupStore, UNGROUPED_ID
 from auth import init_auth, get_auth_manager
 from knowledge.document_parser import WebPageParser
 from knowledge import (
@@ -61,6 +63,7 @@ app.add_middleware(
 _config: Config | None = None
 _rag_engine: RAGEngine | None = None
 _task_planner: TaskPlanner | None = None
+_group_store: GroupStore | None = None
 
 # 精确公开路径白名单（仅这些路径无需 Token，不使用前缀匹配）
 _PUBLIC_PATHS: set[str] = {
@@ -134,6 +137,21 @@ class DocumentResponse(BaseModel):
     chunk_count: int
     created_at: str
     size: int
+    group_id: str = "ungrouped"
+
+
+class GroupCreate(BaseModel):
+    name: str
+    color: str = "#1890ff"
+
+
+class GroupUpdate(BaseModel):
+    name: str | None = None
+    color: str | None = None
+
+
+class MoveDocumentGroup(BaseModel):
+    group_id: str
 
 
 # ==================== 初始化 ====================
@@ -250,6 +268,15 @@ async def startup():
             _config.coordinator.model,
         )
     
+    # 初始化分组存储
+    global _group_store
+    _group_store = GroupStore(path=str(Path(_config.knowledge_base.persist_directory).parent / "groups.json"))
+
+    # 历史文档迁移：为无 group_id 的 chunk 补写 "ungrouped"
+    migrated = _rag_engine.vector_store.migrate_add_group_id()
+    if migrated > 0:
+        print(f"   - 迁移 {migrated} 个历史 chunk，补写 group_id=ungrouped")
+
     print(f"✅ MemoX 启动完成")
     print(f"   - RAG 引擎: {len(_rag_engine.list_documents())} 个文档")
 
@@ -311,6 +338,7 @@ async def list_documents() -> list[DocumentResponse]:
             chunk_count=d.chunk_count,
             created_at=d.created_at,
             size=d.size,
+            group_id=d.group_id,
         )
         for d in docs
     ]
@@ -444,6 +472,71 @@ async def delete_document(doc_id: str) -> dict:
     if not success:
         raise HTTPException(status_code=404, detail="Document not found")
     return {"success": True, "message": "Document deleted"}
+
+
+# ==================== 分组 API ====================
+
+@app.get("/api/groups")
+async def list_groups() -> list[dict]:
+    """列出所有分组（含各组文档数）"""
+    docs = _rag_engine.list_documents()
+    count_map: dict[str, int] = {}
+    for doc in docs:
+        count_map[doc.group_id] = count_map.get(doc.group_id, 0) + 1
+    return [
+        {
+            "id": g.id,
+            "name": g.name,
+            "color": g.color,
+            "created_at": g.created_at,
+            "doc_count": count_map.get(g.id, 0),
+        }
+        for g in _group_store.list_groups()
+    ]
+
+
+@app.post("/api/groups")
+async def create_group(request: GroupCreate) -> dict:
+    """新建分组"""
+    group = _group_store.create_group(request.name, request.color)
+    return {"id": group.id, "name": group.name, "color": group.color, "created_at": group.created_at, "doc_count": 0}
+
+
+@app.put("/api/groups/{group_id}")
+async def update_group(group_id: str, request: GroupUpdate) -> dict:
+    """修改分组名称或颜色"""
+    try:
+        group = _group_store.update_group(group_id, request.name, request.color)
+        return {"id": group.id, "name": group.name, "color": group.color, "created_at": group.created_at}
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Group not found")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.delete("/api/groups/{group_id}")
+async def delete_group(group_id: str) -> dict:
+    """删除分组，其下文档自动归回未分组"""
+    try:
+        docs = _rag_engine.list_documents()
+        for doc in docs:
+            if doc.group_id == group_id:
+                _rag_engine.move_document_group(doc.id, UNGROUPED_ID)
+        _group_store.delete_group(group_id)
+        return {"success": True}
+    except (KeyError, ValueError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.put("/api/documents/{doc_id}/group")
+async def move_document_group(doc_id: str, request: MoveDocumentGroup) -> dict:
+    """修改文档所属分组"""
+    if not _group_store.get_group(request.group_id):
+        raise HTTPException(status_code=404, detail="Group not found")
+    success = _rag_engine.move_document_group(doc_id, request.group_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return {"success": True}
 
 
 # ==================== RAG 问答 API ====================
