@@ -712,17 +712,31 @@ async def create_task(request: TaskRequest) -> dict:
     """创建并执行任务"""
     if not _task_planner:
         raise HTTPException(status_code=500, detail="Task planner not initialized")
-    
+
+    # 将知识库检索结果注入 context，供 TaskPlanner 使用
+    context = dict(request.context or {})
+    if _rag_engine:
+        rag_results = await _rag_engine.search(
+            request.description,
+            group_ids=request.active_group_ids,
+            top_k=3,
+        )
+        if rag_results:
+            context["knowledge_context"] = "\n".join(
+                f"[{r.metadata.get('filename', 'doc')}] {r.content[:300]}"
+                for r in rag_results
+            )
+
     # 规划任务
-    task, complexity = await _task_planner.plan_task(request.description, request.context)
-    
+    task, complexity = await _task_planner.plan_task(request.description, context)
+
     # 执行任务
-    result = await _task_planner.execute_task(task, request.context)
+    result = await _task_planner.execute_task(task, context)
     
     # 生成优化建议
     suggestions = []
     if request.generate_suggestions:
-        suggestions = await _task_planner.generate_optimization_suggestions(task, result, request.context)
+        suggestions = await _task_planner.generate_optimization_suggestions(task, result, context)
     
     return {
         "task_id": task.id,
