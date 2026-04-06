@@ -40,6 +40,7 @@ from agents.base_agent import create_provider, AnthropicProvider, ToolRegistry
 from agents.worker_pool import init_worker_pool, get_worker_pool, WorkerConfig, WorkerAgent
 from coordinator.task_planner import TaskPlanner, init_task_planner
 from coordinator.iterative_orchestrator import IterativeOrchestrator, IterationResult
+from storage import init_store, get_store
 
 
 # ==================== 配置 ====================
@@ -66,6 +67,7 @@ _rag_engine: RAGEngine | None = None
 _task_planner: TaskPlanner | None = None
 _orchestrator: IterativeOrchestrator | None = None
 _group_store: GroupStore | None = None
+_task_results: dict[str, dict] = {}  # task_id -> full result dict (for later retrieval)
 
 # 精确公开路径白名单（仅这些路径无需 Token，不使用前缀匹配）
 _PUBLIC_PATHS: set[str] = {
@@ -282,6 +284,11 @@ async def startup():
             temperature=_config.coordinator.temperature,
             base_workspace=str(Path(_config.knowledge_base.persist_directory).parent / "workspace"),
         )
+
+    # 初始化持久化存储
+    db_path = Path(_config.knowledge_base.persist_directory).parent / "memox.db"
+    init_store(db_path)
+    print(f"   - 持久化存储: {db_path}")
 
     # 初始化分组存储
     global _group_store
@@ -625,9 +632,15 @@ async def chat(request: ChatRequest) -> dict:
         raise HTTPException(status_code=502, detail=f"LLM 调用失败: {type(e).__name__}: {str(e)}")
 
     answer = response.content or "抱歉，我无法回答这个问题。"
-    
+
     # 添加助手消息
     _rag_engine.add_message(session_id, "assistant", answer)
+
+    # 持久化消息
+    store = get_store()
+    if store:
+        store.save_message(session_id, "user", request.message)
+        store.save_message(session_id, "assistant", answer)
     
     return {
         "session_id": session_id,
@@ -641,6 +654,26 @@ async def chat(request: ChatRequest) -> dict:
             for r in search_results
         ],
     }
+
+
+@app.get("/api/chat/sessions")
+async def list_chat_sessions() -> list[dict]:
+    """列出聊天会话历史"""
+    store = get_store()
+    if store:
+        return store.list_sessions()
+    return []
+
+
+@app.get("/api/chat/sessions/{session_id}/messages")
+async def get_session_messages(session_id: str) -> list[dict]:
+    """获取会话消息历史"""
+    store = get_store()
+    if store:
+        messages = store.get_session_messages(session_id)
+        if messages:
+            return messages
+    raise HTTPException(status_code=404, detail="Session not found")
 
 
 @app.post("/api/chat/stream")
@@ -707,9 +740,15 @@ async def chat_stream(request: ChatRequest):
                 await asyncio.sleep(0.02)
             
             # 发送完成
-            answer = "".join(content_parts) or response.content or ""
+            answer = response.content or ""
             _rag_engine.add_message(session_id, "assistant", answer)
-            
+
+            # 持久化消息
+            store = get_store()
+            if store:
+                store.save_message(session_id, "user", request.message)
+                store.save_message(session_id, "assistant", answer)
+
             yield f"data: {json.dumps({'type': 'done', 'session_id': session_id})}\n\n"
             
         except Exception as e:
@@ -745,7 +784,13 @@ async def create_task(request: TaskRequest) -> dict:
             request.context or {},
         )
 
-    return {
+    # 读取邮件通信日志
+    mail_log = ""
+    mail_log_path = Path(result.shared_dir) / "mail_log.txt"
+    if mail_log_path.exists():
+        mail_log = mail_log_path.read_text(encoding="utf-8")
+
+    response_data = {
         "task_id": result.task_id,
         "result": result.result_summary,
         "shared_dir": result.shared_dir,
@@ -758,6 +803,7 @@ async def create_task(request: TaskRequest) -> dict:
             }
             for r in result.iterations
         ],
+        "mail_log": mail_log,
         "suggestions": [
             {
                 "type": s.type,
@@ -771,46 +817,112 @@ async def create_task(request: TaskRequest) -> dict:
         ],
     }
 
+    # 缓存结果供后续查询
+    _task_results[result.task_id] = response_data
+
+    # 持久化任务
+    store = get_store()
+    if store:
+        store.save_task({**response_data, "description": request.description})
+
+    return response_data
+
 
 @app.get("/api/tasks")
 async def list_tasks() -> list[dict]:
-    """列出所有任务"""
-    if not _task_planner:
-        return []
-    return _task_planner.list_tasks()
+    """列出所有任务（合并内存 + SQLite 持久化）"""
+    # 优先从 SQLite 加载持久化历史
+    store = get_store()
+    if store:
+        persisted = store.list_tasks(limit=100)
+        if persisted:
+            return persisted
+
+    # 回退到 TaskPlanner 的内存存储
+    if _task_planner:
+        return _task_planner.list_tasks()
+    return []
+
+
+@app.get("/api/tasks/{task_id}/files")
+async def get_task_files(task_id: str) -> dict:
+    """获取任务 shared/ 目录的文件树和内容"""
+    cached = _task_results.get(task_id)
+    if not cached:
+        store = get_store()
+        if store:
+            cached = store.get_task(task_id)
+    if not cached or not cached.get("shared_dir"):
+        raise HTTPException(status_code=404, detail="Task not found or no shared directory")
+
+    shared_dir = Path(cached["shared_dir"])
+    if not shared_dir.exists():
+        return {"task_id": task_id, "files": []}
+
+    files = []
+    for file_path in sorted(shared_dir.rglob("*")):
+        if not file_path.is_file():
+            continue
+        rel_path = str(file_path.relative_to(shared_dir))
+        # 跳过 mail_log.txt（已在 mail_log 字段中返回）
+        if file_path.name == "mail_log.txt":
+            continue
+        try:
+            content = file_path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            content = "(二进制文件，无法预览)"
+        files.append({
+            "path": rel_path,
+            "name": file_path.name,
+            "size": file_path.stat().st_size,
+            "content": content[:5000],  # 截断过长内容
+            "truncated": len(content) > 5000 if isinstance(content, str) else False,
+        })
+
+    return {"task_id": task_id, "files": files}
 
 
 @app.get("/api/tasks/{task_id}")
 async def get_task(task_id: str) -> dict:
-    """获取任务详情"""
-    if not _task_planner:
-        raise HTTPException(status_code=500, detail="Task planner not initialized")
-    
-    task = _task_planner.get_task(task_id)
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
-    
-    return {
-        "id": task.id,
-        "description": task.description,
-        "status": task.status.value,
-        "result": task.result,
-        "error": task.error,
-        "sub_tasks": [
-            {
-                "id": st.id,
-                "description": st.description,
-                "status": st.status.value,
-                "result": st.result,
-                "error": st.error,
-                "assigned_agent": st.assigned_agent,
+    """获取任务详情（内存 → 缓存 → SQLite）"""
+    # 1. TaskPlanner 内存中的任务（含子任务实时状态）
+    if _task_planner:
+        task = _task_planner.get_task(task_id)
+        if task:
+            return {
+                "id": task.id,
+                "description": task.description,
+                "status": task.status.value,
+                "result": task.result,
+                "error": task.error,
+                "sub_tasks": [
+                    {
+                        "id": st.id,
+                        "description": st.description,
+                        "status": st.status.value,
+                        "result": st.result,
+                        "error": st.error,
+                        "assigned_agent": st.assigned_agent,
+                    }
+                    for st in task.sub_tasks
+                ],
+                "created_at": task.created_at,
+                "started_at": task.started_at,
+                "completed_at": task.completed_at,
             }
-            for st in task.sub_tasks
-        ],
-        "created_at": task.created_at,
-        "started_at": task.started_at,
-        "completed_at": task.completed_at,
-    }
+
+    # 2. 内存缓存
+    if task_id in _task_results:
+        return _task_results[task_id]
+
+    # 3. SQLite 持久化
+    store = get_store()
+    if store:
+        persisted = store.get_task(task_id)
+        if persisted:
+            return persisted
+
+    raise HTTPException(status_code=404, detail="Task not found")
 
 
 # ==================== Worker 状态 API ====================
