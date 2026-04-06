@@ -57,3 +57,20 @@ def test_attachments():
     asyncio.run(bus.send("agent_a", "agent_b", "s", "b", attachments=["/path/file.md"]))
     msgs = asyncio.run(bus.read_inbox("agent_b"))
     assert msgs[0].attachments == ["/path/file.md"]
+
+
+def test_mark_read():
+    bus = MailBus(task_id="task_test")
+    asyncio.run(bus.send("agent_a", "agent_b", "s", "b"))
+    all_msgs = asyncio.run(bus.get_all("agent_b"))
+    msg_id = all_msgs[0].id
+
+    # mark_read by ID
+    asyncio.run(bus.mark_read(msg_id))
+
+    # read_inbox should now return 0 (already marked read)
+    unread = asyncio.run(bus.read_inbox("agent_b"))
+    assert len(unread) == 0
+
+    # mark_read with unknown ID should be silent no-op
+    asyncio.run(bus.mark_read("nonexistent_id"))  # should not raise

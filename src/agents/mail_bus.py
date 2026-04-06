@@ -14,9 +14,9 @@ class MailMessage:
     to_agent: str
     subject: str
     body: str
-    attachments: list[str]
     created_at: str
     read: bool = False
+    attachments: list[str] = field(default_factory=list)
 
 
 class MailBus:
