@@ -74,6 +74,7 @@ def test_file_collaboration(tmp_path):
         model="fake",
         base_workspace=tmp_path,
     )
+    orchestrator._sandbox_mgr = sandbox_mgr
     summary = orchestrator._merge(task)
 
     # 验证 shared/ 目录包含该文件
@@ -155,6 +156,7 @@ def test_merge_collects_all_outputs(tmp_path):
         model="fake",
         base_workspace=tmp_path,
     )
+    orchestrator._sandbox_mgr = sandbox_mgr
 
     orchestrator._merge(task)
 
@@ -203,6 +205,10 @@ def test_refinement_hint_injected(tmp_path):
     mock_planner = MagicMock()
     mock_planner.plan_task = AsyncMock(return_value=(task, MagicMock(value="simple")))
 
+    # Capture refinement_hint values during _prepare_workers calls
+    captured_hints = []
+    original_prepare = None
+
     orchestrator = IterativeOrchestrator(
         planner=mock_planner,
         worker_pool=pool,
@@ -212,6 +218,14 @@ def test_refinement_hint_injected(tmp_path):
         base_workspace=tmp_path,
     )
 
+    original_prepare = orchestrator._prepare_workers
+
+    def capturing_prepare_workers(task_, mail_bus_, hint):
+        captured_hints.append(hint)
+        original_prepare(task_, mail_bus_, hint)
+
+    orchestrator._prepare_workers = capturing_prepare_workers
+
     result = asyncio.run(orchestrator.run("测试任务"))
 
     assert len(result.iterations) == 2
@@ -219,6 +233,10 @@ def test_refinement_hint_injected(tmp_path):
     assert "修复问题A" in result.iterations[0].improvements
     assert result.iterations[1].score == 0.9
     assert result.final_score == 0.9
+    # Verify refinement_hint was injected into worker before iteration 2
+    assert len(captured_hints) == 2
+    assert captured_hints[0] == ""  # First iteration: no hint
+    assert "修复问题A" in captured_hints[1]  # Second iteration: hint from previous improvements
 
 
 def test_worker_tools_bound_per_iteration(tmp_path):
@@ -252,10 +270,4 @@ def test_worker_tools_bound_per_iteration(tmp_path):
     orchestrator._prepare_workers(task, mail_bus, "")
 
     tools = worker.tools.list_tools()
-    assert "read_file" in tools
-    assert "write_file" in tools
-    assert "list_files" in tools
-    assert "run_shell" in tools
-    assert "send_mail" in tools
-    assert "read_mail" in tools
-    assert len(tools) == 6
+    assert set(tools) == {"read_file", "write_file", "list_files", "run_shell", "send_mail", "read_mail"}
