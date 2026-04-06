@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, createContext, useContext } from 'react';
-import { Layout, Menu, Typography, Card, Button, Upload, List, Space, Avatar, Input, message, Spin, Tag, Progress, Badge, Drawer, Timeline, Alert, Empty, Tooltip, Form, Divider, Checkbox } from 'antd';
-import { UploadOutlined, FileTextOutlined, RobotOutlined, MessageOutlined, TeamOutlined, SettingOutlined, CloudUploadOutlined, DeleteOutlined, SendOutlined, LoadingOutlined, BulbOutlined, ThunderboltOutlined, ClockCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, InboxOutlined, UserOutlined, LockOutlined, LogoutOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
+import { Layout, Menu, Typography, Card, Button, Upload, List, Space, Avatar, Input, message, Spin, Tag, Progress, Badge, Drawer, Timeline, Alert, Empty, Tooltip, Form, Divider, Checkbox, Modal, Tabs, Table } from 'antd';
+import { UploadOutlined, FileTextOutlined, RobotOutlined, MessageOutlined, TeamOutlined, SettingOutlined, CloudUploadOutlined, DeleteOutlined, SendOutlined, LoadingOutlined, BulbOutlined, ThunderboltOutlined, ClockCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, InboxOutlined, UserOutlined, LockOutlined, LogoutOutlined, SafetyCertificateOutlined, LinkOutlined, FolderOpenOutlined, MailOutlined, LineChartOutlined, FileSearchOutlined } from '@ant-design/icons';
 import { useNavigate, Routes, Route, Link, Navigate } from 'react-router-dom';
 import axios from 'axios';
 import dayjs from 'dayjs';
@@ -100,6 +100,12 @@ const api = {
   listTasks: () => axios.get(`${API_BASE}/tasks`),
   getTask: (id: string) => axios.get(`${API_BASE}/tasks/${id}`),
   
+  // 文档 URL 导入
+  importUrl: (url: string) => axios.post(`${API_BASE}/documents/url`, { url }),
+
+  // 任务文件
+  getTaskFiles: (taskId: string) => axios.get(`${API_BASE}/tasks/${taskId}/files`),
+
   // Workers
   listWorkers: () => axios.get(`${API_BASE}/workers`),
   
@@ -121,6 +127,14 @@ const api = {
   deleteGroup: (id: string) => axios.delete(`${API_BASE}/groups/${id}`),
   moveDocumentGroup: (docId: string, groupId: string) =>
     axios.put(`${API_BASE}/documents/${docId}/group`, { group_id: groupId }),
+
+  // 会话历史
+  listSessions: () => axios.get(`${API_BASE}/chat/sessions`),
+  getSessionMessages: (id: string) => axios.get(`${API_BASE}/chat/sessions/${id}/messages`),
+  deleteSession: (id: string) => axios.delete(`${API_BASE}/chat/sessions/${id}`),
+
+  // 任务取消
+  cancelTask: (id: string) => axios.post(`${API_BASE}/tasks/${id}/cancel`),
 };
 
 // ==================== 登录页 ====================
@@ -279,6 +293,9 @@ const DocumentsPage: React.FC = () => {
   const [newGroupColor, setNewGroupColor] = useState('#1890ff');
   const [editingGroup, setEditingGroup] = useState<KnowledgeGroup | null>(null);
   const [editGroupName, setEditGroupName] = useState('');
+  const [urlModalOpen, setUrlModalOpen] = useState(false);
+  const [urlInput, setUrlInput] = useState('');
+  const [importingUrl, setImportingUrl] = useState(false);
 
   const fetchDocuments = async () => {
     setLoading(true);
@@ -327,6 +344,22 @@ const DocumentsPage: React.FC = () => {
       fetchDocuments();
     } catch (err) {
       message.error('删除失败');
+    }
+  };
+
+  const handleImportUrl = async () => {
+    if (!urlInput.trim()) return;
+    setImportingUrl(true);
+    try {
+      await api.importUrl(urlInput.trim());
+      message.success('网页导入成功');
+      setUrlModalOpen(false);
+      setUrlInput('');
+      await fetchDocuments();
+    } catch (err: any) {
+      message.error(err.response?.data?.detail || '网页导入失败');
+    } finally {
+      setImportingUrl(false);
     }
   };
 
@@ -380,13 +413,18 @@ const DocumentsPage: React.FC = () => {
       </Card>
 
       <Card
-        title="知识库管理"
+        title="���识库管理"
         extra={
-          <Upload beforeUpload={handleUpload} showUploadList={false} disabled={uploading}>
-            <Button type="primary" icon={<UploadOutlined />} loading={uploading}>
-              上传文档
+          <Space>
+            <Button icon={<LinkOutlined />} onClick={() => setUrlModalOpen(true)}>
+              导入网页
             </Button>
-          </Upload>
+            <Upload beforeUpload={handleUpload} showUploadList={false} disabled={uploading}>
+              <Button type="primary" icon={<UploadOutlined />} loading={uploading}>
+                上传文档
+              </Button>
+            </Upload>
+          </Space>
         }
       >
         <Dragger 
@@ -462,6 +500,33 @@ const DocumentsPage: React.FC = () => {
           />
         )}
       </Card>
+
+      {/* URL 导入弹窗 */}
+      <Modal
+        title="导入网页"
+        open={urlModalOpen}
+        onOk={handleImportUrl}
+        onCancel={() => { setUrlModalOpen(false); setUrlInput(''); }}
+        confirmLoading={importingUrl}
+        okText="导入"
+        cancelText="取消"
+        okButtonProps={{ disabled: !urlInput.trim() }}
+      >
+        <Input
+          placeholder="https://example.com/page"
+          value={urlInput}
+          onChange={e => setUrlInput(e.target.value)}
+          onPressEnter={handleImportUrl}
+          prefix={<LinkOutlined />}
+          size="large"
+          style={{ marginTop: 8 }}
+        />
+        <div style={{ marginTop: 8 }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            输入网页 URL，系统将自动抓取内容并导入知识库
+          </Text>
+        </div>
+      </Modal>
 
       {/* 分组管理抽屉 */}
       <Drawer
@@ -594,6 +659,8 @@ const ChatPage: React.FC = () => {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [groups, setGroups] = useState<KnowledgeGroup[]>([]);
   const [activeGroupIds, setActiveGroupIds] = useState<string[]>([]);
+  const [sessions, setSessions] = useState<any[]>([]);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -603,11 +670,57 @@ const ChatPage: React.FC = () => {
     scrollToBottom();
   }, [messages]);
 
+  const fetchSessions = async () => {
+    setSessionsLoading(true);
+    try {
+      const res = await api.listSessions();
+      setSessions(res.data);
+    } catch (err) {
+      console.error('获取会话列表失败', err);
+    } finally {
+      setSessionsLoading(false);
+    }
+  };
+
+  const handleNewSession = () => {
+    setSessionId('');
+    setMessages([]);
+    setSources([]);
+  };
+
+  const handleResumeSession = async (sid: string) => {
+    try {
+      const res = await api.getSessionMessages(sid);
+      const msgs: Message[] = res.data.map((m: any, i: number) => ({
+        id: `${sid}_${i}`,
+        role: m.role,
+        content: m.content,
+      }));
+      setSessionId(sid);
+      setMessages(msgs);
+      setSources([]);
+    } catch (err) {
+      message.error('恢复会话失败');
+    }
+  };
+
+  const handleDeleteSession = async (sid: string) => {
+    try {
+      await api.deleteSession(sid);
+      message.success('会话已删除');
+      if (sessionId === sid) handleNewSession();
+      fetchSessions();
+    } catch (err) {
+      message.error('删除失败');
+    }
+  };
+
   useEffect(() => {
     api.listGroups().then(res => {
       setGroups(res.data);
       setActiveGroupIds(res.data.map((g: KnowledgeGroup) => g.id));
     }).catch(() => {});
+    fetchSessions();
   }, []);
 
   const handleSend = async () => {
@@ -643,6 +756,7 @@ const ChatPage: React.FC = () => {
 
       setMessages(prev => [...prev, assistantMessage]);
       setSources(data.sources || []);
+      fetchSessions();
     } catch (err: any) {
       message.error(err.response?.data?.detail || '发送失败');
       setMessages(prev => prev.filter(m => m.id !== userMessage.id));
@@ -659,102 +773,229 @@ const ChatPage: React.FC = () => {
   };
 
   return (
-    <Card style={{ height: 'calc(100vh - 120px)', display: 'flex', flexDirection: 'column' }}>
-      <div style={{ flex: 1, overflowY: 'auto', padding: '16px 0' }}>
-        {messages.length === 0 ? (
-          <div style={{ textAlign: 'center', padding: 60 }}>
-            <Avatar size={64} icon={<MessageOutlined />} style={{ marginBottom: 16 }} />
-            <Title level={4}>开始对话</Title>
-            <Text type="secondary">
-              问我任何关于知识库中的问题，我会基于已上传的文档为你解答
-            </Text>
-          </div>
-        ) : (
-          messages.map(msg => (
-            <div key={msg.id} style={{ marginBottom: 16 }}>
+    <div style={{ display: 'flex', height: 'calc(100vh - 120px)', gap: 16 }}>
+      {/* 会话列表侧栏 */}
+      <Card
+        title="会话历史"
+        size="small"
+        style={{ width: 240, flexShrink: 0, display: 'flex', flexDirection: 'column' }}
+        bodyStyle={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}
+        extra={<Button size="small" type="primary" onClick={handleNewSession}>新对话</Button>}
+      >
+        <List
+          loading={sessionsLoading}
+          dataSource={sessions}
+          locale={{ emptyText: '暂无历史会话' }}
+          renderItem={(s: any) => (
+            <List.Item
+              style={{
+                cursor: 'pointer',
+                background: sessionId === s.id ? '#e6f7ff' : undefined,
+                padding: '8px 12px',
+              }}
+              onClick={() => handleResumeSession(s.id)}
+              actions={[
+                <Tooltip title="删除" key="del">
+                  <Button
+                    type="text"
+                    size="small"
+                    danger
+                    icon={<DeleteOutlined />}
+                    onClick={(e: React.MouseEvent) => { e.stopPropagation(); handleDeleteSession(s.id); }}
+                  />
+                </Tooltip>,
+              ]}
+            >
+              <List.Item.Meta
+                title={<Text ellipsis style={{ maxWidth: 140 }}>{s.title || '未命名会话'}</Text>}
+                description={<Text type="secondary" style={{ fontSize: 11 }}>{dayjs(s.updated_at).format('MM-DD HH:mm')}</Text>}
+              />
+            </List.Item>
+          )}
+        />
+      </Card>
+
+      {/* 原有聊天主区域 */}
+      <Card style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+        <div style={{ flex: 1, overflowY: 'auto', padding: '16px 0' }}>
+          {messages.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: 60 }}>
+              <Avatar size={64} icon={<MessageOutlined />} style={{ marginBottom: 16 }} />
+              <Title level={4}>开始对话</Title>
+              <Text type="secondary">
+                问我任何关于知识库中的问题，我会基于已上传的文档为你解答
+              </Text>
+            </div>
+          ) : (
+            messages.map(msg => (
+              <div key={msg.id} style={{ marginBottom: 16 }}>
+                <Space align="start">
+                  <Avatar
+                    icon={msg.role === 'user' ? <UploadOutlined /> : <RobotOutlined />}
+                    style={{ background: msg.role === 'user' ? '#1890ff' : '#52c41a' }}
+                  />
+                  <div style={{ flex: 1 }}>
+                    <Text strong>{msg.role === 'user' ? '你' : 'AI 助手'}</Text>
+                    <Card size="small" style={{ marginTop: 8, background: msg.role === 'user' ? '#e6f7ff' : '#f6ffed' }}>
+                      <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
+                    </Card>
+                    {msg.sources && msg.sources.length > 0 && (
+                      <div style={{ marginTop: 8 }}>
+                        <Text type="secondary" style={{ fontSize: 12 }}>📚 参考来源：</Text>
+                        {msg.sources.map((s: any, i: number) => (
+                          <Tag key={i} style={{ marginTop: 4 }}>{s.filename} ({Math.round(s.score * 100)}%)</Tag>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </Space>
+              </div>
+            ))
+          )}
+          {loading && (
+            <div style={{ marginBottom: 16 }}>
               <Space align="start">
-                <Avatar 
-                  icon={msg.role === 'user' ? <UploadOutlined /> : <RobotOutlined />} 
-                  style={{ background: msg.role === 'user' ? '#1890ff' : '#52c41a' }}
-                />
-                <div style={{ flex: 1 }}>
-                  <Text strong>{msg.role === 'user' ? '你' : 'AI 助手'}</Text>
-                  <Card size="small" style={{ marginTop: 8, background: msg.role === 'user' ? '#e6f7ff' : '#f6ffed' }}>
-                    <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
-                  </Card>
-                  {msg.sources && msg.sources.length > 0 && (
-                    <div style={{ marginTop: 8 }}>
-                      <Text type="secondary" style={{ fontSize: 12 }}>📚 参考来源：</Text>
-                      {msg.sources.map((s: any, i: number) => (
-                        <Tag key={i} style={{ marginTop: 4 }}>{s.filename} ({Math.round(s.score * 100)}%)</Tag>
-                      ))}
-                    </div>
-                  )}
-                </div>
+                <Avatar icon={<RobotOutlined />} style={{ background: '#52c41a' }} />
+                <Card size="small" style={{ background: '#f6ffed' }}>
+                  <Spin indicator={<LoadingOutlined style={{ fontSize: 16 }} spin />} />
+                  <Text style={{ marginLeft: 8 }}>正在思考...</Text>
+                </Card>
               </Space>
             </div>
-          ))
+          )}
+          <div ref={messagesEndRef} />
+        </div>
+
+        {sources.length > 0 && (
+          <Alert
+            message="检索到的相关文档"
+            description={
+              <List
+                size="small"
+                dataSource={sources}
+                renderItem={(s: any) => (
+                  <List.Item style={{ padding: '4px 0' }}>
+                    <Text>{s.filename}</Text>
+                    <Tag color="green">{Math.round(s.score * 100)}% 匹配</Tag>
+                  </List.Item>
+                )}
+              />
+            }
+            type="info"
+            style={{ marginBottom: 16 }}
+          />
         )}
-        {loading && (
-          <div style={{ marginBottom: 16 }}>
-            <Space align="start">
-              <Avatar icon={<RobotOutlined />} style={{ background: '#52c41a' }} />
-              <Card size="small" style={{ background: '#f6ffed' }}>
-                <Spin indicator={<LoadingOutlined style={{ fontSize: 16 }} spin />} />
-                <Text style={{ marginLeft: 8 }}>正在思考...</Text>
-              </Card>
-            </Space>
+
+        {groups.length > 1 && (
+          <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 12, marginBottom: 4 }}>
+            <Text type="secondary" style={{ fontSize: 12, marginRight: 8 }}>激活分组：</Text>
+            <Checkbox.Group
+              value={activeGroupIds}
+              onChange={vals => setActiveGroupIds(vals as string[])}
+              options={groups.map(g => ({ label: <Tag color={g.color}>{g.name}</Tag>, value: g.id }))}
+            />
           </div>
         )}
-        <div ref={messagesEndRef} />
-      </div>
-
-      {sources.length > 0 && (
-        <Alert
-          message="检索到的相关文档"
-          description={
-            <List
-              size="small"
-              dataSource={sources}
-              renderItem={(s: any) => (
-                <List.Item style={{ padding: '4px 0' }}>
-                  <Text>{s.filename}</Text>
-                  <Tag color="green">{Math.round(s.score * 100)}% 匹配</Tag>
-                </List.Item>
-              )}
+        <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 16 }}>
+          <Space.Compact style={{ width: '100%' }}>
+            <TextArea
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyPress={handleKeyPress}
+              placeholder="输入问题，按 Enter 发送..."
+              autoSize={{ minRows: 1, maxRows: 4 }}
+              disabled={loading}
             />
-          }
-          type="info"
-          style={{ marginBottom: 16 }}
-        />
-      )}
-
-      {groups.length > 1 && (
-        <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 12, marginBottom: 4 }}>
-          <Text type="secondary" style={{ fontSize: 12, marginRight: 8 }}>激活分组：</Text>
-          <Checkbox.Group
-            value={activeGroupIds}
-            onChange={vals => setActiveGroupIds(vals as string[])}
-            options={groups.map(g => ({ label: <Tag color={g.color}>{g.name}</Tag>, value: g.id }))}
-          />
+            <Button type="primary" icon={<SendOutlined />} onClick={handleSend} loading={loading}>
+              发送
+            </Button>
+          </Space.Compact>
         </div>
-      )}
-      <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 16 }}>
-        <Space.Compact style={{ width: '100%' }}>
-          <TextArea
-            value={input}
-            onChange={e => setInput(e.target.value)}
-            onKeyPress={handleKeyPress}
-            placeholder="输入问题，按 Enter 发送..."
-            autoSize={{ minRows: 1, maxRows: 4 }}
-            disabled={loading}
-          />
-          <Button type="primary" icon={<SendOutlined />} onClick={handleSend} loading={loading}>
-            发送
-          </Button>
-        </Space.Compact>
+      </Card>
+    </div>
+  );
+};
+
+// ==================== 产物文件面板 ====================
+
+const TaskFilesPanel: React.FC<{ taskId: string }> = ({ taskId }) => {
+  const [files, setFiles] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [selectedFile, setSelectedFile] = useState<any>(null);
+
+  useEffect(() => {
+    if (!taskId) return;
+    setLoading(true);
+    api.getTaskFiles(taskId)
+      .then(res => setFiles(res.data.files || []))
+      .catch(() => message.error('获取产物文件失败'))
+      .finally(() => setLoading(false));
+  }, [taskId]);
+
+  if (loading) return <Spin />;
+  if (files.length === 0) return <Empty description="无产物文件" />;
+
+  const formatSize = (bytes: number) => {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  };
+
+  return (
+    <div style={{ display: 'flex', gap: 16 }}>
+      <div style={{ width: 280, flexShrink: 0 }}>
+        <List
+          size="small"
+          bordered
+          dataSource={files}
+          renderItem={(f: any) => (
+            <List.Item
+              style={{
+                cursor: 'pointer',
+                background: selectedFile?.path === f.path ? '#e6f7ff' : undefined,
+                padding: '8px 12px',
+              }}
+              onClick={() => setSelectedFile(f)}
+            >
+              <Space direction="vertical" size={0} style={{ width: '100%' }}>
+                <Text strong style={{ fontSize: 13 }}>
+                  <FileSearchOutlined style={{ marginRight: 4 }} />
+                  {f.name}
+                </Text>
+                <Text type="secondary" style={{ fontSize: 11 }}>{f.path} · {formatSize(f.size)}</Text>
+              </Space>
+            </List.Item>
+          )}
+        />
       </div>
-    </Card>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        {selectedFile ? (
+          <Card
+            size="small"
+            title={<span><FileTextOutlined /> {selectedFile.path}</span>}
+            extra={<Text type="secondary">{formatSize(selectedFile.size)}{selectedFile.truncated ? ' (已截断)' : ''}</Text>}
+          >
+            <pre style={{
+              whiteSpace: 'pre-wrap',
+              fontFamily: 'monospace',
+              fontSize: 12,
+              margin: 0,
+              maxHeight: 500,
+              overflow: 'auto',
+              background: '#fafafa',
+              padding: 12,
+              borderRadius: 4,
+            }}>
+              {selectedFile.content}
+            </pre>
+          </Card>
+        ) : (
+          <div style={{ textAlign: 'center', padding: 40 }}>
+            <Text type="secondary">点击左侧文件查看内容</Text>
+          </div>
+        )}
+      </div>
+    </div>
   );
 };
 
@@ -873,60 +1114,118 @@ const TasksPage: React.FC = () => {
       </Card>
 
       {currentTask && (
-        <Card 
-          title="执行结果" 
-          style={{ marginTop: 16 }}
-          extra={
+        <Card
+          title={
             <Space>
-              {getComplexityTag(currentTask.complexity)}
+              执行结果
+              <Tag color={currentTask.final_score >= 0.8 ? 'success' : currentTask.final_score >= 0.6 ? 'warning' : 'error'}>
+                评分 {(currentTask.final_score * 100).toFixed(0)}%
+              </Tag>
               {getStatusTag(currentTask.result ? 'completed' : 'failed')}
             </Space>
           }
+          style={{ marginTop: 16 }}
         >
-          <Title level={5}>任务结果</Title>
-          <Card size="small" style={{ background: '#fafafa', marginBottom: 16 }}>
-            <pre style={{ whiteSpace: 'pre-wrap', fontFamily: 'monospace', fontSize: 13 }}>
-              {currentTask.result}
-            </pre>
-          </Card>
-
-          {suggestions.length > 0 && (
-            <>
-              <Title level={5}>
-                <BulbOutlined style={{ color: '#faad14', marginRight: 8 }} />
-                优化建议
-              </Title>
-              <Timeline
-                items={suggestions.map((s: any, i: number) => ({
-                  color: s.priority === 2 ? 'red' : s.priority === 1 ? 'blue' : 'green',
-                  children: (
-                    <Card key={i} size="small" style={{ marginBottom: 8 }}>
-                      <Space>
-                        <Tag color={
-                          s.type === 'performance' ? 'red' :
-                          s.type === 'security' ? 'orange' :
-                          s.type === 'code_quality' ? 'blue' :
-                          s.type === 'architecture' ? 'purple' : 'green'
-                        }>
-                          {s.type}
-                        </Tag>
-                        <Text strong>{s.title}</Text>
-                        <Tooltip title={`置信度: ${Math.round(s.confidence * 100)}%`}>
-                          <Progress percent={Math.round(s.confidence * 100)} size="small" style={{ width: 80 }} />
-                        </Tooltip>
-                      </Space>
-                      <div style={{ marginTop: 8 }}>{s.description}</div>
-                      {s.code_snippet && (
-                        <pre style={{ background: '#f5f5f5', padding: 8, borderRadius: 4, fontSize: 12 }}>
-                          {s.code_snippet}
-                        </pre>
-                      )}
-                    </Card>
-                  ),
-                }))}
-              />
-            </>
-          )}
+          <Tabs defaultActiveKey="result" items={[
+            {
+              key: 'result',
+              label: <span><FileTextOutlined /> 任务结果</span>,
+              children: (
+                <Card size="small" style={{ background: '#fafafa' }}>
+                  <pre style={{ whiteSpace: 'pre-wrap', fontFamily: 'monospace', fontSize: 13, margin: 0 }}>
+                    {currentTask.result}
+                  </pre>
+                </Card>
+              ),
+            },
+            {
+              key: 'iterations',
+              label: <span><LineChartOutlined /> 迭代记录 ({currentTask.iterations?.length || 0})</span>,
+              children: currentTask.iterations?.length > 0 ? (
+                <Timeline
+                  items={currentTask.iterations.map((iter: any, i: number) => ({
+                    color: iter.score >= 0.8 ? 'green' : iter.score >= 0.6 ? 'blue' : 'red',
+                    children: (
+                      <Card key={i} size="small" style={{ marginBottom: 8 }}>
+                        <Space style={{ marginBottom: 8 }}>
+                          <Tag color={iter.score >= 0.8 ? 'success' : iter.score >= 0.6 ? 'warning' : 'error'}>
+                            第 {iter.iteration + 1} 轮
+                          </Tag>
+                          <Progress
+                            percent={Math.round(iter.score * 100)}
+                            size="small"
+                            style={{ width: 120 }}
+                            status={iter.score >= 0.8 ? 'success' : 'active'}
+                          />
+                        </Space>
+                        {iter.improvements?.length > 0 && (
+                          <div>
+                            <Text type="secondary" style={{ fontSize: 12 }}>改进建议：</Text>
+                            <ul style={{ margin: '4px 0', paddingLeft: 20, fontSize: 13 }}>
+                              {iter.improvements.map((imp: string, j: number) => (
+                                <li key={j}>{imp}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
+                      </Card>
+                    ),
+                  }))}
+                />
+              ) : <Empty description="无迭代记录" />,
+            },
+            {
+              key: 'mail',
+              label: <span><MailOutlined /> Agent 通信</span>,
+              children: currentTask.mail_log ? (
+                <Card size="small" style={{ background: '#fafafa' }}>
+                  <pre style={{ whiteSpace: 'pre-wrap', fontFamily: 'monospace', fontSize: 13, margin: 0, maxHeight: 500, overflow: 'auto' }}>
+                    {currentTask.mail_log}
+                  </pre>
+                </Card>
+              ) : <Empty description="无通信记录" />,
+            },
+            {
+              key: 'files',
+              label: <span><FolderOpenOutlined /> 产物文件</span>,
+              children: <TaskFilesPanel taskId={currentTask.task_id} />,
+            },
+            ...(suggestions.length > 0 ? [{
+              key: 'suggestions',
+              label: <span><BulbOutlined /> 优化建议 ({suggestions.length})</span>,
+              children: (
+                <Timeline
+                  items={suggestions.map((s: any, i: number) => ({
+                    color: s.priority === 2 ? 'red' : s.priority === 1 ? 'blue' : 'green',
+                    children: (
+                      <Card key={i} size="small" style={{ marginBottom: 8 }}>
+                        <Space>
+                          <Tag color={
+                            s.type === 'performance' ? 'red' :
+                            s.type === 'security' ? 'orange' :
+                            s.type === 'code_quality' ? 'blue' :
+                            s.type === 'architecture' ? 'purple' : 'green'
+                          }>
+                            {s.type}
+                          </Tag>
+                          <Text strong>{s.title}</Text>
+                          <Tooltip title={`置信度: ${Math.round(s.confidence * 100)}%`}>
+                            <Progress percent={Math.round(s.confidence * 100)} size="small" style={{ width: 80 }} />
+                          </Tooltip>
+                        </Space>
+                        <div style={{ marginTop: 8 }}>{s.description}</div>
+                        {s.code_snippet && (
+                          <pre style={{ background: '#f5f5f5', padding: 8, borderRadius: 4, fontSize: 12 }}>
+                            {s.code_snippet}
+                          </pre>
+                        )}
+                      </Card>
+                    ),
+                  }))}
+                />
+              ),
+            }] : []),
+          ]} />
         </Card>
       )}
 
