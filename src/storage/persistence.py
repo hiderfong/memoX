@@ -147,7 +147,7 @@ class PersistenceStore:
             (
                 task_data.get("task_id", ""),
                 task_data.get("description", ""),
-                "completed",
+                task_data.get("status", "completed"),
                 task_data.get("result", ""),
                 task_data.get("final_score", 0.0),
                 json.dumps(task_data.get("iterations", []), ensure_ascii=False),

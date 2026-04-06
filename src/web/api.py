@@ -790,11 +790,19 @@ async def create_task(request: TaskRequest) -> dict:
     if not _orchestrator:
         raise HTTPException(status_code=500, detail="Orchestrator not initialized")
 
-    result = await _orchestrator.run(
-        description=request.description,
-        context=request.context or {},
-        active_group_ids=request.active_group_ids,
-    )
+    timeout = request.timeout_seconds
+    try:
+        coro = _orchestrator.run(
+            description=request.description,
+            context=request.context or {},
+            active_group_ids=request.active_group_ids,
+        )
+        if timeout:
+            result = await asyncio.wait_for(coro, timeout=float(timeout))
+        else:
+            result = await coro
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail=f"任务执行超时（{timeout}秒）")
 
     suggestions = []
     if request.generate_suggestions and _task_planner:
@@ -845,10 +853,13 @@ async def create_task(request: TaskRequest) -> dict:
     # 缓存结果供后续查询
     _task_results[result.task_id] = response_data
 
+    # 检测取消状态
+    task_status = "cancelled" if result.result_summary == "(任务已取消)" else "completed"
+
     # 持久化任务
     store = get_store()
     if store:
-        store.save_task({**response_data, "description": request.description})
+        store.save_task({**response_data, "description": request.description, "status": task_status})
 
     return response_data
 
@@ -948,6 +959,24 @@ async def get_task(task_id: str) -> dict:
             return persisted
 
     raise HTTPException(status_code=404, detail="Task not found")
+
+
+@app.post("/api/tasks/{task_id}/cancel")
+async def cancel_task(task_id: str) -> dict:
+    """取消正在运行的任务"""
+    if not _orchestrator:
+        raise HTTPException(status_code=500, detail="Orchestrator not initialized")
+    if _orchestrator.cancel_task(task_id):
+        return {"success": True, "message": f"Task {task_id} cancel requested"}
+    raise HTTPException(status_code=404, detail="Task not found or not running")
+
+
+@app.get("/api/tasks/running")
+async def list_running_tasks() -> list[str]:
+    """列出正在运行的任务 ID"""
+    if not _orchestrator:
+        return []
+    return _orchestrator.list_running_tasks()
 
 
 # ==================== Worker 状态 API ====================
