@@ -163,3 +163,59 @@ def test_merge_collects_all_outputs(tmp_path):
     assert (shared / "agent_worker_b" / "b.txt").exists()
     assert (shared / "agent_worker_a" / "a.txt").read_text() == "来自 A"
     assert (shared / "agent_worker_b" / "b.txt").read_text() == "来自 B"
+
+
+def test_refinement_hint_injected(tmp_path):
+    """第一轮 score=0.5，第二轮开始前 Worker 的 refinement_hint 包含改进指令"""
+    from coordinator.iterative_orchestrator import IterativeOrchestrator
+    from agents.worker_pool import Task, SubTask, WorkerAgent, WorkerConfig, WorkerPool
+
+    call_count = 0
+
+    async def chat_side_effect(**kwargs):
+        nonlocal call_count
+        call_count += 1
+        score = 0.5 if call_count == 1 else 0.9
+        improvements = ["修复问题A"] if score < 0.8 else []
+        return MagicMock(
+            content=json.dumps({"score": score, "passed": score >= 0.8, "improvements": improvements}),
+            has_tool_calls=False,
+            tool_calls=[],
+        )
+
+    provider = MagicMock()
+    provider.chat = chat_side_effect
+
+    # 真实 WorkerAgent，Mock LLM
+    worker_provider = MagicMock()
+    worker_provider.chat = AsyncMock(return_value=MagicMock(
+        content="完成", has_tool_calls=False, tool_calls=[],
+    ))
+    config = WorkerConfig(name="worker_x", provider_type="openai", api_key="fake", model="fake")
+    worker = WorkerAgent(config=config, provider=worker_provider)
+
+    pool = WorkerPool()
+    pool.register_worker(worker)
+
+    sub = SubTask(id="sub_001", description="执行任务")
+    task = Task(id="task_hint", description="测试", sub_tasks=[sub])
+
+    mock_planner = MagicMock()
+    mock_planner.plan_task = AsyncMock(return_value=(task, MagicMock(value="simple")))
+
+    orchestrator = IterativeOrchestrator(
+        planner=mock_planner,
+        worker_pool=pool,
+        provider=provider,
+        rag_engine=None,
+        model="fake",
+        base_workspace=tmp_path,
+    )
+
+    result = asyncio.run(orchestrator.run("测试任务"))
+
+    assert len(result.iterations) == 2
+    assert result.iterations[0].score == 0.5
+    assert "修复问题A" in result.iterations[0].improvements
+    assert result.iterations[1].score == 0.9
+    assert result.final_score == 0.9
