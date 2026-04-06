@@ -82,3 +82,47 @@ def test_file_collaboration(tmp_path):
     assert merged_file.exists(), f"合并后文件不存在: {merged_file}"
     assert merged_file.read_text() == "Worker A 的输出内容"
     assert "output.txt" in summary
+
+
+def test_dependency_injection(tmp_path):
+    """sub_b 依赖 sub_a，sub_a 的结果自动注入 sub_b 的 context["dependency_results"]"""
+    from coordinator.iterative_orchestrator import IterativeOrchestrator
+    from agents.worker_pool import Task, SubTask
+
+    sub_a = SubTask(id="sub_a", description="任务A")
+    sub_b = SubTask(id="sub_b", description="任务B", dependencies=["sub_a"])
+    task = Task(id="task_dep", description="依赖测试", sub_tasks=[sub_a, sub_b])
+
+    captured_contexts: dict[str, dict] = {}
+
+    async def fake_execute_parallel(tasks, context=None, on_progress=None, per_task_contexts=None):
+        for t in tasks:
+            ctx = per_task_contexts.get(t.id, {}) if per_task_contexts else {}
+            captured_contexts[t.id] = ctx
+        return [(t, f"结果_{t.id}", None) for t in tasks]
+
+    mock_pool = MagicMock()
+    mock_pool.execute_parallel = fake_execute_parallel
+    mock_pool.get_worker_for = MagicMock(return_value=None)
+
+    sandbox_mgr = SandboxManager(tmp_path)
+    sandbox_mgr.create_task_workspace("task_dep")
+
+    orchestrator = IterativeOrchestrator(
+        planner=MagicMock(),
+        worker_pool=mock_pool,
+        provider=MagicMock(),
+        rag_engine=None,
+        model="fake",
+        base_workspace=tmp_path,
+    )
+    orchestrator._sandbox_mgr = sandbox_mgr
+
+    asyncio.run(orchestrator._execute_with_deps(task, {}))
+
+    # sub_a 无依赖，context 中无 dependency_results 或为空
+    assert captured_contexts["sub_a"].get("dependency_results", {}) == {}
+
+    # sub_b 依赖 sub_a，结果已注入
+    assert "dependency_results" in captured_contexts["sub_b"]
+    assert captured_contexts["sub_b"]["dependency_results"]["sub_a"] == "结果_sub_a"
