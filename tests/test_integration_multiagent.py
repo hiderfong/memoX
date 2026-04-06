@@ -41,3 +41,44 @@ def test_mailbus_communication(tmp_path):
     assert len(all_msgs) == 1
     assert all_msgs[0].from_agent == "worker_a"
     assert all_msgs[0].read is True
+
+
+def test_file_collaboration(tmp_path):
+    """Worker A 写文件到沙箱，_merge() 后 shared/ 中存在该文件"""
+    from coordinator.iterative_orchestrator import IterativeOrchestrator
+    from agents.worker_pool import Task, SubTask
+    from tools.filesystem import WriteFileTool
+
+    sandbox_mgr = SandboxManager(tmp_path)
+    task_id = "task_file"
+    sandbox_mgr.create_task_workspace(task_id)
+
+    # Worker A 的沙箱
+    sandbox_a = sandbox_mgr.get_agent_sandbox(task_id, "worker_a")
+    write_tool = WriteFileTool(sandbox_a)
+
+    # Worker A 写文件
+    result = asyncio.run(write_tool.execute({
+        "path": "output.txt",
+        "content": "Worker A 的输出内容",
+    }))
+    assert "已写入" in result
+
+    # 构造 Task 触发 _merge()
+    task = Task(id=task_id, description="test", sub_tasks=[])
+    orchestrator = IterativeOrchestrator(
+        planner=MagicMock(),
+        worker_pool=MagicMock(),
+        provider=MagicMock(),
+        rag_engine=None,
+        model="fake",
+        base_workspace=tmp_path,
+    )
+    summary = orchestrator._merge(task)
+
+    # 验证 shared/ 目录包含该文件
+    shared_dir = sandbox_mgr.get_shared_dir(task_id)
+    merged_file = shared_dir / "agent_worker_a" / "output.txt"
+    assert merged_file.exists(), f"合并后文件不存在: {merged_file}"
+    assert merged_file.read_text() == "Worker A 的输出内容"
+    assert "output.txt" in summary
