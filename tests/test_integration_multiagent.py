@@ -126,3 +126,40 @@ def test_dependency_injection(tmp_path):
     # sub_b 依赖 sub_a，结果已注入
     assert "dependency_results" in captured_contexts["sub_b"]
     assert captured_contexts["sub_b"]["dependency_results"]["sub_a"] == "结果_sub_a"
+
+
+def test_merge_collects_all_outputs(tmp_path):
+    """两个 Agent 各写不同文件，_merge() 后 shared/ 包含全部文件"""
+    from coordinator.iterative_orchestrator import IterativeOrchestrator
+    from agents.worker_pool import Task
+    from tools.filesystem import WriteFileTool
+
+    sandbox_mgr = SandboxManager(tmp_path)
+    task_id = "task_merge"
+    sandbox_mgr.create_task_workspace(task_id)
+
+    # Worker A 写 a.txt
+    sandbox_a = sandbox_mgr.get_agent_sandbox(task_id, "worker_a")
+    asyncio.run(WriteFileTool(sandbox_a).execute({"path": "a.txt", "content": "来自 A"}))
+
+    # Worker B 写 b.txt
+    sandbox_b = sandbox_mgr.get_agent_sandbox(task_id, "worker_b")
+    asyncio.run(WriteFileTool(sandbox_b).execute({"path": "b.txt", "content": "来自 B"}))
+
+    task = Task(id=task_id, description="test", sub_tasks=[])
+    orchestrator = IterativeOrchestrator(
+        planner=MagicMock(),
+        worker_pool=MagicMock(),
+        provider=MagicMock(),
+        rag_engine=None,
+        model="fake",
+        base_workspace=tmp_path,
+    )
+
+    orchestrator._merge(task)
+
+    shared = sandbox_mgr.get_shared_dir(task_id)
+    assert (shared / "agent_worker_a" / "a.txt").exists()
+    assert (shared / "agent_worker_b" / "b.txt").exists()
+    assert (shared / "agent_worker_a" / "a.txt").read_text() == "来自 A"
+    assert (shared / "agent_worker_b" / "b.txt").read_text() == "来自 B"
