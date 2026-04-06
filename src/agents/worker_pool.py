@@ -107,7 +107,9 @@ class WorkerAgent:
         # 状态
         self._running = False
         self._current_task_id: str | None = None
-    
+        # 改进指令（由 IterativeOrchestrator 在每轮迭代前注入）
+        self.refinement_hint: str | None = None
+
     @property
     def is_busy(self) -> bool:
         """是否繁忙"""
@@ -233,11 +235,15 @@ class WorkerAgent:
             f"- **{t['function']['name']}**: {t['function']['description']}"
             for t in self.tools.get_definitions()
         ])
-        
+
         skills_info = ""
         if self.config.skills:
             skills_info = f"\n\n## 已启用的技能\n{', '.join(self.config.skills)}"
-        
+
+        refinement_section = ""
+        if self.refinement_hint:
+            refinement_section = f"\n\n## 本轮改进要求（来自 Coordinator）\n{self.refinement_hint}"
+
         return f"""# Worker Agent: {self.config.name}
 
 你是一个智能助手，负责执行分配给你的任务。
@@ -253,7 +259,7 @@ class WorkerAgent:
 2. 使用工具时提供必要的参数
 3. 如果遇到问题，尝试替代方案
 4. 完成后返回简洁的结果摘要
-{skills_info}
+{skills_info}{refinement_section}
 """
 
 
@@ -300,7 +306,11 @@ class WorkerPool:
             if not worker.is_busy:
                 return worker
         return None
-    
+
+    def get_worker_for(self, subtask) -> "WorkerAgent | None":
+        """获取适合执行该子任务的 Worker（当前实现：返回任意空闲 Worker）"""
+        return self.get_available_worker()
+
     async def execute_task(
         self,
         task: SubTask,
@@ -328,23 +338,24 @@ class WorkerPool:
         tasks: list[SubTask],
         context: dict[str, Any] | None = None,
         on_progress: Callable[[str, str], None] | None = None,
+        per_task_contexts: dict[str, dict] | None = None,
     ) -> list[tuple[SubTask, str | None, str | None]]:
-        """并行执行多个任务"""
+        """并行执行多个任务。per_task_contexts 优先于 context。"""
         async def run_task(task: SubTask) -> tuple[str, str | None, str | None]:
+            task_ctx = per_task_contexts.get(task.id, context) if per_task_contexts else context
+
             progress_callback = None
             if on_progress:
                 def callback(msg: str):
                     on_progress(task.id, msg)
                 progress_callback = callback
-            
-            result, error = await self.execute_task(task, context, progress_callback)
+
+            result, error = await self.execute_task(task, task_ctx, progress_callback)
             return task.id, result, error
-        
-        # 使用 asyncio.gather 并行执行
+
         coroutines = [run_task(task) for task in tasks]
         results = await asyncio.gather(*coroutines, return_exceptions=True)
-        
-        # 处理结果
+
         output: list[tuple[SubTask, str | None, str | None]] = []
         for i, result in enumerate(results):
             if isinstance(result, Exception):
@@ -352,7 +363,7 @@ class WorkerPool:
             else:
                 task_id, result_str, error = result
                 output.append((tasks[i], result_str, error))
-        
+
         return output
     
     async def shutdown(self) -> None:
