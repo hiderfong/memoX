@@ -34,7 +34,7 @@ def test_mailbus_communication(tmp_path):
 
     # 再次读取：已读消息不再返回
     read_result2 = asyncio.run(read_tool.execute({}))
-    assert "无未读邮件" in read_result2
+    assert "(无未读邮件)" in read_result2
 
     # MailBus 层面验证
     all_msgs = asyncio.run(mail_bus.get_all("worker_b"))
