@@ -219,3 +219,43 @@ def test_refinement_hint_injected(tmp_path):
     assert "修复问题A" in result.iterations[0].improvements
     assert result.iterations[1].score == 0.9
     assert result.final_score == 0.9
+
+
+def test_worker_tools_bound_per_iteration(tmp_path):
+    """_prepare_workers() 为每个 Worker 绑定全部 6 个工具"""
+    from coordinator.iterative_orchestrator import IterativeOrchestrator
+    from agents.worker_pool import Task, SubTask, WorkerAgent, WorkerConfig, WorkerPool
+    from agents.mail_bus import MailBus
+
+    config = WorkerConfig(name="worker_tools", provider_type="openai", api_key="fake", model="fake")
+    worker = WorkerAgent(config=config, provider=MagicMock())
+    pool = WorkerPool()
+    pool.register_worker(worker)
+
+    sub = SubTask(id="sub_t1", description="test")
+    task = Task(id="task_tools", description="test", sub_tasks=[sub])
+
+    sandbox_mgr = SandboxManager(tmp_path)
+    sandbox_mgr.create_task_workspace("task_tools")
+    mail_bus = MailBus(task_id="task_tools")
+
+    orchestrator = IterativeOrchestrator(
+        planner=MagicMock(),
+        worker_pool=pool,
+        provider=MagicMock(),
+        rag_engine=None,
+        model="fake",
+        base_workspace=tmp_path,
+    )
+    orchestrator._sandbox_mgr = sandbox_mgr
+
+    orchestrator._prepare_workers(task, mail_bus, "")
+
+    tools = worker.tools.list_tools()
+    assert "read_file" in tools
+    assert "write_file" in tools
+    assert "list_files" in tools
+    assert "run_shell" in tools
+    assert "send_mail" in tools
+    assert "read_mail" in tools
+    assert len(tools) == 6
