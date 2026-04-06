@@ -119,13 +119,40 @@ class TaskPlanner:
             complexity_str = data.get("complexity", "simple")
             complexity = TaskComplexity(complexity_str.lower())
             
-            # 创建子任务
+            # 创建子任务（先分配 ID，再解析依赖）
+            raw_sub_tasks = data.get("sub_tasks", [])
+            # 预先分配 ID，用于后续依赖映射
+            sub_task_ids = [f"sub_{uuid.uuid4().hex[:6]}" for _ in raw_sub_tasks]
+
             sub_tasks = []
-            for i, st_data in enumerate(data.get("sub_tasks", [])):
+            for i, st_data in enumerate(raw_sub_tasks):
+                raw_deps = st_data.get("dependencies", [])
+                # 将 LLM 返回的依赖引用（如 "task_1", "sub_xxx", 数字等）映射到真实 ID
+                resolved_deps: list[str] = []
+                for dep in raw_deps:
+                    dep_str = str(dep).strip()
+                    # 如果已经是有效 ID（在预分配 ID 中），直接使用
+                    if dep_str in sub_task_ids:
+                        resolved_deps.append(dep_str)
+                    else:
+                        # 尝试解析为 1-based 或 0-based 索引
+                        import re as _re
+                        m = _re.search(r'\d+', dep_str)
+                        if m:
+                            idx = int(m.group())
+                            # 尝试 1-based
+                            if 1 <= idx <= len(sub_task_ids):
+                                resolved_deps.append(sub_task_ids[idx - 1])
+                            # 尝试 0-based
+                            elif 0 <= idx < len(sub_task_ids):
+                                resolved_deps.append(sub_task_ids[idx])
+                        # 无法解析的依赖：顺序依赖于前一个子任务
+                        elif i > 0:
+                            resolved_deps.append(sub_task_ids[i - 1])
                 sub_task = SubTask(
-                    id=f"sub_{uuid.uuid4().hex[:6]}",
+                    id=sub_task_ids[i],
                     description=st_data.get("description", ""),
-                    dependencies=st_data.get("dependencies", []),
+                    dependencies=resolved_deps,
                 )
                 sub_tasks.append(sub_task)
             

@@ -98,7 +98,7 @@ class ToolRegistry:
         return list(self._tools.keys())
     
     def get_definitions(self) -> list[dict]:
-        """获取工具定义（用于 LLM）"""
+        """获取工具定义（OpenAI 格式，用于系统提示展示）"""
         return [
             {
                 "type": "function",
@@ -107,6 +107,17 @@ class ToolRegistry:
                     "description": tool.description,
                     "parameters": tool.input_schema,
                 },
+            }
+            for tool in self._tools.values()
+        ]
+
+    def get_anthropic_definitions(self) -> list[dict]:
+        """获取工具定义（Anthropic 格式，用于 API 调用）"""
+        return [
+            {
+                "name": tool.name,
+                "description": tool.description,
+                "input_schema": tool.input_schema,
             }
             for tool in self._tools.values()
         ]
@@ -405,16 +416,30 @@ class MiniMaxProvider(LLMProvider):
             response.raise_for_status()
             data = response.json()
             
-            # 解析 content 数组（可能包含 thinking 和 text 块）
+            # 解析 content 数组（可能包含 thinking、text 和 tool_use 块）
             content_blocks = data.get("content", [])
             text_content = ""
+            tool_calls: list[ToolCall] = []
             for block in content_blocks:
-                if block.get("type") == "text":
+                block_type = block.get("type")
+                if block_type == "text":
                     text_content = block.get("text", "")
-                    break
-            
+                elif block_type == "tool_use":
+                    raw_input = block.get("input", {})
+                    if isinstance(raw_input, str):
+                        try:
+                            raw_input = json.loads(raw_input)
+                        except Exception:
+                            raw_input = {}
+                    tool_calls.append(ToolCall(
+                        id=block.get("id", f"call_{uuid.uuid4().hex[:8]}"),
+                        name=block.get("name", ""),
+                        arguments=raw_input,
+                    ))
+
             return LLMResponse(
                 content=text_content,
+                tool_calls=tool_calls,
                 finish_reason=data.get("stop_reason", "stop"),
                 usage={
                     "prompt_tokens": data.get("usage", {}).get("input_tokens", 0),

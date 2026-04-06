@@ -174,59 +174,82 @@ class WorkerAgent:
         """Agent 执行循环"""
         max_iterations = self.config.max_iterations
         
+        # 获取 Anthropic 格式工具定义
+        tool_defs = self.tools.get_anthropic_definitions()
+
         for iteration in range(max_iterations):
-            # 调用 LLM
+            # 调用 LLM（传入工具定义）
+            chat_kwargs: dict = {
+                "temperature": self.config.temperature,
+                "max_tokens": self.config.max_tokens,
+            }
+            if tool_defs:
+                chat_kwargs["tools"] = tool_defs
+
             response = await self.provider.chat(
                 messages=messages,
                 model=self.config.model,
-                temperature=self.config.temperature,
-                max_tokens=self.config.max_tokens,
+                **chat_kwargs,
             )
-            
+
             # 检查是否有工具调用
             if response.has_tool_calls:
                 tool_results = []
-                
+
                 for tool_call in response.tool_calls:
                     args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
                     logger.debug(f"Executing tool: {tool_call.name}({args_str})")
-                    
+
                     try:
                         result = await self.tools.execute(tool_call.name, tool_call.arguments)
                         tool_results.append((tool_call, result))
-                        
+
                         if on_progress:
                             on_progress(f"🔧 {tool_call.name}: {str(result)[:100]}...")
                     except Exception as e:
                         error_result = f"Error: {type(e).__name__}: {str(e)}"
                         tool_results.append((tool_call, error_result))
-                
-                # 添加助手消息和工具结果
+
+                # Anthropic 格式：assistant content 包含 tool_use 块
+                assistant_content: list[dict] = []
+                if response.content:
+                    assistant_content.append({"type": "text", "text": response.content})
+                for tc in response.tool_calls:
+                    assistant_content.append({
+                        "type": "tool_use",
+                        "id": tc.id,
+                        "name": tc.name,
+                        "input": tc.arguments,
+                    })
                 messages.append({
                     "role": "assistant",
-                    "content": response.content or "",
-                    "tool_calls": [tc.to_dict() for tc in response.tool_calls],
+                    "content": assistant_content,
                 })
-                
+
+                # Anthropic 格式：tool 结果作为 user 消息中的 tool_result 块
+                tool_result_content: list[dict] = []
                 for tool_call, result in tool_results:
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call.id,
-                        "name": tool_call.name,
+                    tool_result_content.append({
+                        "type": "tool_result",
+                        "tool_use_id": tool_call.id,
                         "content": str(result),
                     })
-                
+                messages.append({
+                    "role": "user",
+                    "content": tool_result_content,
+                })
+
                 continue
-            
+
             # 没有工具调用，返回结果
             if response.content:
                 if on_progress:
                     on_progress(f"✅ {response.content[:100]}...")
                 return response.content
-            
+
             # 无内容
             return "Task completed but no content generated."
-        
+
         return "Task reached maximum iterations without completion."
     
     def _build_system_prompt(self) -> str:

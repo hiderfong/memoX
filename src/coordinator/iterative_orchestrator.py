@@ -92,13 +92,19 @@ class IterativeOrchestrator:
             # Step 4: 为 Worker 绑定工具
             self._prepare_workers(task, mail_bus, refinement_instructions)
 
-            # Step 5: 带依赖注入地执行子任务
+            # Step 5: 重置子任务状态（多轮迭代时需要）
+            for st in task.sub_tasks:
+                st.status = TaskStatus.PENDING
+                st.result = None
+                st.error = None
+
+            # Step 6: 带依赖注入地执行子任务
             await self._execute_with_deps(task, ctx)
 
-            # Step 6: 合并沙箱 → shared/
+            # Step 7: 合并沙箱 → shared/
             merged_summary = self._merge(task)
 
-            # Step 7: 质量评估
+            # Step 8: 质量评估
             score, improvements = await self._evaluate(description, merged_summary, iteration)
             history.append(IterationRecord(iteration=iteration, score=score, improvements=improvements))
             logger.info(f"[Orchestrator] 第 {iteration + 1} 轮评分: {score:.2f}")
