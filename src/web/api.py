@@ -39,6 +39,7 @@ from knowledge.vector_store import (
 from agents.base_agent import create_provider, AnthropicProvider, ToolRegistry
 from agents.worker_pool import init_worker_pool, get_worker_pool, WorkerConfig, WorkerAgent
 from coordinator.task_planner import TaskPlanner, init_task_planner
+from coordinator.iterative_orchestrator import IterativeOrchestrator, IterationResult
 
 
 # ==================== 配置 ====================
@@ -63,6 +64,7 @@ app.add_middleware(
 _config: Config | None = None
 _rag_engine: RAGEngine | None = None
 _task_planner: TaskPlanner | None = None
+_orchestrator: IterativeOrchestrator | None = None
 _group_store: GroupStore | None = None
 
 # 精确公开路径白名单（仅这些路径无需 Token，不使用前缀匹配）
@@ -269,7 +271,18 @@ async def startup():
             worker_pool,
             _config.coordinator.model,
         )
-    
+        # 初始化迭代编排器
+        global _orchestrator
+        _orchestrator = IterativeOrchestrator(
+            planner=_task_planner,
+            worker_pool=worker_pool,
+            provider=coordinator_provider,
+            rag_engine=_rag_engine,
+            model=_config.coordinator.model,
+            temperature=_config.coordinator.temperature,
+            base_workspace=str(Path(_config.knowledge_base.persist_directory).parent / "workspace"),
+        )
+
     # 初始化分组存储
     global _group_store
     _group_store = GroupStore(path=str(Path(_config.knowledge_base.persist_directory).parent / "groups.json"))
@@ -709,39 +722,42 @@ async def chat_stream(request: ChatRequest):
 
 @app.post("/api/tasks")
 async def create_task(request: TaskRequest) -> dict:
-    """创建并执行任务"""
-    if not _task_planner:
-        raise HTTPException(status_code=500, detail="Task planner not initialized")
+    """创建并执行任务（迭代编排器）"""
+    if not _orchestrator:
+        raise HTTPException(status_code=500, detail="Orchestrator not initialized")
 
-    # 将知识库检索结果注入 context，供 TaskPlanner 使用
-    context = dict(request.context or {})
-    if _rag_engine:
-        rag_results = await _rag_engine.search(
-            request.description,
-            group_ids=request.active_group_ids,
-            top_k=3,
-        )
-        if rag_results:
-            context["knowledge_context"] = "\n".join(
-                f"[{r.metadata.get('filename', 'doc')}] {r.content[:300]}"
-                for r in rag_results
-            )
+    result = await _orchestrator.run(
+        description=request.description,
+        context=request.context or {},
+        active_group_ids=request.active_group_ids,
+    )
 
-    # 规划任务
-    task, complexity = await _task_planner.plan_task(request.description, context)
-
-    # 执行任务
-    result = await _task_planner.execute_task(task, context)
-    
-    # 生成优化建议
     suggestions = []
-    if request.generate_suggestions:
-        suggestions = await _task_planner.generate_optimization_suggestions(task, result, context)
-    
+    if request.generate_suggestions and _task_planner:
+        from agents.worker_pool import Task
+        placeholder_task = Task(
+            id=result.task_id,
+            description=request.description,
+        )
+        suggestions = await _task_planner.generate_optimization_suggestions(
+            placeholder_task,
+            result.result_summary,
+            request.context or {},
+        )
+
     return {
-        "task_id": task.id,
-        "complexity": complexity.value,
-        "result": result,
+        "task_id": result.task_id,
+        "result": result.result_summary,
+        "shared_dir": result.shared_dir,
+        "final_score": result.final_score,
+        "iterations": [
+            {
+                "iteration": r.iteration,
+                "score": r.score,
+                "improvements": r.improvements,
+            }
+            for r in result.iterations
+        ],
         "suggestions": [
             {
                 "type": s.type,
