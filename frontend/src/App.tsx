@@ -1010,6 +1010,28 @@ const TasksPage: React.FC = () => {
   const [suggestions, setSuggestions] = useState<any[]>([]);
   const [groups, setGroups] = useState<KnowledgeGroup[]>([]);
   const [activeGroupIds, setActiveGroupIds] = useState<string[]>([]);
+  const [runningTaskIds, setRunningTaskIds] = useState<string[]>([]);
+
+  // 执行中轮询运行任务列表
+  useEffect(() => {
+    if (!executing) { setRunningTaskIds([]); return; }
+    const interval = setInterval(async () => {
+      try {
+        const res = await axios.get(`${API_BASE}/tasks/running`);
+        setRunningTaskIds(res.data);
+      } catch {}
+    }, 2000);
+    return () => clearInterval(interval);
+  }, [executing]);
+
+  const handleCancel = async () => {
+    for (const tid of runningTaskIds) {
+      try {
+        await api.cancelTask(tid);
+        message.info('已请求取消任务');
+      } catch {}
+    }
+  };
 
   const fetchTasks = async () => {
     try {
@@ -1066,6 +1088,7 @@ const TasksPage: React.FC = () => {
       running: { color: 'processing', text: '执行中' },
       completed: { color: 'success', text: '已完成' },
       failed: { color: 'error', text: '失败' },
+      cancelled: { color: 'warning', text: '已取消' },
     };
     const c = config[status] || config.pending;
     return <Tag color={c.color}>{c.text}</Tag>;
@@ -1111,6 +1134,16 @@ const TasksPage: React.FC = () => {
         >
           执行任务
         </Button>
+        {executing && runningTaskIds.length > 0 && (
+          <Button
+            danger
+            icon={<CloseCircleOutlined />}
+            onClick={handleCancel}
+            style={{ marginLeft: 8 }}
+          >
+            取消任务
+          </Button>
+        )}
       </Card>
 
       {currentTask && (
