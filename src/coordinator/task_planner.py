@@ -133,22 +133,36 @@ class TaskPlanner:
                     dep_str = str(dep).strip()
                     # 如果已经是有效 ID（在预分配 ID 中），直接使用
                     if dep_str in sub_task_ids:
-                        resolved_deps.append(dep_str)
+                        if dep_str != sub_task_ids[i]:  # Avoid self-dependency
+                            resolved_deps.append(dep_str)
+                        else:
+                            logger.warning(f"[Planner] 跳过自依赖: sub_task {sub_task_ids[i]}")
                     else:
                         # 尝试解析为 1-based 或 0-based 索引
-                        import re as _re
-                        m = _re.search(r'\d+', dep_str)
+                        m = re.search(r'\d+', dep_str)
                         if m:
                             idx = int(m.group())
                             # 尝试 1-based
                             if 1 <= idx <= len(sub_task_ids):
-                                resolved_deps.append(sub_task_ids[idx - 1])
+                                dep_id = sub_task_ids[idx - 1]
+                                if dep_id != sub_task_ids[i]:  # Avoid self-dependency
+                                    resolved_deps.append(dep_id)
+                                else:
+                                    logger.warning(f"[Planner] 跳过自依赖: sub_task {sub_task_ids[i]}")
                             # 尝试 0-based
                             elif 0 <= idx < len(sub_task_ids):
-                                resolved_deps.append(sub_task_ids[idx])
+                                dep_id = sub_task_ids[idx]
+                                if dep_id != sub_task_ids[i]:  # Avoid self-dependency
+                                    resolved_deps.append(dep_id)
+                                else:
+                                    logger.warning(f"[Planner] 跳过自依赖: sub_task {sub_task_ids[i]}")
+                            else:
+                                logger.warning(f"[Planner] 无法解析依赖 '{dep}' (子任务数={len(sub_task_ids)}), 已跳过")
                         # 无法解析的依赖：顺序依赖于前一个子任务
                         elif i > 0:
                             resolved_deps.append(sub_task_ids[i - 1])
+                        else:
+                            logger.warning(f"[Planner] 无法解析依赖 '{dep}' (子任务数={len(sub_task_ids)}), 已跳过")
                 sub_task = SubTask(
                     id=sub_task_ids[i],
                     description=st_data.get("description", ""),

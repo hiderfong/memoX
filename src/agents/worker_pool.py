@@ -11,7 +11,9 @@ from typing import Any, Callable
 from loguru import logger
 
 from .base_agent import (
+    AnthropicProvider,
     BaseTool,
+    MiniMaxProvider,
     ToolRegistry,
     LLMProvider,
     LLMResponse,
@@ -173,9 +175,15 @@ class WorkerAgent:
     ) -> str:
         """Agent 执行循环"""
         max_iterations = self.config.max_iterations
-        
-        # 获取 Anthropic 格式工具定义
-        tool_defs = self.tools.get_anthropic_definitions()
+
+        # 检测 Provider 类型，选择对应的工具格式
+        is_anthropic_compat = isinstance(self.provider, (AnthropicProvider, MiniMaxProvider))
+
+        # 按 Provider 类型获取工具定义
+        if is_anthropic_compat:
+            tool_defs = self.tools.get_anthropic_definitions()
+        else:
+            tool_defs = self.tools.get_definitions()
 
         for iteration in range(max_iterations):
             # 调用 LLM（传入工具定义）
@@ -210,34 +218,49 @@ class WorkerAgent:
                         error_result = f"Error: {type(e).__name__}: {str(e)}"
                         tool_results.append((tool_call, error_result))
 
-                # Anthropic 格式：assistant content 包含 tool_use 块
-                assistant_content: list[dict] = []
-                if response.content:
-                    assistant_content.append({"type": "text", "text": response.content})
-                for tc in response.tool_calls:
-                    assistant_content.append({
-                        "type": "tool_use",
-                        "id": tc.id,
-                        "name": tc.name,
-                        "input": tc.arguments,
+                if is_anthropic_compat:
+                    # Anthropic 格式：assistant content 包含 tool_use 块
+                    messages.append({
+                        "role": "assistant",
+                        "content": [
+                            *([{"type": "text", "text": response.content}] if response.content else []),
+                            *[
+                                {
+                                    "type": "tool_use",
+                                    "id": tc.id,
+                                    "name": tc.name,
+                                    "input": tc.arguments,
+                                }
+                                for tc in response.tool_calls
+                            ],
+                        ],
                     })
-                messages.append({
-                    "role": "assistant",
-                    "content": assistant_content,
-                })
-
-                # Anthropic 格式：tool 结果作为 user 消息中的 tool_result 块
-                tool_result_content: list[dict] = []
-                for tool_call, result in tool_results:
-                    tool_result_content.append({
-                        "type": "tool_result",
-                        "tool_use_id": tool_call.id,
-                        "content": str(result),
+                    # Anthropic 格式：tool 结果作为 user 消息中的 tool_result 块
+                    messages.append({
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": tc.id,
+                                "content": str(result),
+                            }
+                            for tc, result in tool_results
+                        ],
                     })
-                messages.append({
-                    "role": "user",
-                    "content": tool_result_content,
-                })
+                else:
+                    # OpenAI 格式：assistant message 带 tool_calls 字段
+                    messages.append({
+                        "role": "assistant",
+                        "content": response.content or "",
+                        "tool_calls": [tc.to_dict() for tc in response.tool_calls],
+                    })
+                    for tool_call, result in tool_results:
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "name": tool_call.name,
+                            "content": str(result),
+                        })
 
                 continue
 
