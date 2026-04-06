@@ -133,6 +133,7 @@ class TaskRequest(BaseModel):
     context: dict | None = None
     generate_suggestions: bool = True
     active_group_ids: list[str] | None = None
+    timeout_seconds: int | None = None  # 任务超时（秒）
 
 
 class DocumentResponse(BaseModel):
@@ -641,7 +642,12 @@ async def chat(request: ChatRequest) -> dict:
     if store:
         store.save_message(session_id, "user", request.message)
         store.save_message(session_id, "assistant", answer)
-    
+        # 自动生成会话标题（取用户第一条消息前 30 字）
+        existing = store.get_session_messages(session_id)
+        if len(existing) <= 2:  # 第一轮对话
+            title = request.message[:30].strip()
+            store.update_session_title(session_id, title)
+
     return {
         "session_id": session_id,
         "answer": answer,
@@ -674,6 +680,20 @@ async def get_session_messages(session_id: str) -> list[dict]:
         if messages:
             return messages
     raise HTTPException(status_code=404, detail="Session not found")
+
+
+@app.delete("/api/chat/sessions/{session_id}")
+async def delete_chat_session(session_id: str) -> dict:
+    """删除聊天会话"""
+    store = get_store()
+    if not store:
+        raise HTTPException(status_code=500, detail="Storage not initialized")
+    if not store.delete_session(session_id):
+        raise HTTPException(status_code=404, detail="Session not found")
+    # 同时清理 RAG 引擎内存中的会话
+    if _rag_engine:
+        _rag_engine.delete_session(session_id)
+    return {"success": True}
 
 
 @app.post("/api/chat/stream")
@@ -748,6 +768,11 @@ async def chat_stream(request: ChatRequest):
             if store:
                 store.save_message(session_id, "user", request.message)
                 store.save_message(session_id, "assistant", answer)
+                # 自动生成会话标题
+                existing = store.get_session_messages(session_id)
+                if len(existing) <= 2:
+                    title = request.message[:30].strip()
+                    store.update_session_title(session_id, title)
 
             yield f"data: {json.dumps({'type': 'done', 'session_id': session_id})}\n\n"
             
