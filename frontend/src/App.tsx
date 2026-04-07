@@ -135,6 +135,15 @@ const api = {
 
   // 任务取消
   cancelTask: (id: string) => axios.post(`${API_BASE}/tasks/${id}/cancel`),
+
+  // 文档 chunks + 搜索
+  getDocumentChunks: (docId: string) => axios.get(`${API_BASE}/documents/${docId}/chunks`),
+  searchDocuments: (q: string, groupIds?: string) =>
+    axios.get(`${API_BASE}/documents/search`, { params: { q, group_ids: groupIds } }),
+
+  // 任务反馈
+  submitTaskFeedback: (taskId: string, feedback: string) =>
+    axios.post(`${API_BASE}/tasks/${taskId}/feedback`, { feedback }),
 };
 
 // ==================== 登录页 ====================
@@ -296,6 +305,13 @@ const DocumentsPage: React.FC = () => {
   const [urlModalOpen, setUrlModalOpen] = useState(false);
   const [urlInput, setUrlInput] = useState('');
   const [importingUrl, setImportingUrl] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [drawerDoc, setDrawerDoc] = useState<any>(null);
+  const [drawerChunks, setDrawerChunks] = useState<any[]>([]);
+  const [chunksLoading, setChunksLoading] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<any[] | null>(null);
+  const [searching, setSearching] = useState(false);
 
   const fetchDocuments = async () => {
     setLoading(true);
@@ -380,8 +396,48 @@ const DocumentsPage: React.FC = () => {
     return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
   };
 
+  const handleViewChunks = async (doc: any) => {
+    setDrawerDoc(doc);
+    setDrawerOpen(true);
+    setChunksLoading(true);
+    try {
+      const res = await api.getDocumentChunks(doc.id);
+      setDrawerChunks(res.data.chunks || []);
+    } catch (err) {
+      message.error('获取文档内容失败');
+      setDrawerChunks([]);
+    } finally {
+      setChunksLoading(false);
+    }
+  };
+
+  const handleSearch = async (value: string) => {
+    if (!value.trim()) { setSearchResults(null); return; }
+    setSearching(true);
+    try {
+      const res = await api.searchDocuments(value.trim());
+      setSearchResults(res.data.results || []);
+    } catch (err) {
+      message.error('搜索失败');
+    } finally {
+      setSearching(false);
+    }
+  };
+
   return (
     <div>
+      <Card style={{ marginBottom: 16 }} bodyStyle={{ padding: '12px 16px' }}>
+        <Input.Search
+          placeholder="搜索文档内容..."
+          allowClear
+          enterButton="搜索"
+          loading={searching}
+          onSearch={handleSearch}
+          onChange={e => { if (!e.target.value) setSearchResults(null); }}
+          style={{ maxWidth: 500 }}
+        />
+      </Card>
+
       {/* 分组标签栏 */}
       <Card style={{ marginBottom: 16 }} bodyStyle={{ padding: '12px 16px' }}>
         <Space wrap>
@@ -443,63 +499,81 @@ const DocumentsPage: React.FC = () => {
         </Dragger>
       </Card>
 
-      <Card title="已上传文档" style={{ marginTop: 16 }}>
-        {loading ? (
-          <div style={{ textAlign: 'center', padding: 40 }}>
-            <Spin />
-          </div>
-        ) : documents.length === 0 ? (
-          <Empty description="暂无文档，请先上传" />
-        ) : (
+      {searchResults !== null ? (
+        <Card title={<Space>搜索结果 ({searchResults.length}) <Button size="small" onClick={() => setSearchResults(null)}>返回文档列表</Button></Space>} style={{ marginTop: 16 }}>
           <List
-            dataSource={activeGroupFilter === 'all' ? documents : documents.filter(d => (d.group_id || 'ungrouped') === activeGroupFilter)}
-            renderItem={(doc: any) => (
-              <List.Item
-                actions={[
-                  <select
-                    key="move"
-                    value={doc.group_id || 'ungrouped'}
-                    onChange={e => handleMoveGroup(doc.id, e.target.value)}
-                    style={{ fontSize: 12, padding: '2px 4px', borderRadius: 4, border: '1px solid #d9d9d9', cursor: 'pointer' }}
-                  >
-                    {groups.map(g => (
-                      <option key={g.id} value={g.id}>{g.name}</option>
-                    ))}
-                  </select>,
-                  <Button
-                    key="delete"
-                    type="text"
-                    danger
-                    icon={<DeleteOutlined />}
-                    onClick={() => handleDelete(doc.id)}
-                  >
-                    删除
-                  </Button>
-                ]}
-              >
+            dataSource={searchResults}
+            locale={{ emptyText: '无匹配结果' }}
+            renderItem={(r: any) => (
+              <List.Item>
                 <List.Item.Meta
-                  avatar={<Avatar icon={<FileTextOutlined />} style={{ background: '#1890ff' }} />}
-                  title={doc.filename}
-                  description={
-                    <Space>
-                      {(() => {
-                        const g = groups.find(x => x.id === (doc.group_id || 'ungrouped'));
-                        return g ? <Tag color={g.color}>{g.name}</Tag> : null;
-                      })()}
-                      <Tag>{doc.type}</Tag>
-                      <Text type="secondary">{doc.chunk_count} 个片段</Text>
-                      <Text type="secondary">{formatSize(doc.size)}</Text>
-                      <Text type="secondary">
-                        {dayjs(doc.created_at).format('YYYY-MM-DD HH:mm')}
-                      </Text>
-                    </Space>
-                  }
+                  avatar={<Avatar icon={<FileSearchOutlined />} style={{ background: '#1890ff' }} />}
+                  title={<Space><Text>{r.filename}</Text><Tag color="green">{Math.round(r.score * 100)}%</Tag></Space>}
+                  description={<Text type="secondary" style={{ fontSize: 12 }}>{r.content.slice(0, 200)}...</Text>}
                 />
               </List.Item>
             )}
           />
-        )}
-      </Card>
+        </Card>
+      ) : (
+        <Card title="已上传文档" style={{ marginTop: 16 }}>
+          {loading ? (
+            <div style={{ textAlign: 'center', padding: 40 }}>
+              <Spin />
+            </div>
+          ) : documents.length === 0 ? (
+            <Empty description="暂无文档，请先上传" />
+          ) : (
+            <List
+              dataSource={activeGroupFilter === 'all' ? documents : documents.filter(d => (d.group_id || 'ungrouped') === activeGroupFilter)}
+              renderItem={(doc: any) => (
+                <List.Item
+                  actions={[
+                    <select
+                      key="move"
+                      value={doc.group_id || 'ungrouped'}
+                      onChange={e => handleMoveGroup(doc.id, e.target.value)}
+                      style={{ fontSize: 12, padding: '2px 4px', borderRadius: 4, border: '1px solid #d9d9d9', cursor: 'pointer' }}
+                    >
+                      {groups.map(g => (
+                        <option key={g.id} value={g.id}>{g.name}</option>
+                      ))}
+                    </select>,
+                    <Button
+                      key="delete"
+                      type="text"
+                      danger
+                      icon={<DeleteOutlined />}
+                      onClick={() => handleDelete(doc.id)}
+                    >
+                      删除
+                    </Button>
+                  ]}
+                >
+                  <List.Item.Meta
+                    avatar={<Avatar icon={<FileTextOutlined />} style={{ background: '#1890ff' }} />}
+                    title={<a onClick={() => handleViewChunks(doc)}>{doc.filename}</a>}
+                    description={
+                      <Space>
+                        {(() => {
+                          const g = groups.find(x => x.id === (doc.group_id || 'ungrouped'));
+                          return g ? <Tag color={g.color}>{g.name}</Tag> : null;
+                        })()}
+                        <Tag>{doc.type}</Tag>
+                        <Text type="secondary">{doc.chunk_count} 个片段</Text>
+                        <Text type="secondary">{formatSize(doc.size)}</Text>
+                        <Text type="secondary">
+                          {dayjs(doc.created_at).format('YYYY-MM-DD HH:mm')}
+                        </Text>
+                      </Space>
+                    }
+                  />
+                </List.Item>
+              )}
+            />
+          )}
+        </Card>
+      )}
 
       {/* URL 导入弹窗 */}
       <Modal
@@ -636,6 +710,41 @@ const DocumentsPage: React.FC = () => {
             </List.Item>
           )}
         />
+      </Drawer>
+
+      <Drawer
+        title={drawerDoc?.filename || '文档详情'}
+        open={drawerOpen}
+        onClose={() => setDrawerOpen(false)}
+        width={600}
+      >
+        {drawerDoc && (
+          <div style={{ marginBottom: 16 }}>
+            <Space direction="vertical" style={{ width: '100%' }}>
+              <Text><strong>类型:</strong> {drawerDoc.type}</Text>
+              <Text><strong>大小:</strong> {formatSize(drawerDoc.size)}</Text>
+              <Text><strong>分块数:</strong> {drawerDoc.chunk_count}</Text>
+              <Text><strong>创建时间:</strong> {drawerDoc.created_at}</Text>
+            </Space>
+            <Divider />
+          </div>
+        )}
+        {chunksLoading ? (
+          <div style={{ textAlign: 'center', padding: 40 }}><Spin /></div>
+        ) : (
+          <List
+            dataSource={drawerChunks}
+            renderItem={(chunk: any) => (
+              <List.Item>
+                <Card size="small" title={<Tag>#{chunk.index}</Tag>} style={{ width: '100%' }}>
+                  <pre style={{ whiteSpace: 'pre-wrap', fontSize: 12, margin: 0, maxHeight: 200, overflow: 'auto' }}>
+                    {chunk.content}
+                  </pre>
+                </Card>
+              </List.Item>
+            )}
+          />
+        )}
       </Drawer>
     </div>
   );
@@ -1011,6 +1120,11 @@ const TasksPage: React.FC = () => {
   const [groups, setGroups] = useState<KnowledgeGroup[]>([]);
   const [activeGroupIds, setActiveGroupIds] = useState<string[]>([]);
   const [runningTaskIds, setRunningTaskIds] = useState<string[]>([]);
+  const [feedbackModalOpen, setFeedbackModalOpen] = useState(false);
+  const [feedbackTaskId, setFeedbackTaskId] = useState('');
+  const [feedbackInfo, setFeedbackInfo] = useState<any>(null);
+  const [feedbackText, setFeedbackText] = useState('');
+  const [submittingFeedback, setSubmittingFeedback] = useState(false);
 
   // 执行中轮询运行任务列表
   useEffect(() => {
@@ -1024,12 +1138,50 @@ const TasksPage: React.FC = () => {
     return () => clearInterval(interval);
   }, [executing]);
 
+  useEffect(() => {
+    const token = localStorage.getItem('memox_token');
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/ws?token=${token}`;
+    let ws: WebSocket | null = null;
+
+    if (executing) {
+      ws = new WebSocket(wsUrl);
+      ws.onmessage = (event) => {
+        try {
+          const data = JSON.parse(event.data);
+          if (data.type === 'task_needs_input') {
+            setFeedbackTaskId(data.task_id);
+            setFeedbackInfo(data);
+            setFeedbackText('');
+            setFeedbackModalOpen(true);
+          }
+        } catch {}
+      };
+    }
+
+    return () => { ws?.close(); };
+  }, [executing]);
+
   const handleCancel = async () => {
     for (const tid of runningTaskIds) {
       try {
         await api.cancelTask(tid);
         message.info('已请求取消任务');
       } catch {}
+    }
+  };
+
+  const handleSubmitFeedback = async () => {
+    if (!feedbackText.trim()) return;
+    setSubmittingFeedback(true);
+    try {
+      await api.submitTaskFeedback(feedbackTaskId, feedbackText.trim());
+      message.success('反馈已提交');
+      setFeedbackModalOpen(false);
+    } catch (err) {
+      message.error('提交失败');
+    } finally {
+      setSubmittingFeedback(false);
     }
   };
 
@@ -1293,6 +1445,48 @@ const TasksPage: React.FC = () => {
           />
         )}
       </Card>
+
+      <Modal
+        title="任务需要你的指导"
+        open={feedbackModalOpen}
+        onCancel={() => setFeedbackModalOpen(false)}
+        onOk={handleSubmitFeedback}
+        okText="提交反馈"
+        cancelText="跳过（自动继续）"
+        confirmLoading={submittingFeedback}
+      >
+        {feedbackInfo && (
+          <div style={{ marginBottom: 16 }}>
+            <Space direction="vertical" style={{ width: '100%' }}>
+              <Text>
+                第 {(feedbackInfo.iteration || 0) + 1} 轮迭代评分：
+                <Tag color={feedbackInfo.score >= 0.6 ? 'warning' : 'error'} style={{ marginLeft: 8 }}>
+                  {(feedbackInfo.score * 100).toFixed(0)}%
+                </Tag>
+              </Text>
+              {feedbackInfo.improvements?.length > 0 && (
+                <div>
+                  <Text type="secondary">AI 建议的改进方向：</Text>
+                  <ul style={{ margin: '4px 0', paddingLeft: 20 }}>
+                    {feedbackInfo.improvements.map((imp: string, i: number) => (
+                      <li key={i}><Text style={{ fontSize: 13 }}>{imp}</Text></li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </Space>
+            <Divider style={{ margin: '12px 0' }} />
+            <Text>请输入你的指导意见（将注入下一轮迭代）：</Text>
+            <TextArea
+              value={feedbackText}
+              onChange={e => setFeedbackText(e.target.value)}
+              placeholder="例如：请重点关注代码的错误处理..."
+              autoSize={{ minRows: 3, maxRows: 6 }}
+              style={{ marginTop: 8 }}
+            />
+          </div>
+        )}
+      </Modal>
     </div>
   );
 };
