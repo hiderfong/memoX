@@ -374,7 +374,28 @@ class ChromaVectorStore:
             })
 
         return documents
-    
+
+    def get_chunks_by_doc(self, doc_id: str, collection_name: str = "documents") -> list[dict]:
+        """获取某文档的所有 chunk，按 chunk_index 排序"""
+        collection = self.get_or_create_collection(collection_name)
+        results = collection.get(
+            where={"doc_id": doc_id},
+            include=["documents", "metadatas"],
+        )
+        if not results["ids"]:
+            return []
+        chunks = []
+        for i, chunk_id in enumerate(results["ids"]):
+            meta = results["metadatas"][i] if results["metadatas"] else {}
+            chunks.append({
+                "id": chunk_id,
+                "content": results["documents"][i] if results["documents"] else "",
+                "chunk_index": meta.get("chunk_index", i),
+                "metadata": meta,
+            })
+        chunks.sort(key=lambda c: c["chunk_index"])
+        return chunks
+
     def get_collection_stats(self, collection_name: str = "documents") -> dict:
         """获取集合统计"""
         collection = self.get_or_create_collection(collection_name)
