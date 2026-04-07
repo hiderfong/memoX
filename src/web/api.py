@@ -947,6 +947,14 @@ async def list_tasks() -> list[dict]:
     return []
 
 
+@app.get("/api/tasks/running")
+async def list_running_tasks() -> list[str]:
+    """列出正在运行的任务 ID"""
+    if not _orchestrator:
+        return []
+    return _orchestrator.list_running_tasks()
+
+
 @app.get("/api/tasks/{task_id}/files")
 async def get_task_files(task_id: str) -> dict:
     """获取任务 shared/ 目录的文件树和内容"""
@@ -1052,13 +1060,6 @@ async def submit_task_feedback(task_id: str, request: FeedbackRequest) -> dict:
     _orchestrator.submit_feedback(task_id, request.feedback)
     return {"success": True}
 
-
-@app.get("/api/tasks/running")
-async def list_running_tasks() -> list[str]:
-    """列出正在运行的任务 ID"""
-    if not _orchestrator:
-        return []
-    return _orchestrator.list_running_tasks()
 
 
 # ==================== Worker 状态 API ====================
