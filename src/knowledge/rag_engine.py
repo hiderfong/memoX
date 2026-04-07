@@ -68,9 +68,14 @@ class RAGEngine:
         chunk_size: int = 500,
         chunk_overlap: int = 50,
         top_k: int = 5,
+        dashscope_api_key: str = "",
+        dashscope_base_url: str = "",
     ):
         self.vector_store = vector_store or get_vector_store()
-        self.document_parser = document_parser or DocumentParser()
+        self.document_parser = document_parser or DocumentParser(
+            dashscope_api_key=dashscope_api_key,
+            dashscope_base_url=dashscope_base_url,
+        )
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.top_k = top_k
@@ -282,6 +287,10 @@ class RAGEngine:
             return True
         return False
 
+    def get_document_chunks(self, doc_id: str, collection_name: str = "documents") -> list[dict]:
+        """获取文档的所有分块内容"""
+        return self.vector_store.get_chunks_by_doc(doc_id, collection_name)
+
     def move_document_group(
         self,
         doc_id: str,
@@ -315,6 +324,8 @@ def init_rag_engine(
     chunk_size: int = 500,
     chunk_overlap: int = 50,
     top_k: int = 5,
+    dashscope_api_key: str = "",
+    dashscope_base_url: str = "",
 ) -> RAGEngine:
     """初始化 RAG 引擎"""
     global _rag_engine
@@ -324,5 +335,7 @@ def init_rag_engine(
         chunk_size=chunk_size,
         chunk_overlap=chunk_overlap,
         top_k=top_k,
+        dashscope_api_key=dashscope_api_key,
+        dashscope_base_url=dashscope_base_url,
     )
     return _rag_engine

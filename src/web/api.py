@@ -68,6 +68,20 @@ _task_planner: TaskPlanner | None = None
 _orchestrator: IterativeOrchestrator | None = None
 _group_store: GroupStore | None = None
 _task_results: dict[str, dict] = {}  # task_id -> full result dict (for later retrieval)
+_ws_connections: set[WebSocket] = set()
+
+
+async def _ws_broadcast(data: dict) -> None:
+    """广播消息到所有 WebSocket 连接"""
+    message = json.dumps(data, ensure_ascii=False)
+    dead: list[WebSocket] = []
+    for ws in _ws_connections:
+        try:
+            await ws.send_text(message)
+        except Exception:
+            dead.append(ws)
+    for ws in dead:
+        _ws_connections.discard(ws)
 
 # 精确公开路径白名单（仅这些路径无需 Token，不使用前缀匹配）
 _PUBLIC_PATHS: set[str] = {
@@ -221,6 +235,11 @@ async def startup():
         )
         print(f"   - 使用本地 Embedding: {kb_config.embedding_model}")
     
+    # DashScope config for image OCR
+    dashscope_config = _config.providers.get("dashscope")
+    dashscope_api_key = dashscope_config.api_key if dashscope_config else ""
+    dashscope_base_url = (dashscope_config.base_url if dashscope_config else "").replace("/api/v1", "/compatible-mode/v1")
+
     # 初始化 RAG 引擎
     _rag_engine = init_rag_engine(
         persist_directory=kb_config.persist_directory,
@@ -228,6 +247,8 @@ async def startup():
         chunk_size=kb_config.chunk_size,
         chunk_overlap=kb_config.chunk_overlap,
         top_k=kb_config.top_k,
+        dashscope_api_key=dashscope_api_key,
+        dashscope_base_url=dashscope_base_url,
     )
     
     # 预热嵌入模型（避免首次请求时延迟）
@@ -284,6 +305,7 @@ async def startup():
             model=_config.coordinator.model,
             temperature=_config.coordinator.temperature,
             base_workspace=str(Path(_config.knowledge_base.persist_directory).parent / "workspace"),
+            broadcast=_ws_broadcast,
         )
 
     # 初始化持久化存储
@@ -565,6 +587,51 @@ async def move_document_group(doc_id: str, request: MoveDocumentGroup) -> dict:
     if not success:
         raise HTTPException(status_code=404, detail="Document not found")
     return {"success": True}
+
+
+@app.get("/api/documents/{doc_id}/chunks")
+async def get_document_chunks(doc_id: str) -> dict:
+    """获取文档的所有分块内容"""
+    chunks = _rag_engine.get_document_chunks(doc_id)
+    if not chunks:
+        raise HTTPException(status_code=404, detail="Document not found or has no chunks")
+    filename = chunks[0].get("metadata", {}).get("filename", "unknown")
+    return {
+        "doc_id": doc_id,
+        "filename": filename,
+        "chunk_count": len(chunks),
+        "chunks": [
+            {
+                "id": c["id"],
+                "content": c["content"],
+                "index": c["chunk_index"],
+            }
+            for c in chunks
+        ],
+    }
+
+
+@app.get("/api/documents/search")
+async def search_documents(q: str, group_ids: str | None = None) -> dict:
+    """全文搜索文档"""
+    if not q.strip():
+        raise HTTPException(status_code=400, detail="搜索关键词不能为空")
+    gids = group_ids.split(",") if group_ids else None
+    results = await _rag_engine.search(q, group_ids=gids, top_k=20)
+    return {
+        "query": q,
+        "results": [
+            {
+                "doc_id": r.metadata.get("doc_id", ""),
+                "filename": r.metadata.get("filename", "unknown"),
+                "content": r.content,
+                "score": r.score,
+                "chunk_index": r.metadata.get("chunk_index", 0),
+                "group_id": r.metadata.get("group_id", "ungrouped"),
+            }
+            for r in results
+        ],
+    }
 
 
 # ==================== RAG 问答 API ====================
@@ -971,6 +1038,21 @@ async def cancel_task(task_id: str) -> dict:
     raise HTTPException(status_code=404, detail="Task not found or not running")
 
 
+class FeedbackRequest(BaseModel):
+    feedback: str
+
+
+@app.post("/api/tasks/{task_id}/feedback")
+async def submit_task_feedback(task_id: str, request: FeedbackRequest) -> dict:
+    """提交任务反馈（Human-in-the-Loop）"""
+    if not _orchestrator:
+        raise HTTPException(status_code=500, detail="Orchestrator not initialized")
+    if not _orchestrator.is_waiting_feedback(task_id):
+        raise HTTPException(status_code=404, detail="Task is not waiting for feedback")
+    _orchestrator.submit_feedback(task_id, request.feedback)
+    return {"success": True}
+
+
 @app.get("/api/tasks/running")
 async def list_running_tasks() -> list[str]:
     """列出正在运行的任务 ID"""
@@ -1009,7 +1091,8 @@ async def health_check() -> dict:
 async def websocket_endpoint(websocket: WebSocket):
     """WebSocket 实时通信"""
     await websocket.accept()
-    
+    _ws_connections.add(websocket)
+
     try:
         while True:
             data = await websocket.receive_text()
@@ -1084,8 +1167,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 })
                 
     except WebSocketDisconnect:
-        pass
+        _ws_connections.discard(websocket)
     except Exception as e:
+        _ws_connections.discard(websocket)
         try:
             await websocket.send_json({"type": "error", "message": str(e)})
         except:
