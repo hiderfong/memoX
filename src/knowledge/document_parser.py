@@ -719,10 +719,144 @@ class PPTXParser(BaseParser):
         return chunks
 
 
+class ImageParser(BaseParser):
+    """图片 OCR 解析器 - Qwen VL 主路径 + pytesseract 兜底"""
+
+    MAX_FILE_SIZE = 20 * 1024 * 1024  # 20MB
+    OCR_TIMEOUT = 30
+
+    def __init__(
+        self,
+        dashscope_api_key: str = "",
+        dashscope_base_url: str = "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    ):
+        self._api_key = dashscope_api_key
+        self._base_url = dashscope_base_url
+
+    async def parse(self, file_path: Path, doc_id: str) -> Document:
+        file_size = file_path.stat().st_size
+        if file_size > self.MAX_FILE_SIZE:
+            raise ValueError(f"图片过大: {file_size / 1024 / 1024:.1f}MB > {self.MAX_FILE_SIZE / 1024 / 1024}MB")
+
+        # 主路径: Qwen VL
+        if self._api_key:
+            try:
+                text = await asyncio.wait_for(
+                    self._ocr_qwen_vl(file_path),
+                    timeout=self.OCR_TIMEOUT,
+                )
+                return Document(
+                    id=doc_id,
+                    filename=file_path.name,
+                    content=text,
+                    metadata={"type": "image", "path": str(file_path), "file_size": file_size, "ocr_method": "qwen-vl"},
+                )
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning(f"Qwen VL OCR failed, falling back to pytesseract: {e}")
+
+        # 兜底: pytesseract
+        text = self._ocr_pytesseract(file_path)
+        return Document(
+            id=doc_id,
+            filename=file_path.name,
+            content=text,
+            metadata={"type": "image", "path": str(file_path), "file_size": file_size, "ocr_method": "pytesseract"},
+        )
+
+    async def _ocr_qwen_vl(self, file_path: Path) -> str:
+        """调用 Qwen VL 进行 OCR"""
+        import base64
+        import httpx
+
+        image_data = file_path.read_bytes()
+        ext = file_path.suffix.lstrip(".").lower()
+        if ext == "jpg":
+            ext = "jpeg"
+        b64 = base64.b64encode(image_data).decode()
+
+        payload = {
+            "model": "qwen-vl-plus",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image_url", "image_url": {"url": f"data:image/{ext};base64,{b64}"}},
+                        {"type": "text", "text": "请提取这张图片中的所有文字内容。如果图片中没有文字，请描述图片的主要内容。"},
+                    ],
+                }
+            ],
+            "max_tokens": 2048,
+        }
+
+        async with httpx.AsyncClient(timeout=httpx.Timeout(self.OCR_TIMEOUT)) as client:
+            response = await client.post(
+                f"{self._base_url}/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {self._api_key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+            )
+            response.raise_for_status()
+            data = response.json()
+            return data["choices"][0]["message"]["content"]
+
+    def _ocr_pytesseract(self, file_path: Path) -> str:
+        """本地 pytesseract OCR 兜底"""
+        try:
+            import pytesseract
+            from PIL import Image
+            image = Image.open(file_path)
+            return pytesseract.image_to_string(image, lang="chi_sim+eng")
+        except ImportError:
+            return f"(图片文件: {file_path.name}，OCR 不可用 — 请安装 pytesseract 和 Pillow)"
+        except Exception as e:
+            return f"(图片 OCR 失败: {e})"
+
+    async def chunk(self, document: Document, chunk_size: int = 500, overlap: int = 50) -> list[TextChunk]:
+        """OCR 文本分块"""
+        chunks: list[TextChunk] = []
+        text = document.content
+        start = 0
+        index = 0
+
+        while start < len(text):
+            end = min(start + chunk_size, len(text))
+            if end < len(text):
+                last_newline = text.rfind("\n", start, end)
+                if last_newline > start:
+                    end = last_newline + 1
+            chunk_text = text[start:end].strip()
+            if chunk_text:
+                chunks.append(TextChunk(
+                    id=f"{document.id}_chunk_{index}",
+                    content=chunk_text,
+                    metadata={**document.metadata, "chunk_index": index},
+                    index=index,
+                ))
+                index += 1
+            if end >= len(text):
+                break
+            new_start = end - overlap
+            start = new_start if new_start > start else end
+
+        return chunks if chunks else [TextChunk(
+            id=f"{document.id}_chunk_0",
+            content=document.content,
+            metadata={**document.metadata, "chunk_index": 0},
+            index=0,
+        )]
+
+
 class DocumentParser:
     """文档解析器工厂"""
 
-    def __init__(self):
+    def __init__(self, dashscope_api_key: str = "", dashscope_base_url: str = ""):
+        image_parser = ImageParser(
+            dashscope_api_key=dashscope_api_key,
+            dashscope_base_url=dashscope_base_url or "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        )
         self._parsers: dict[str, BaseParser] = {
             ".md": MarkdownParser(),
             ".markdown": MarkdownParser(),
@@ -732,6 +866,10 @@ class DocumentParser:
             ".xlsx": XLSXParser(),
             ".xls": XLSXParser(),
             ".pptx": PPTXParser(),
+            ".png": image_parser,
+            ".jpg": image_parser,
+            ".jpeg": image_parser,
+            ".webp": image_parser,
         }
     
     def get_parser(self, filename: str) -> BaseParser:
