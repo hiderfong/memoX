@@ -108,7 +108,16 @@ class WorkerAgent:
         
         # 创建工具注册表
         self.tools = tools or ToolRegistry()
-        
+
+        # Register per-worker LoadSkillTool if this worker has skills configured.
+        if config.skills:
+            from pathlib import Path
+            from config import get_config
+            from skills.tool import LoadSkillTool
+
+            skills_dir = Path(get_config().knowledge_base.skills_dir)
+            self.tools.register(LoadSkillTool(skills_dir, set(config.skills)))
+
         # 状态
         self._running = False
         self._current_task_id: str | None = None
