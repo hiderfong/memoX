@@ -322,7 +322,24 @@ class WorkerAgent:
 
         skills_info = ""
         if self.config.skills:
-            skills_info = f"\n\n## 已启用的技能\n{', '.join(self.config.skills)}"
+            from pathlib import Path
+            from config import get_config
+            from skills.loader import list_skills
+
+            skills_dir = Path(get_config().knowledge_base.skills_dir)
+            available = list_skills(skills_dir)
+            enabled = [s for s in available if s.name in self.config.skills]
+            if enabled:
+                lines = [f"- **{s.name}**: {s.description}" for s in enabled]
+                skills_info = (
+                    "\n\n## 可用技能（use the load_skill tool to fetch full content）\n"
+                    + "\n".join(lines)
+                )
+            missing = set(self.config.skills) - {s.name for s in available}
+            if missing:
+                logger.warning(
+                    f"Worker {self.id}: skills not installed: {sorted(missing)}"
+                )
 
         refinement_section = ""
         if self.refinement_hint:

@@ -61,3 +61,57 @@ def test_worker_skips_load_skill_tool_when_no_skills(tmp_path):
     worker = WorkerAgent(cfg, tools=ToolRegistry(), provider=_FakeProvider())
 
     assert worker.tools.get("load_skill") is None
+
+
+def test_system_prompt_lists_skill_name_and_description(tmp_path):
+    _make_skill(tmp_path, "code-review", "Review a PR", "# body")
+    _patch_config(tmp_path)
+    cfg = WorkerConfig(
+        name="reviewer",
+        provider_type="anthropic",
+        api_key="",
+        model="claude-sonnet-4-20250514",
+        skills=["code-review"],
+    )
+    worker = WorkerAgent(cfg, tools=ToolRegistry(), provider=_FakeProvider())
+
+    prompt = worker._build_system_prompt()
+
+    assert "code-review" in prompt
+    assert "Review a PR" in prompt
+    assert "load_skill" in prompt
+
+
+def test_system_prompt_warns_on_missing_skill(tmp_path):
+    _patch_config(tmp_path)
+    cfg = WorkerConfig(
+        name="reviewer",
+        provider_type="anthropic",
+        api_key="",
+        model="claude-sonnet-4-20250514",
+        skills=["ghost"],
+    )
+    worker = WorkerAgent(cfg, tools=ToolRegistry(), provider=_FakeProvider())
+
+    prompt = worker._build_system_prompt()
+
+    assert "ghost" not in prompt or "可用技能" not in prompt
+
+
+def test_system_prompt_skill_section_hot_reloads(tmp_path):
+    """Install a skill AFTER worker creation, rebuild prompt, skill appears."""
+    _patch_config(tmp_path)
+    cfg = WorkerConfig(
+        name="reviewer",
+        provider_type="anthropic",
+        api_key="",
+        model="claude-sonnet-4-20250514",
+        skills=["code-review"],
+    )
+    worker = WorkerAgent(cfg, tools=ToolRegistry(), provider=_FakeProvider())
+
+    assert "Review a PR" not in worker._build_system_prompt()
+
+    _make_skill(tmp_path, "code-review", "Review a PR", "# body")
+
+    assert "Review a PR" in worker._build_system_prompt()
