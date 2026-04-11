@@ -75,6 +75,7 @@ class KnowledgeBaseConfig:
     vector_store: str = "chroma"
     persist_directory: str = "./data/chroma"
     upload_directory: str = "./data/uploads"
+    skills_dir: str = "./data/skills"
     embedding_provider: str = "sentence-transformer"  # 可选: sentence-transformer, openai, dashscope
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
     chunk_size: int = 500
