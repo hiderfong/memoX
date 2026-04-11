@@ -120,3 +120,57 @@ def test_install_from_github_missing_skill_md(tmp_path):
     skills_dir = tmp_path / "skills"
     with pytest.raises(FileNotFoundError, match="no SKILL.md"):
         install_from_github(f"file://{remote}", skills_dir)
+
+
+from skills.installer import remove_skill, update_skill
+
+
+def test_remove_skill_happy_path(tmp_path):
+    remote = tmp_path / "remote"
+    skills_dir = tmp_path / "skills"
+    url = _init_remote_repo(remote)
+    install_from_github(url, skills_dir)
+
+    remove_skill(skills_dir, "code-review")
+
+    assert not (skills_dir / "code-review").exists()
+
+
+def test_remove_skill_missing_raises(tmp_path):
+    skills_dir = tmp_path / "skills"
+    skills_dir.mkdir()
+    with pytest.raises(FileNotFoundError):
+        remove_skill(skills_dir, "nope")
+
+
+def test_update_skill_re_clones(tmp_path):
+    remote = tmp_path / "remote"
+    skills_dir = tmp_path / "skills"
+    url = _init_remote_repo(remote)
+    install_from_github(url, skills_dir)
+
+    (remote / "SKILL.md").write_text(
+        "---\nname: code-review\ndescription: Updated\n---\n# updated body\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["git", "-C", str(remote), "add", "SKILL.md"], check=True)
+    subprocess.run(["git", "-C", str(remote), "commit", "-q", "-m", "update"], check=True)
+
+    updated = update_skill(skills_dir, "code-review")
+
+    assert updated.description == "Updated"
+    body_on_disk = (skills_dir / "code-review" / "SKILL.md").read_text()
+    assert "updated body" in body_on_disk
+
+
+def test_update_skill_missing_install_json(tmp_path):
+    skills_dir = tmp_path / "skills"
+    d = skills_dir / "manual"
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text(
+        "---\nname: manual\ndescription: d\n---\nbody",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(FileNotFoundError, match="install.json"):
+        update_skill(skills_dir, "manual")

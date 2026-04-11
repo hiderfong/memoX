@@ -112,3 +112,31 @@ def install_from_github(
         )
     logger.info(f"installed skill '{skill.name}' from {url}")
     return skill
+
+
+def remove_skill(skills_dir: Path, name: str) -> None:
+    """Delete data/skills/<name>/. Raises FileNotFoundError if missing."""
+    target = skills_dir / name
+    if not target.is_dir():
+        raise FileNotFoundError(f"skill not installed: {name}")
+    shutil.rmtree(target)
+    logger.info(f"removed skill '{name}'")
+
+
+def update_skill(skills_dir: Path, name: str) -> Skill:
+    """Re-install a skill from its recorded source_url.
+
+    Raises:
+        FileNotFoundError: target doesn't exist, or .install.json is missing.
+    """
+    target = skills_dir / name
+    meta_path = target / ".install.json"
+    if not meta_path.is_file():
+        raise FileNotFoundError(
+            f".install.json not found for '{name}' — reinstall manually with install_from_github"
+        )
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    source_url = meta.get("source_url")
+    if not source_url:
+        raise FileNotFoundError(f"source_url missing in .install.json for '{name}'")
+    return install_from_github(source_url, skills_dir, name=name, force=True)
