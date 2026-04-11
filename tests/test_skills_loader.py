@@ -39,3 +39,53 @@ def test_list_skills_empty_dir(tmp_path):
 def test_list_skills_missing_dir(tmp_path):
     missing = tmp_path / "does-not-exist"
     assert list_skills(missing) == []
+
+
+import pytest
+
+from skills.loader import load_skill
+
+
+def test_load_skill_returns_body(tmp_path):
+    _make_skill(tmp_path, "code-review", "Review a PR", "# How to review\nSteps...")
+
+    body = load_skill(tmp_path, "code-review")
+
+    assert body.startswith("# How to review")
+    assert "---" not in body.split("\n")[0]  # no frontmatter leak
+
+
+def test_load_skill_with_reference(tmp_path):
+    skill_dir = _make_skill(tmp_path, "code-review", "desc", "body")
+    ref_dir = skill_dir / "references"
+    ref_dir.mkdir()
+    (ref_dir / "checklist.md").write_text("- item 1\n- item 2\n", encoding="utf-8")
+
+    content = load_skill(tmp_path, "code-review", ref="checklist.md")
+
+    assert content == "- item 1\n- item 2\n"
+
+
+def test_load_skill_unknown_name(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        load_skill(tmp_path, "nope")
+
+
+def test_load_skill_unknown_ref(tmp_path):
+    _make_skill(tmp_path, "code-review", "desc", "body")
+    with pytest.raises(FileNotFoundError):
+        load_skill(tmp_path, "code-review", ref="missing.md")
+
+
+def test_load_skill_rejects_path_traversal(tmp_path):
+    _make_skill(tmp_path, "code-review", "desc", "body")
+    (tmp_path / "secret.txt").write_text("leaked", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="ref must stay inside"):
+        load_skill(tmp_path, "code-review", ref="../../secret.txt")
+
+
+def test_load_skill_rejects_absolute_ref(tmp_path):
+    _make_skill(tmp_path, "code-review", "desc", "body")
+    with pytest.raises(ValueError, match="ref must stay inside"):
+        load_skill(tmp_path, "code-review", ref="/etc/passwd")

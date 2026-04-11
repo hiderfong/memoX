@@ -88,5 +88,32 @@ def list_skills(skills_dir: Path) -> list[Skill]:
 
 
 def load_skill(skills_dir: Path, name: str, ref: str | None = None) -> str:
-    """Stub — implemented in Task 3."""
-    raise NotImplementedError
+    """Return the skill body (ref=None) or a references/ file content.
+
+    Raises:
+        FileNotFoundError: skill or ref file does not exist.
+        ValueError: ref attempts to escape the skill directory.
+    """
+    skill_dir = (skills_dir / name).resolve()
+    skills_root = skills_dir.resolve()
+    try:
+        skill_dir.relative_to(skills_root)
+    except ValueError as e:
+        raise ValueError("skill name must stay inside skills_dir") from e
+
+    skill_md = skill_dir / "SKILL.md"
+    if not skill_md.is_file():
+        raise FileNotFoundError(f"skill not found: {name}")
+
+    if ref is None:
+        _, body = _parse_skill_md(skill_md)
+        return body
+
+    target = (skill_dir / "references" / ref).resolve()
+    try:
+        target.relative_to(skill_dir.resolve())
+    except ValueError as e:
+        raise ValueError("ref must stay inside skill directory") from e
+    if not target.is_file():
+        raise FileNotFoundError(f"reference not found: {name}/{ref}")
+    return target.read_text(encoding="utf-8")
