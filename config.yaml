@@ -88,6 +88,7 @@ knowledge_base:
   vector_store: "chroma"
   persist_directory: "./data/chroma"
   upload_directory: "./data/uploads"
+  skills_dir: "./data/skills"
   # Embedding 配置
   # 可选: "sentence-transformer" (本地), "openai", "dashscope"
   embedding_provider: "dashscope"  # 使用阿里云 DashScope
