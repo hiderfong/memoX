@@ -21,8 +21,17 @@ _GITHUB_URL_RE = re.compile(
 
 
 def _parse_github_url(url: str) -> tuple[str, str]:
-    """Return (clone_url, subpath)."""
+    """Return (clone_url, subpath).
+
+    Accepts:
+      github.com/owner/repo[/subpath]
+      https://github.com/owner/repo[/tree/BRANCH/subpath]
+      file:///path/to/repo[#subpath=some/path]   (tests)
+    """
     if url.startswith("file://"):
+        if "#subpath=" in url:
+            base, _, frag = url.partition("#subpath=")
+            return base, frag.strip("/")
         return url, ""
     m = _GITHUB_URL_RE.match(url.strip())
     if not m:
