@@ -89,3 +89,57 @@ def test_load_skill_rejects_absolute_ref(tmp_path):
     _make_skill(tmp_path, "code-review", "desc", "body")
     with pytest.raises(ValueError, match="ref must stay inside"):
         load_skill(tmp_path, "code-review", ref="/etc/passwd")
+
+
+def test_list_skills_skips_missing_skill_md(tmp_path):
+    (tmp_path / "empty-dir").mkdir()
+    assert list_skills(tmp_path) == []
+
+
+def test_list_skills_skips_malformed_frontmatter(tmp_path):
+    d = tmp_path / "broken"
+    d.mkdir()
+    (d / "SKILL.md").write_text("no frontmatter here", encoding="utf-8")
+
+    assert list_skills(tmp_path) == []
+
+
+def test_list_skills_skips_missing_name_field(tmp_path):
+    d = tmp_path / "broken"
+    d.mkdir()
+    (d / "SKILL.md").write_text(
+        "---\ndescription: has no name\n---\nbody",
+        encoding="utf-8",
+    )
+
+    assert list_skills(tmp_path) == []
+
+
+def test_list_skills_skips_missing_description_field(tmp_path):
+    d = tmp_path / "broken"
+    d.mkdir()
+    (d / "SKILL.md").write_text(
+        "---\nname: nodesc\n---\nbody",
+        encoding="utf-8",
+    )
+
+    assert list_skills(tmp_path) == []
+
+
+def test_list_skills_skips_unclosed_frontmatter(tmp_path):
+    d = tmp_path / "broken"
+    d.mkdir()
+    (d / "SKILL.md").write_text("---\nname: x\ndescription: y\nbody never closed", encoding="utf-8")
+
+    assert list_skills(tmp_path) == []
+
+
+def test_list_skills_populates_references(tmp_path):
+    d = _make_skill(tmp_path, "code-review", "desc", "body")
+    ref_dir = d / "references"
+    ref_dir.mkdir()
+    (ref_dir / "a.md").write_text("a", encoding="utf-8")
+    (ref_dir / "b.md").write_text("b", encoding="utf-8")
+
+    skills = list_skills(tmp_path)
+    assert skills[0].references == ["a.md", "b.md"]
