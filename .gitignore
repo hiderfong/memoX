@@ -1,1 +1,63 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+.venv/
+venv/
+env/
+
+# ---- Node / Frontend ----
+frontend/node_modules/
+frontend/dist/
+frontend/data/
+frontend/frontend.log
+frontend/.vite/
+frontend/*.log
+node_modules/
+
+# ---- Runtime data (should never be committed) ----
+data/chroma/
+data/chroma_*/
+data/test_chroma/
+data/uploads/
+data/memox.db
+data/memox.db-journal
+data/groups.json
+data/skills/
+
+# ---- Secrets & TLS ----
+ssl/
+*.pem
+*.key
+.env
+.env.*
+!.env.example
+
+# ---- IDE / tooling ----
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+.playwright-mcp/
 .worktrees/
+
+# ---- Claude local overrides ----
+.claude/settings.local.json
+
+# ---- Test / scratch artifacts ----
+test_output.txt
+*.log
+tests/__pycache__/
+tests/**/__pycache__/
+
+# ---- Root-level screenshots (scratch) ----
+/*.png
