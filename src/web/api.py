@@ -188,10 +188,14 @@ async def startup():
 
     # 初始化认证
     if _config.auth.enabled:
+        def _resolve(v: str) -> str:
+            if isinstance(v, str) and v.startswith("${") and v.endswith("}"):
+                return os.getenv(v[2:-1], "")
+            return v
         init_auth([
             {
                 "username": u.username,
-                "password": u.password,
+                "password": _resolve(u.password),
                 "role": u.role,
                 "display_name": u.display_name,
             }
@@ -210,9 +214,9 @@ async def startup():
     if embedding_provider == "dashscope":
         # 阿里云 DashScope
         dashscope_config = _config.providers.get("dashscope")
-        if dashscope_config and dashscope_config.api_key:
+        if dashscope_config and dashscope_config.resolve_api_key():
             embedding_function = DashScopeEmbedding(
-                api_key=dashscope_config.api_key,
+                api_key=dashscope_config.resolve_api_key(),
                 model=kb_config.embedding_model or "text-embedding-v3"
             )
             print(f"   - 使用 DashScope Embedding: {kb_config.embedding_model}")
@@ -238,7 +242,7 @@ async def startup():
     
     # DashScope config for image OCR
     dashscope_config = _config.providers.get("dashscope")
-    dashscope_api_key = dashscope_config.api_key if dashscope_config else ""
+    dashscope_api_key = dashscope_config.resolve_api_key() if dashscope_config else ""
     dashscope_base_url = (dashscope_config.base_url if dashscope_config else "").replace("/api/v1", "/compatible-mode/v1")
 
     # 初始化 RAG 引擎
@@ -274,6 +278,8 @@ async def startup():
             worker_provider = create_provider(
                 template.provider,
                 provider_config.resolve_api_key(),
+                base_url=provider_config.base_url,
+                headers=provider_config.headers,
             )
         else:
             continue
@@ -300,6 +306,8 @@ async def startup():
         coordinator_provider = create_provider(
             _config.coordinator.provider,
             coordinator_provider_config.resolve_api_key(),
+            base_url=coordinator_provider_config.base_url,
+            headers=coordinator_provider_config.headers,
         )
         _task_planner = init_task_planner(
             coordinator_provider,
@@ -660,7 +668,12 @@ def _resolve_chat_llm(worker_id: str | None) -> tuple:
             pcfg = _config.providers.get(w.config.provider_type)
             if not pcfg:
                 raise HTTPException(status_code=400, detail=f"Worker '{worker_id}' 的 provider '{w.config.provider_type}' 未配置")
-            provider = create_provider(w.config.provider_type, pcfg.resolve_api_key())
+            provider = create_provider(
+                w.config.provider_type,
+                pcfg.resolve_api_key(),
+                base_url=pcfg.base_url,
+                headers=pcfg.headers,
+            )
             return provider, w.config.model, w.config.temperature, w.config.max_tokens, worker_id
         else:
             raise HTTPException(status_code=404, detail=f"Worker '{worker_id}' 不存在")
@@ -672,7 +685,12 @@ def _resolve_chat_llm(worker_id: str | None) -> tuple:
     api_key = pcfg.resolve_api_key()
     if not api_key:
         raise HTTPException(status_code=500, detail=f"LLM API Key 未配置（provider: {_config.coordinator.provider}）")
-    provider = create_provider(_config.coordinator.provider, api_key)
+    provider = create_provider(
+        _config.coordinator.provider,
+        api_key,
+        base_url=pcfg.base_url,
+        headers=pcfg.headers,
+    )
     return provider, _config.coordinator.model, _config.coordinator.temperature, _config.coordinator.max_tokens, None
 
 
@@ -1156,7 +1174,12 @@ async def update_worker_config(worker_id: str, body: WorkerConfigUpdate) -> dict
     worker.config.icon = body.icon
     worker.config.display_name = body.display_name
     # 重建 provider 实例
-    worker.provider = create_provider(body.provider, provider_config.resolve_api_key())
+    worker.provider = create_provider(
+        body.provider,
+        provider_config.resolve_api_key(),
+        base_url=provider_config.base_url,
+        headers=provider_config.headers,
+    )
 
     # 更新内存中的 config 对象
     if worker_id in _config.worker_templates:
@@ -1249,7 +1272,12 @@ async def create_worker(body: WorkerCreateRequest) -> dict:
         icon=body.icon,
         display_name=body.display_name,
     )
-    worker_provider = create_provider(body.provider, provider_config.resolve_api_key())
+    worker_provider = create_provider(
+        body.provider,
+        provider_config.resolve_api_key(),
+        base_url=provider_config.base_url,
+        headers=provider_config.headers,
+    )
     worker_pool.register_worker(WorkerAgent(worker_config, ToolRegistry(), worker_provider))
 
     # 更新内存 config
@@ -1391,6 +1419,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     provider = create_provider(
                         _config.coordinator.provider,
                         coordinator_provider_config.resolve_api_key(),
+                        base_url=coordinator_provider_config.base_url,
+                        headers=coordinator_provider_config.headers,
                     )
                     
                     try:

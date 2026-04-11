@@ -521,17 +521,33 @@ class MiniMaxProvider(LLMProvider):
         )
 
 
-def create_provider(provider_type: str, api_key: str, **kwargs) -> LLMProvider:
-    """创建 LLM Provider"""
+def create_provider(
+    provider_type: str,
+    api_key: str,
+    base_url: str = "",
+    headers: dict | None = None,
+    **kwargs,
+) -> LLMProvider:
+    """创建 LLM Provider
+
+    base_url / headers 会按 provider 类型过滤后转发给具体实现：
+    - headers 仅 OpenAIProvider（openai / kimi）支持
+    """
     providers = {
         "anthropic": AnthropicProvider,
         "openai": OpenAIProvider,
         "minimax": MiniMaxProvider,
         "kimi": OpenAIProvider,  # Kimi 使用 OpenAI 兼容 API
     }
-    
-    provider_class = providers.get(provider_type.lower())
+
+    ptype = provider_type.lower()
+    provider_class = providers.get(ptype)
     if not provider_class:
         raise ValueError(f"Unknown provider: {provider_type}")
-    
-    return provider_class(api_key, **kwargs)
+
+    call_kwargs = dict(kwargs)
+    if base_url:
+        call_kwargs["base_url"] = base_url
+    if headers and ptype in ("openai", "kimi"):
+        call_kwargs["headers"] = headers
+    return provider_class(api_key, **call_kwargs)

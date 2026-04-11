@@ -433,15 +433,23 @@ class WorkerPool:
         if subtask.assigned_agent and subtask.assigned_agent in self._workers:
             return self._workers[subtask.assigned_agent]
 
-        # 2. 按描述关键词匹配 Worker 名称（例如描述含"测试" → tester worker）
+        # 2. 按描述关键词匹配打分：Worker 名称命中 +2，每个关键词命中 +1
         desc_lower = (subtask.description or "").lower()
+        best_worker: "WorkerAgent | None" = None
+        best_score = 0
         for worker in self._workers.values():
+            if worker.is_busy:
+                continue
             name_lower = worker.config.name.lower()
-            if name_lower in desc_lower or any(
-                kw in desc_lower for kw in self._get_worker_keywords(worker)
-            ):
-                if not worker.is_busy:
-                    return worker
+            score = 2 if name_lower in desc_lower else 0
+            for kw in self._get_worker_keywords(worker):
+                if kw in desc_lower:
+                    score += 1
+            if score > best_score:
+                best_score = score
+                best_worker = worker
+        if best_worker is not None:
+            return best_worker
 
         # 3. 回退到任意空闲 Worker
         return self.get_available_worker()
