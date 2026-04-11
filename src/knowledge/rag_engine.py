@@ -89,26 +89,28 @@ class RAGEngine:
         file_path: Path,
         collection_name: str = "documents",
         group_id: str = "ungrouped",
+        original_filename: str | None = None,
     ) -> DocumentInfo:
         """添加文档到知识库"""
         doc_id = str(uuid.uuid4())[:8]
-        
-        print(f"[RAG] Starting to process document: {file_path.name}")
+        display_name = original_filename or file_path.name
+
+        print(f"[RAG] Starting to process document: {display_name}")
         print(f"[RAG] Document ID: {doc_id}")
-        
+
         # 解析并分块
         print(f"[RAG] Parsing document...")
         document, chunks = await self.document_parser.parse_and_chunk(
             file_path, doc_id, self.chunk_size, self.chunk_overlap
         )
         print(f"[RAG] Parsed into {len(chunks)} chunks")
-        
+
         # 添加文档元数据（写入 ChromaDB 以持久化，重启后可恢复列表）
         created_at = datetime.now().isoformat()
         file_size = file_path.stat().st_size
         for chunk in chunks:
             chunk.metadata["doc_id"] = doc_id
-            chunk.metadata["filename"] = document.filename
+            chunk.metadata["filename"] = display_name
             chunk.metadata["type"] = document.metadata.get("type", "unknown")
             chunk.metadata["created_at"] = created_at
             chunk.metadata["file_size"] = file_size
@@ -134,7 +136,7 @@ class RAGEngine:
         # 记录文档信息（内存缓存，同时 ChromaDB 已持久化）
         doc_info = DocumentInfo(
             id=doc_id,
-            filename=document.filename,
+            filename=display_name,
             type=document.metadata.get("type", "unknown"),
             chunk_count=len(chunks),
             created_at=created_at,
@@ -153,6 +155,12 @@ class RAGEngine:
             del self._documents[doc_id]
         return count > 0
     
+    @staticmethod
+    def _strip_uuid_prefix(filename: str) -> str:
+        """去掉早期上传时添加的 UUID hex 前缀（格式: 32位hex_原始文件名）"""
+        import re
+        return re.sub(r'^[0-9a-f]{32}_', '', filename)
+
     def list_documents(self, collection_name: str = "documents") -> list[DocumentInfo]:
         """列出知识库中的文档（从 ChromaDB 读取，重启后不丢失）"""
         try:
@@ -172,9 +180,10 @@ class RAGEngine:
             if doc_id in self._documents:
                 result.append(self._documents[doc_id])
             else:
+                raw_name = d.get("filename", "unknown")
                 result.append(DocumentInfo(
                     id=doc_id,
-                    filename=d.get("filename", "unknown"),
+                    filename=self._strip_uuid_prefix(raw_name),
                     type=d.get("type", "unknown"),
                     chunk_count=d.get("chunk_count", 0),
                     created_at=d.get("created_at", ""),
@@ -205,7 +214,10 @@ class RAGEngine:
         results = await self.vector_store.search(
             query, k, collection_name, filter_metadata
         )
-        
+
+        # 过滤掉已删除文档的残留 chunk（ChromaDB 删除可能存在延迟）
+        valid_doc_ids = {d["doc_id"] for d in self.vector_store.list_documents(collection_name)}
+
         return [
             SearchResult(
                 id=r["id"],
@@ -214,6 +226,7 @@ class RAGEngine:
                 metadata=r.get("metadata", {}),
             )
             for r in results
+            if r.get("metadata", {}).get("doc_id") in valid_doc_ids
         ]
     
     def build_rag_prompt(

@@ -54,6 +54,14 @@ class PersistenceStore:
                 completed_at TEXT DEFAULT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS worker_token_usage (
+                worker_id TEXT PRIMARY KEY,
+                input_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER NOT NULL DEFAULT 0,
+                call_count INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_messages_session ON chat_messages(session_id);
             CREATE INDEX IF NOT EXISTS idx_task_created ON task_history(created_at);
         """)
@@ -196,6 +204,49 @@ class PersistenceStore:
     def close(self) -> None:
         """关闭数据库连接"""
         self._conn.close()
+
+
+    # ==================== Worker Token 用量 ====================
+
+    def get_worker_token_usage(self, worker_id: str) -> dict:
+        """获取 Worker 的 token 用量"""
+        row = self._conn.execute(
+            "SELECT input_tokens, output_tokens, call_count FROM worker_token_usage WHERE worker_id = ?",
+            (worker_id,),
+        ).fetchone()
+        if row:
+            return {"input_tokens": row[0], "output_tokens": row[1], "call_count": row[2]}
+        return {"input_tokens": 0, "output_tokens": 0, "call_count": 0}
+
+    def get_all_worker_token_usage(self) -> dict[str, dict]:
+        """获取所有 Worker 的 token 用量"""
+        rows = self._conn.execute(
+            "SELECT worker_id, input_tokens, output_tokens, call_count FROM worker_token_usage"
+        ).fetchall()
+        return {
+            row[0]: {"input_tokens": row[1], "output_tokens": row[2], "call_count": row[3]}
+            for row in rows
+        }
+
+    def increment_worker_token_usage(self, worker_id: str, input_tokens: int, output_tokens: int) -> None:
+        """累加 Worker 的 token 用量"""
+        now = datetime.now().isoformat()
+        self._conn.execute(
+            """INSERT INTO worker_token_usage (worker_id, input_tokens, output_tokens, call_count, updated_at)
+               VALUES (?, ?, ?, 1, ?)
+               ON CONFLICT(worker_id) DO UPDATE SET
+                   input_tokens = input_tokens + excluded.input_tokens,
+                   output_tokens = output_tokens + excluded.output_tokens,
+                   call_count = call_count + 1,
+                   updated_at = excluded.updated_at""",
+            (worker_id, input_tokens, output_tokens, now),
+        )
+        self._conn.commit()
+
+    def reset_worker_token_usage(self, worker_id: str) -> None:
+        """重置 Worker 的 token 用量"""
+        self._conn.execute("DELETE FROM worker_token_usage WHERE worker_id = ?", (worker_id,))
+        self._conn.commit()
 
 
 # ==================== 全局实例 ====================

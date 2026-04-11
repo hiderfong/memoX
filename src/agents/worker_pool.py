@@ -10,6 +10,7 @@ from typing import Any, Callable
 
 from loguru import logger
 
+from storage import get_store
 from .base_agent import (
     AnthropicProvider,
     BaseTool,
@@ -71,6 +72,8 @@ class WorkerConfig:
     max_iterations: int = 20
     tools: list[str] = field(default_factory=list)
     skills: list[str] = field(default_factory=list)
+    icon: str = ""
+    display_name: str = ""
     
     @classmethod
     def from_template(cls, name: str, template: dict, api_keys: dict[str, str]) -> "WorkerConfig":
@@ -111,6 +114,21 @@ class WorkerAgent:
         self._current_task_id: str | None = None
         # 改进指令（由 IterativeOrchestrator 在每轮迭代前注入）
         self.refinement_hint: str | None = None
+
+        # Token 用量统计 — 从数据库恢复
+        self.total_input_tokens: int = 0
+        self.total_output_tokens: int = 0
+        self.call_count: int = 0
+        self._load_token_usage()
+
+    def _load_token_usage(self) -> None:
+        """从数据库加载历史 token 用量"""
+        store = get_store()
+        if store:
+            usage = store.get_worker_token_usage(self.id)
+            self.total_input_tokens = usage["input_tokens"]
+            self.total_output_tokens = usage["output_tokens"]
+            self.call_count = usage["call_count"]
 
     @property
     def is_busy(self) -> bool:
@@ -199,6 +217,17 @@ class WorkerAgent:
                 model=self.config.model,
                 **chat_kwargs,
             )
+
+            # 累计 token 用量并持久化
+            usage = response.usage or {}
+            inp = usage.get("input_tokens", 0) or usage.get("prompt_tokens", 0)
+            out = usage.get("output_tokens", 0) or usage.get("completion_tokens", 0)
+            self.total_input_tokens += inp
+            self.total_output_tokens += out
+            self.call_count += 1
+            store = get_store()
+            if store:
+                store.increment_worker_token_usage(self.id, inp, out)
 
             # 检查是否有工具调用
             if response.has_tool_calls:
@@ -342,6 +371,19 @@ class WorkerPool:
                 "id": w.id,
                 "busy": w.is_busy,
                 "model": w.config.model,
+                "provider": w.config.provider_type,
+                "skills": list(w.config.skills),
+                "tools": list(w.config.tools),
+                "temperature": w.config.temperature,
+                "max_tokens": w.config.max_tokens,
+                "icon": w.config.icon,
+                "display_name": w.config.display_name,
+                "token_usage": {
+                    "input_tokens": w.total_input_tokens,
+                    "output_tokens": w.total_output_tokens,
+                    "total_tokens": w.total_input_tokens + w.total_output_tokens,
+                    "call_count": w.call_count,
+                },
             }
             for w in self._workers.values()
         ]
@@ -353,9 +395,54 @@ class WorkerPool:
                 return worker
         return None
 
-    def get_worker_for(self, subtask) -> "WorkerAgent | None":
-        """获取适合执行该子任务的 Worker（当前实现：返回任意空闲 Worker）"""
+    def get_worker_for(self, subtask: "SubTask") -> "WorkerAgent | None":
+        """获取适合执行该子任务的 Worker
+
+        优先级：
+        1. subtask.assigned_agent 精确匹配 Worker name（忽略忙碌状态，等待释放）
+        2. 按 Worker skills/tools 能力匹配空闲 Worker
+        3. 回退到任意空闲 Worker
+        """
+        # 1. 按 assigned_agent 精确匹配
+        if subtask.assigned_agent and subtask.assigned_agent in self._workers:
+            return self._workers[subtask.assigned_agent]
+
+        # 2. 按描述关键词匹配 Worker 名称（例如描述含"测试" → tester worker）
+        desc_lower = (subtask.description or "").lower()
+        for worker in self._workers.values():
+            name_lower = worker.config.name.lower()
+            if name_lower in desc_lower or any(
+                kw in desc_lower for kw in self._get_worker_keywords(worker)
+            ):
+                if not worker.is_busy:
+                    return worker
+
+        # 3. 回退到任意空闲 Worker
         return self.get_available_worker()
+
+    @staticmethod
+    def _get_worker_keywords(worker: "WorkerAgent") -> list[str]:
+        """根据 Worker 配置生成匹配关键词"""
+        keywords = []
+        name = worker.config.name.lower()
+        # 基于 Worker 名称的关键词映射
+        keyword_map = {
+            "code": ["编写", "开发", "代码", "实现", "code", "develop", "implement"],
+            "test": ["测试", "验证", "test", "verify", "qa"],
+            "research": ["调研", "分析", "搜索", "research", "analyze"],
+            "writer": ["撰写", "文档", "报告", "write", "document", "report"],
+            "developer": ["编写", "开发", "创建", "develop", "create", "build"],
+            "tester": ["测试", "运行测试", "test", "unittest"],
+            "processor": ["处理", "加工", "转换", "process", "transform"],
+            "reporter": ["报告", "汇总", "生成报告", "report", "summary"],
+        }
+        for key, kws in keyword_map.items():
+            if key in name:
+                keywords.extend(kws)
+        # 基于 skills 的关键词
+        for skill in worker.config.skills:
+            keywords.append(skill.lower())
+        return keywords
 
     async def execute_task(
         self,
@@ -363,20 +450,25 @@ class WorkerPool:
         context: dict[str, Any] | None = None,
         on_progress: Callable[[str], None] | None = None,
     ) -> tuple[str, str | None]:
-        """执行单个任务（自动分配 Worker）"""
-        worker = self.get_available_worker()
-        
-        if not worker:
-            # 所有 Worker 都忙，等待
-            logger.warning("All workers busy, waiting for available worker...")
-            # 等待任意 Worker 空闲
+        """执行单个任务（智能分配 Worker）"""
+        worker = self.get_worker_for(task)
+
+        if not worker or worker.is_busy:
+            # 优先等待指定 Worker，否则等待任意空闲
+            target_id = worker.id if worker else None
+            logger.info(f"Waiting for worker {target_id or 'any'} to become available...")
             while True:
-                await asyncio.sleep(1)
-                worker = self.get_available_worker()
-                if worker:
+                await asyncio.sleep(0.5)
+                if target_id and target_id in self._workers and not self._workers[target_id].is_busy:
+                    worker = self._workers[target_id]
                     break
-        
+                if not target_id:
+                    worker = self.get_available_worker()
+                    if worker:
+                        break
+
         task.assigned_agent = worker.id
+        logger.info(f"Dispatching task {task.id} to worker {worker.id}")
         return await worker.execute_task(task, context, on_progress)
     
     async def execute_parallel(

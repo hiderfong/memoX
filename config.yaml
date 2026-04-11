@@ -14,6 +14,8 @@ server:
   cors_origins:
     - "http://localhost:8080"
     - "http://localhost:3000"
+    - "http://23.236.66.33:8080"
+    - "http://23.236.66.33:3000"
 
 # Coordinator 配置
 coordinator:
@@ -50,18 +52,28 @@ providers:
 # Worker Agent 模板
 worker_templates:
   code_worker:
-    model: "MiniMax-M2.7-highspeed"
-    provider: "minimax"
+    model: "kimi-coder"
+    provider: "kimi"
     temperature: 0.7
-    skills: ["code-review", "frontend-design-3"]
-    tools: ["filesystem", "shell", "git"]
+    icon: "💻"
+    display_name: "代码专家"
+    skills:
+    - "code-review"
+    - "frontend-design-3"
+    tools:
+    - "filesystem"
+    - "shell"
+    - "git"
   
   research_worker:
     model: "MiniMax-M2.7-highspeed"
     provider: "minimax"
     temperature: 0.3
-    skills: ["data-analysis"]
-    tools: ["web_search", "web_fetch"]
+    skills:
+    - "data-analysis"
+    tools:
+    - "web_search"
+    - "web_fetch"
   
   writer_worker:
     model: "kimi-coder"
@@ -69,6 +81,7 @@ worker_templates:
     temperature: 0.9
     skills: ["docx", "pdf"]
     tools: ["filesystem"]
+
 
 # 知识库配置
 knowledge_base:

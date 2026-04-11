@@ -271,3 +271,47 @@ def test_worker_tools_bound_per_iteration(tmp_path):
 
     tools = worker.tools.list_tools()
     assert set(tools) == {"read_file", "write_file", "list_files", "run_shell", "send_mail", "read_mail"}
+
+
+def test_smart_dispatch_by_assigned_agent():
+    """assigned_agent 精确匹配：指定 tester 则分配到 tester Worker"""
+    from agents.worker_pool import SubTask, WorkerAgent, WorkerConfig, WorkerPool
+
+    pool = WorkerPool()
+    for name in ("developer", "tester"):
+        config = WorkerConfig(name=name, provider_type="openai", api_key="fake", model="fake")
+        pool.register_worker(WorkerAgent(config=config, provider=MagicMock()))
+
+    sub = SubTask(id="sub_1", description="任意描述", assigned_agent="tester")
+    worker = pool.get_worker_for(sub)
+    assert worker is not None
+    assert worker.id == "tester"
+
+
+def test_smart_dispatch_by_description_keyword():
+    """描述关键词匹配：描述含"测试"则优先匹配 tester Worker"""
+    from agents.worker_pool import SubTask, WorkerAgent, WorkerConfig, WorkerPool
+
+    pool = WorkerPool()
+    for name in ("developer", "tester"):
+        config = WorkerConfig(name=name, provider_type="openai", api_key="fake", model="fake")
+        pool.register_worker(WorkerAgent(config=config, provider=MagicMock()))
+
+    sub = SubTask(id="sub_1", description="编写测试用例并运行测试")
+    worker = pool.get_worker_for(sub)
+    assert worker is not None
+    assert worker.id == "tester"
+
+
+def test_smart_dispatch_fallback():
+    """无匹配时回退到任意空闲 Worker"""
+    from agents.worker_pool import SubTask, WorkerAgent, WorkerConfig, WorkerPool
+
+    pool = WorkerPool()
+    config = WorkerConfig(name="generic", provider_type="openai", api_key="fake", model="fake")
+    pool.register_worker(WorkerAgent(config=config, provider=MagicMock()))
+
+    sub = SubTask(id="sub_1", description="执行一些操作")
+    worker = pool.get_worker_for(sub)
+    assert worker is not None
+    assert worker.id == "generic"

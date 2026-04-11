@@ -69,3 +69,28 @@ class MailBus:
         """获取全部消息（含已读）"""
         async with self._lock:
             return [m for m in self._messages if m.to_agent == agent_name]
+
+    async def get_history(self) -> list[MailMessage]:
+        """获取该任务的全部邮件通信记录，按发送时间排序"""
+        async with self._lock:
+            return sorted(self._messages, key=lambda m: m.created_at)
+
+    async def export_log(self) -> str:
+        """导出格式化的邮件通信日志"""
+        messages = await self.get_history()
+        if not messages:
+            return "(无邮件通信记录)"
+
+        lines = [f"=== 邮件通信日志 (task: {self.task_id}) ===", f"共 {len(messages)} 封邮件", ""]
+        for i, msg in enumerate(messages, 1):
+            status = "已读" if msg.read else "未读"
+            lines.append(f"--- 邮件 #{i} [{status}] ---")
+            lines.append(f"  时间: {msg.created_at}")
+            lines.append(f"  发件人: {msg.from_agent}")
+            lines.append(f"  收件人: {msg.to_agent}")
+            lines.append(f"  主题: {msg.subject}")
+            lines.append(f"  正文: {msg.body}")
+            if msg.attachments:
+                lines.append(f"  附件: {', '.join(msg.attachments)}")
+            lines.append("")
+        return "\n".join(lines)

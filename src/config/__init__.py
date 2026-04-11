@@ -65,6 +65,8 @@ class WorkerTemplate:
     skills: list[str] = field(default_factory=list)
     tools: list[str] = field(default_factory=list)
     mcp: dict[str, Any] = field(default_factory=dict)
+    icon: str = ""
+    display_name: str = ""
 
 
 @dataclass

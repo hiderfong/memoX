@@ -134,6 +134,7 @@ class ChatRequest(BaseModel):
     use_rag: bool = True
     stream: bool = True
     active_group_ids: list[str] | None = None
+    worker_id: str | None = None  # 使用指定 Worker 的模型配置（不占用 Worker）
 
 
 class URLRequest(BaseModel):
@@ -254,7 +255,12 @@ async def startup():
     # 预热嵌入模型（避免首次请求时延迟）
     print("   - 预热嵌入模型...")
     await _rag_engine.vector_store.embedding_function.embed(["预热模型"])
-    
+
+    # 初始化持久化存储（需要在 Worker 创建之前，以便 Worker 从 DB 恢复 token 用量）
+    db_path = Path(_config.knowledge_base.persist_directory).parent / "memox.db"
+    init_store(db_path)
+    print(f"   - 持久化存储: {db_path}")
+
     # 初始化 Worker 池
     worker_pool = init_worker_pool(max_workers=_config.coordinator.max_workers)
     
@@ -277,6 +283,8 @@ async def startup():
             temperature=template.temperature,
             tools=template.tools,
             skills=template.skills,
+            icon=template.icon,
+            display_name=template.display_name,
         )
         
         worker_pool.register_worker(
@@ -307,11 +315,6 @@ async def startup():
             base_workspace=str(Path(_config.knowledge_base.persist_directory).parent / "workspace"),
             broadcast=_ws_broadcast,
         )
-
-    # 初始化持久化存储
-    db_path = Path(_config.knowledge_base.persist_directory).parent / "memox.db"
-    init_store(db_path)
-    print(f"   - 持久化存储: {db_path}")
 
     # 初始化分组存储
     global _group_store
@@ -415,7 +418,7 @@ async def upload_document(
     try:
         # 总超时 300 秒（5分钟），给大文件处理足够时间
         doc_info = await asyncio.wait_for(
-            _rag_engine.add_document(file_path, group_id=group_id),
+            _rag_engine.add_document(file_path, group_id=group_id, original_filename=file.filename),
             timeout=300.0
         )
         print(f"[UPLOAD] Document added: {doc_info.id}")
@@ -618,23 +621,57 @@ async def search_documents(q: str, group_ids: str | None = None) -> dict:
         raise HTTPException(status_code=400, detail="搜索关键词不能为空")
     gids = group_ids.split(",") if group_ids else None
     results = await _rag_engine.search(q, group_ids=gids, top_k=20)
-    return {
-        "query": q,
-        "results": [
-            {
-                "doc_id": r.metadata.get("doc_id", ""),
-                "filename": r.metadata.get("filename", "unknown"),
+    # 构建有效文档映射（id -> 显示名称）
+    valid_docs = {d.id: d.filename for d in _rag_engine.list_documents()}
+    # 按文档去重：每个文档只保留得分最高的一条结果
+    seen_docs: dict[str, dict] = {}
+    for r in results:
+        doc_id = r.metadata.get("doc_id", "")
+        if doc_id not in valid_docs:
+            continue
+        if doc_id not in seen_docs or r.score > seen_docs[doc_id]["score"]:
+            seen_docs[doc_id] = {
+                "doc_id": doc_id,
+                "filename": valid_docs[doc_id],
                 "content": r.content,
                 "score": r.score,
                 "chunk_index": r.metadata.get("chunk_index", 0),
                 "group_id": r.metadata.get("group_id", "ungrouped"),
             }
-            for r in results
-        ],
+    return {
+        "query": q,
+        "results": sorted(seen_docs.values(), key=lambda x: x["score"], reverse=True),
     }
 
 
 # ==================== RAG 问答 API ====================
+
+
+def _resolve_chat_llm(worker_id: str | None) -> tuple:
+    """根据 worker_id 解析 LLM 配置，返回 (provider, model, temperature, max_tokens, resolved_worker_id)。
+    不传 worker_id 时使用 coordinator 配置。"""
+    if worker_id:
+        worker_pool = get_worker_pool()
+        if worker_pool and worker_id in worker_pool._workers:
+            w = worker_pool._workers[worker_id]
+            pcfg = _config.providers.get(w.config.provider_type)
+            if not pcfg:
+                raise HTTPException(status_code=400, detail=f"Worker '{worker_id}' 的 provider '{w.config.provider_type}' 未配置")
+            provider = create_provider(w.config.provider_type, pcfg.resolve_api_key())
+            return provider, w.config.model, w.config.temperature, w.config.max_tokens, worker_id
+        else:
+            raise HTTPException(status_code=404, detail=f"Worker '{worker_id}' 不存在")
+
+    # 默认使用 coordinator
+    pcfg = _config.providers.get(_config.coordinator.provider)
+    if not pcfg:
+        raise HTTPException(status_code=500, detail="LLM provider not configured")
+    api_key = pcfg.resolve_api_key()
+    if not api_key:
+        raise HTTPException(status_code=500, detail=f"LLM API Key 未配置（provider: {_config.coordinator.provider}）")
+    provider = create_provider(_config.coordinator.provider, api_key)
+    return provider, _config.coordinator.model, _config.coordinator.temperature, _config.coordinator.max_tokens, None
+
 
 @app.post("/api/chat")
 async def chat(request: ChatRequest) -> dict:
@@ -663,36 +700,22 @@ async def chat(request: ChatRequest) -> dict:
             {"role": "user", "content": request.message},
         ]
 
-    # 调用 LLM
-    coordinator_provider_config = _config.providers.get(_config.coordinator.provider)
-    if not coordinator_provider_config:
-        raise HTTPException(status_code=500, detail="LLM provider not configured")
-
-    api_key = coordinator_provider_config.resolve_api_key()
-    if not api_key:
-        raise HTTPException(
-            status_code=500,
-            detail=f"LLM API Key 未配置（provider: {_config.coordinator.provider}），请在 config.yaml 或环境变量中设置",
-        )
-
-    provider = create_provider(
-        _config.coordinator.provider,
-        api_key,
-    )
+    # 调用 LLM（根据 worker_id 选择模型配置）
+    provider, model, temperature, max_tokens, resolved_worker_id = _resolve_chat_llm(request.worker_id)
 
     try:
         response = await provider.chat(
             messages=messages,
-            model=_config.coordinator.model,
-            temperature=_config.coordinator.temperature,
-            max_tokens=_config.coordinator.max_tokens,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
         )
     except Exception as e:
         import httpx as _httpx
         if isinstance(e, _httpx.HTTPStatusError):
             status = e.response.status_code
             if status == 401:
-                raise HTTPException(status_code=502, detail=f"LLM API Key 无效或已过期（{_config.coordinator.provider}）")
+                raise HTTPException(status_code=502, detail="LLM API Key 无效或已过期")
             elif status == 429:
                 raise HTTPException(status_code=429, detail="LLM API 请求频率超限，请稍后重试")
             else:
@@ -718,6 +741,7 @@ async def chat(request: ChatRequest) -> dict:
     return {
         "session_id": session_id,
         "answer": answer,
+        "worker_id": resolved_worker_id,
         "sources": [
             {
                 "content": r.content[:200] + "..." if len(r.content) > 200 else r.content,
@@ -794,30 +818,20 @@ async def chat_stream(request: ChatRequest):
                 {"role": "user", "content": request.message},
             ]
         
-        # 流式调用 LLM
-        coordinator_provider_config = _config.providers.get(_config.coordinator.provider)
-        if not coordinator_provider_config:
-            yield f"data: {json.dumps({'type': 'error', 'message': 'LLM provider not configured'})}\n\n"
+        # 流式调用 LLM（根据 worker_id 选择模型配置）
+        try:
+            provider, model, temperature, max_tokens, resolved_worker_id = _resolve_chat_llm(request.worker_id)
+        except HTTPException as exc:
+            yield f"data: {json.dumps({'type': 'error', 'message': exc.detail})}\n\n"
             return
-        
-        provider = create_provider(
-            _config.coordinator.provider,
-            coordinator_provider_config.resolve_api_key(),
-        )
-        
-        content_parts: list[str] = []
-        
-        async def on_chunk(chunk: str):
-            content_parts.append(chunk)
-            yield f"data: {json.dumps({'type': 'chunk', 'content': chunk})}\n\n"
-        
+
         try:
             response = await provider.chat_stream(
                 messages=messages,
-                model=_config.coordinator.model,
-                temperature=_config.coordinator.temperature,
-                max_tokens=_config.coordinator.max_tokens,
-                on_chunk=lambda c: None,  # 暂时忽略回调
+                model=model,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                on_chunk=lambda c: None,
             )
             
             # 直接发送完整内容作为流
@@ -841,7 +855,7 @@ async def chat_stream(request: ChatRequest):
                     title = request.message[:30].strip()
                     store.update_session_title(session_id, title)
 
-            yield f"data: {json.dumps({'type': 'done', 'session_id': session_id})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'session_id': session_id, 'worker_id': resolved_worker_id})}\n\n"
             
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
@@ -1073,6 +1087,246 @@ async def list_workers() -> list[dict]:
     return worker_pool.list_workers()
 
 
+@app.get("/api/providers")
+async def list_providers() -> list[dict]:
+    """列出可用的 Provider 及其模型"""
+    # 从 config 中收集每个 provider 已使用过的模型
+    provider_models: dict[str, set[str]] = {}
+    for template in _config.worker_templates.values():
+        provider_models.setdefault(template.provider, set()).add(template.model)
+    # coordinator 的模型也加入
+    provider_models.setdefault(_config.coordinator.provider, set()).add(_config.coordinator.model)
+
+    # 常用模型补充（让用户有更多选择）
+    well_known: dict[str, list[str]] = {
+        "anthropic": ["claude-sonnet-4-20250514", "claude-opus-4-20250514", "claude-haiku-4-20250506"],
+        "openai": ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "o3-mini"],
+        "minimax": ["MiniMax-M1-80k", "MiniMax-M2.7-highspeed"],
+        "kimi": ["kimi-coder", "kimi-thinking-coder", "kimi-latest"],
+    }
+
+    result = []
+    for name in _config.providers:
+        models = provider_models.get(name, set())
+        for m in well_known.get(name, []):
+            models.add(m)
+        result.append({"name": name, "models": sorted(models)})
+    return result
+
+
+class WorkerConfigUpdate(BaseModel):
+    provider: str
+    model: str
+    skills: list[str] = []
+    tools: list[str] = []
+    temperature: float = 0.7
+    max_tokens: int = 4096
+    icon: str = ""
+    display_name: str = ""
+
+
+@app.put("/api/workers/{worker_id}/config")
+async def update_worker_config(worker_id: str, body: WorkerConfigUpdate) -> dict:
+    """更新 Worker 配置并持久化到 config.yaml"""
+    import yaml as _yaml
+
+    worker_pool = get_worker_pool()
+    if not worker_pool or worker_id not in worker_pool._workers:
+        raise HTTPException(status_code=404, detail="Worker not found")
+
+    worker = worker_pool._workers[worker_id]
+    if worker.is_busy:
+        raise HTTPException(status_code=409, detail="Worker 正在执行任务，无法修改配置")
+
+    # 验证 provider 存在
+    provider_config = _config.providers.get(body.provider)
+    if not provider_config:
+        raise HTTPException(status_code=400, detail=f"Provider '{body.provider}' 未配置")
+
+    # 更新运行时 Worker
+    worker.config.provider_type = body.provider
+    worker.config.model = body.model
+    worker.config.skills = body.skills
+    worker.config.tools = body.tools
+    worker.config.temperature = body.temperature
+    worker.config.max_tokens = body.max_tokens
+    worker.config.icon = body.icon
+    worker.config.display_name = body.display_name
+    # 重建 provider 实例
+    worker.provider = create_provider(body.provider, provider_config.resolve_api_key())
+
+    # 更新内存中的 config 对象
+    if worker_id in _config.worker_templates:
+        tpl = _config.worker_templates[worker_id]
+        tpl.provider = body.provider
+        tpl.model = body.model
+        tpl.skills = body.skills
+        tpl.tools = body.tools
+        tpl.temperature = body.temperature
+        tpl.icon = body.icon
+        tpl.display_name = body.display_name
+
+    # 持久化到 config.yaml — 只替换目标 worker 块，保留注释和格式
+    import re as _re
+    config_path = Path("config.yaml")
+    text = config_path.read_text(encoding="utf-8")
+
+    # 构建新的 worker 模板 YAML 片段
+    skills_yaml = "\n".join(f"    - \"{s}\"" for s in body.skills) if body.skills else "    []"
+    tools_yaml = "\n".join(f"    - \"{t}\"" for t in body.tools) if body.tools else "    []"
+    icon_line = f"    icon: \"{body.icon}\"\n" if body.icon else ""
+    name_line = f"    display_name: \"{body.display_name}\"\n" if body.display_name else ""
+    new_block = (
+        f"  {worker_id}:\n"
+        f"    model: \"{body.model}\"\n"
+        f"    provider: \"{body.provider}\"\n"
+        f"    temperature: {body.temperature}\n"
+        f"{icon_line}"
+        f"{name_line}"
+        f"    skills:\n{skills_yaml}\n"
+        f"    tools:\n{tools_yaml}\n"
+    )
+
+    # 匹配 worker_id 块：从 "  worker_id:" 到下一个同级 key 或 section
+    pattern = _re.compile(
+        rf'^(  {_re.escape(worker_id)}:\n)'   # 块开始
+        rf'((?:    .*\n)*)',                     # 缩进 4+ 空格的内容行
+        _re.MULTILINE
+    )
+    new_text, count = pattern.subn(new_block, text, count=1)
+    if count > 0:
+        config_path.write_text(new_text, encoding="utf-8")
+
+    return {"success": True, "message": f"Worker '{worker_id}' 配置已更新"}
+
+
+class WorkerCreateRequest(BaseModel):
+    name: str
+    provider: str
+    model: str
+    skills: list[str] = []
+    tools: list[str] = []
+    temperature: float = 0.7
+    max_tokens: int = 4096
+    icon: str = ""
+    display_name: str = ""
+
+
+@app.post("/api/workers")
+async def create_worker(body: WorkerCreateRequest) -> dict:
+    """新增 Worker 并持久化到 config.yaml"""
+    import re as _re
+
+    worker_pool = get_worker_pool()
+    if not worker_pool:
+        raise HTTPException(status_code=500, detail="Worker pool not initialized")
+
+    # 名称校验
+    name = body.name.strip()
+    if not name or not _re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*$', name):
+        raise HTTPException(status_code=400, detail="名称只能包含字母、数字和下划线，且以字母或下划线开头")
+    if name in worker_pool._workers:
+        raise HTTPException(status_code=409, detail=f"Worker '{name}' 已存在")
+
+    # 验证 provider
+    provider_config = _config.providers.get(body.provider)
+    if not provider_config:
+        raise HTTPException(status_code=400, detail=f"Provider '{body.provider}' 未配置")
+
+    # 创建并注册运行时 Worker
+    worker_config = WorkerConfig(
+        name=name,
+        provider_type=body.provider,
+        api_key=provider_config.resolve_api_key(),
+        model=body.model,
+        temperature=body.temperature,
+        max_tokens=body.max_tokens,
+        tools=body.tools,
+        skills=body.skills,
+        icon=body.icon,
+        display_name=body.display_name,
+    )
+    worker_provider = create_provider(body.provider, provider_config.resolve_api_key())
+    worker_pool.register_worker(WorkerAgent(worker_config, ToolRegistry(), worker_provider))
+
+    # 更新内存 config
+    from config import WorkerTemplate
+    _config.worker_templates[name] = WorkerTemplate(
+        model=body.model,
+        provider=body.provider,
+        temperature=body.temperature,
+        skills=body.skills,
+        tools=body.tools,
+        icon=body.icon,
+        display_name=body.display_name,
+    )
+
+    # 持久化 — 在 worker_templates 末尾追加新块
+    config_path = Path("config.yaml")
+    text = config_path.read_text(encoding="utf-8")
+    skills_yaml = "\n".join(f"    - \"{s}\"" for s in body.skills) if body.skills else "    []"
+    tools_yaml = "\n".join(f"    - \"{t}\"" for t in body.tools) if body.tools else "    []"
+    icon_line = f"    icon: \"{body.icon}\"\n" if body.icon else ""
+    name_line = f"    display_name: \"{body.display_name}\"\n" if body.display_name else ""
+    new_block = (
+        f"\n  {name}:\n"
+        f"    model: \"{body.model}\"\n"
+        f"    provider: \"{body.provider}\"\n"
+        f"    temperature: {body.temperature}\n"
+        f"{icon_line}"
+        f"{name_line}"
+        f"    skills:\n{skills_yaml}\n"
+        f"    tools:\n{tools_yaml}\n"
+    )
+    # 找 worker_templates 节的最后一个条目末尾（下一个顶级 key 之前）
+    pattern = _re.compile(r'(worker_templates:.*?)(\n\n# |\n[a-zA-Z_]+:|\Z)', _re.DOTALL)
+    match = pattern.search(text)
+    if match:
+        insert_pos = match.end(1)
+        new_text = text[:insert_pos] + new_block + text[insert_pos:]
+        config_path.write_text(new_text, encoding="utf-8")
+
+    return {"success": True, "message": f"Worker '{name}' 已创建"}
+
+
+@app.delete("/api/workers/{worker_id}")
+async def delete_worker(worker_id: str) -> dict:
+    """删除 Worker 并从 config.yaml 移除"""
+    import re as _re
+
+    worker_pool = get_worker_pool()
+    if not worker_pool or worker_id not in worker_pool._workers:
+        raise HTTPException(status_code=404, detail="Worker not found")
+
+    worker = worker_pool._workers[worker_id]
+    if worker.is_busy:
+        raise HTTPException(status_code=409, detail="Worker 正在执行任务，无法删除")
+
+    # 至少保留一个 Worker
+    if len(worker_pool._workers) <= 1:
+        raise HTTPException(status_code=400, detail="至少需要保留一个 Worker")
+
+    # 从运行时移除
+    worker_pool.unregister_worker(worker_id)
+
+    # 从内存 config 移除
+    _config.worker_templates.pop(worker_id, None)
+
+    # 从 config.yaml 移除
+    config_path = Path("config.yaml")
+    text = config_path.read_text(encoding="utf-8")
+    pattern = _re.compile(
+        rf'^\n?  {_re.escape(worker_id)}:\n'
+        rf'((?:    .*\n)*)',
+        _re.MULTILINE
+    )
+    new_text = pattern.sub('', text, count=1)
+    if new_text != text:
+        config_path.write_text(new_text, encoding="utf-8")
+
+    return {"success": True, "message": f"Worker '{worker_id}' 已删除"}
+
+
 # ==================== 系统 API ====================
 
 @app.get("/api/health")
@@ -1192,7 +1446,10 @@ if _frontend_dist.exists():
         file_path = _frontend_dist / full_path
         if file_path.is_file():
             return FileResponse(str(file_path))
-        return FileResponse(str(_frontend_dist / "index.html"))
+        return FileResponse(
+            str(_frontend_dist / "index.html"),
+            headers={"Cache-Control": "no-cache"},
+        )
 
 
 # ==================== 导出 ====================

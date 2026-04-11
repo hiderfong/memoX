@@ -326,13 +326,13 @@ class ChromaVectorStore:
         """删除文档相关的所有块"""
         collection = self.get_or_create_collection(collection_name)
         
-        # 获取该文档的所有块
-        results = collection.get(where={"document_id": {"$contains": doc_id_prefix}})
-        
+        # 获取该文档的所有块（metadata 中字段名为 doc_id）
+        results = collection.get(where={"doc_id": doc_id_prefix})
+
         if results and results["ids"]:
             collection.delete(ids=results["ids"])
             return len(results["ids"])
-        
+
         return 0
     
     def list_documents(self, collection_name: str = "documents") -> list[dict]:

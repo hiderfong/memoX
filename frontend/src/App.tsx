@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, createContext, useContext } from 'react';
-import { Layout, Menu, Typography, Card, Button, Upload, List, Space, Avatar, Input, message, Spin, Tag, Progress, Badge, Drawer, Timeline, Alert, Empty, Tooltip, Form, Divider, Checkbox, Modal, Tabs, Table } from 'antd';
-import { UploadOutlined, FileTextOutlined, RobotOutlined, MessageOutlined, TeamOutlined, SettingOutlined, CloudUploadOutlined, DeleteOutlined, SendOutlined, LoadingOutlined, BulbOutlined, ThunderboltOutlined, ClockCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, InboxOutlined, UserOutlined, LockOutlined, LogoutOutlined, SafetyCertificateOutlined, LinkOutlined, FolderOpenOutlined, MailOutlined, LineChartOutlined, FileSearchOutlined } from '@ant-design/icons';
+import { Layout, Menu, Typography, Card, Button, Upload, List, Space, Avatar, Input, message, Spin, Tag, Progress, Badge, Drawer, Timeline, Alert, Empty, Tooltip, Form, Divider, Checkbox, Modal, Tabs, Table, Select, Slider, InputNumber } from 'antd';
+import { UploadOutlined, FileTextOutlined, RobotOutlined, MessageOutlined, TeamOutlined, SettingOutlined, CloudUploadOutlined, DeleteOutlined, SendOutlined, LoadingOutlined, BulbOutlined, ThunderboltOutlined, ClockCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, InboxOutlined, UserOutlined, LockOutlined, LogoutOutlined, SafetyCertificateOutlined, LinkOutlined, FolderOpenOutlined, MailOutlined, LineChartOutlined, FileSearchOutlined, EyeOutlined, SaveOutlined, DownOutlined, UpOutlined, PlusOutlined, EditOutlined } from '@ant-design/icons';
 import { useNavigate, Routes, Route, Link, Navigate } from 'react-router-dom';
 import axios from 'axios';
 import dayjs from 'dayjs';
@@ -9,6 +9,20 @@ const { Header, Sider, Content } = Layout;
 const { Title, Text } = Typography;
 const { TextArea } = Input;
 const { Dragger } = Upload;
+
+// ==================== 响应式 Hook ====================
+
+const MOBILE_BREAKPOINT = 768;
+
+function useIsMobile() {
+  const [isMobile, setIsMobile] = useState(window.innerWidth < MOBILE_BREAKPOINT);
+  useEffect(() => {
+    const handler = () => setIsMobile(window.innerWidth < MOBILE_BREAKPOINT);
+    window.addEventListener('resize', handler);
+    return () => window.removeEventListener('resize', handler);
+  }, []);
+  return isMobile;
+}
 
 // ==================== API 配置 ====================
 
@@ -89,8 +103,8 @@ const api = {
   deleteDocument: (id: string) => axios.delete(`${API_BASE}/documents/${id}`),
   
   // 聊天
-  chat: (message: string, sessionId?: string, useRag: boolean = true, activeGroupIds?: string[] | null) =>
-    axios.post(`${API_BASE}/chat`, { message, session_id: sessionId, use_rag: useRag, stream: false, active_group_ids: activeGroupIds }),
+  chat: (message: string, sessionId?: string, useRag: boolean = true, activeGroupIds?: string[] | null, workerId?: string | null) =>
+    axios.post(`${API_BASE}/chat`, { message, session_id: sessionId, use_rag: useRag, stream: false, active_group_ids: activeGroupIds, worker_id: workerId || undefined }),
   chatStream: (message: string, sessionId?: string, useRag: boolean = true) =>
     axios.post(`${API_BASE}/chat/stream`, { message, session_id: sessionId, use_rag: useRag, stream: true }),
   
@@ -108,6 +122,10 @@ const api = {
 
   // Workers
   listWorkers: () => axios.get(`${API_BASE}/workers`),
+  listProviders: () => axios.get(`${API_BASE}/providers`),
+  updateWorkerConfig: (id: string, config: any) => axios.put(`${API_BASE}/workers/${id}/config`, config),
+  createWorker: (data: any) => axios.post(`${API_BASE}/workers`, data),
+  deleteWorker: (id: string) => axios.delete(`${API_BASE}/workers/${id}`),
   
   // 系统
   health: () => axios.get(`${API_BASE}/health`),
@@ -225,6 +243,7 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [collapsed, setCollapsed] = useState(false);
   const navigate = useNavigate();
   const { user, logout } = useContext(AuthContext);
+  const isMobile = useIsMobile();
 
   const handleLogout = async () => {
     await api.logout().catch(() => {});
@@ -234,17 +253,17 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
 
   return (
     <Layout style={{ minHeight: '100vh' }}>
-      <Header style={{ display: 'flex', alignItems: 'center', background: '#001529', padding: '0 24px' }}>
-        <Title level={4} style={{ color: 'white', margin: 0, flexShrink: 0 }}>
+      <Header style={{ display: 'flex', alignItems: 'center', background: '#001529', padding: isMobile ? '0 12px' : '0 24px' }}>
+        <Title level={4} style={{ color: 'white', margin: 0, flexShrink: 0, fontSize: isMobile ? 16 : undefined }}>
           📚 MemoX
         </Title>
         <div style={{ flex: 1 }} />
-        <Space>
-          <Badge status="success" text={<Text style={{ color: 'white' }}>在线</Text>} />
+        <Space size={isMobile ? 4 : 8}>
+          {!isMobile && <Badge status="success" text={<Text style={{ color: 'white' }}>在线</Text>} />}
           {user && (
             <>
               <Avatar size="small" icon={<UserOutlined />} style={{ background: '#1890ff' }} />
-              <Text style={{ color: 'white' }}>{user.display_name}</Text>
+              {!isMobile && <Text style={{ color: 'white' }}>{user.display_name}</Text>}
               <Tooltip title="退出登录">
                 <Button
                   type="text"
@@ -258,18 +277,18 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
         </Space>
       </Header>
       <Layout>
-        <Sider 
-          collapsible 
-          collapsed={collapsed} 
+        <Sider
+          collapsible
+          collapsed={collapsed}
           onCollapse={setCollapsed}
           breakpoint="lg"
           collapsedWidth="0"
           style={{ background: '#fff' }}
         >
-          <Menu 
-            mode="inline" 
+          <Menu
+            mode="inline"
             defaultSelectedKeys={['documents']}
-            onClick={({ key }) => navigate(`/${key}`)}
+            onClick={({ key }) => { navigate(`/${key}`); if (isMobile) setCollapsed(true); }}
             style={{ height: '100%', borderRight: 0 }}
             items={[
               { key: 'documents', icon: <FileTextOutlined />, label: '知识库' },
@@ -280,7 +299,7 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
           />
         </Sider>
         <Layout style={{ padding: '0' }}>
-          <Content style={{ padding: '24px', background: '#f0f2f5', minHeight: '100vh' }}>
+          <Content style={{ padding: isMobile ? '12px' : '24px', background: '#f0f2f5', minHeight: '100vh' }}>
             {children}
           </Content>
         </Layout>
@@ -292,6 +311,7 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
 // ==================== 知识库页面 ====================
 
 const DocumentsPage: React.FC = () => {
+  const isMobile = useIsMobile();
   const [documents, setDocuments] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
@@ -312,6 +332,9 @@ const DocumentsPage: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<any[] | null>(null);
   const [searching, setSearching] = useState(false);
+  const [previewDoc, setPreviewDoc] = useState<any>(null);
+  const [previewChunks, setPreviewChunks] = useState<any[]>([]);
+  const [previewLoading, setPreviewLoading] = useState(false);
 
   const fetchDocuments = async () => {
     setLoading(true);
@@ -408,6 +431,20 @@ const DocumentsPage: React.FC = () => {
       setDrawerChunks([]);
     } finally {
       setChunksLoading(false);
+    }
+  };
+
+  const handlePreview = async (doc: any) => {
+    setPreviewDoc(doc);
+    setPreviewLoading(true);
+    try {
+      const res = await api.getDocumentChunks(doc.id);
+      setPreviewChunks(res.data.chunks || []);
+    } catch (err) {
+      message.error('获取文档内容失败');
+      setPreviewChunks([]);
+    } finally {
+      setPreviewLoading(false);
     }
   };
 
@@ -516,63 +553,90 @@ const DocumentsPage: React.FC = () => {
           />
         </Card>
       ) : (
-        <Card title="已上传文档" style={{ marginTop: 16 }}>
-          {loading ? (
-            <div style={{ textAlign: 'center', padding: 40 }}>
-              <Spin />
-            </div>
-          ) : documents.length === 0 ? (
-            <Empty description="暂无文档，请先上传" />
-          ) : (
-            <List
-              dataSource={activeGroupFilter === 'all' ? documents : documents.filter(d => (d.group_id || 'ungrouped') === activeGroupFilter)}
-              renderItem={(doc: any) => (
-                <List.Item
-                  actions={[
-                    <select
-                      key="move"
-                      value={doc.group_id || 'ungrouped'}
-                      onChange={e => handleMoveGroup(doc.id, e.target.value)}
-                      style={{ fontSize: 12, padding: '2px 4px', borderRadius: 4, border: '1px solid #d9d9d9', cursor: 'pointer' }}
-                    >
-                      {groups.map(g => (
-                        <option key={g.id} value={g.id}>{g.name}</option>
-                      ))}
-                    </select>,
-                    <Button
-                      key="delete"
-                      type="text"
-                      danger
-                      icon={<DeleteOutlined />}
-                      onClick={() => handleDelete(doc.id)}
-                    >
-                      删除
-                    </Button>
-                  ]}
-                >
-                  <List.Item.Meta
-                    avatar={<Avatar icon={<FileTextOutlined />} style={{ background: '#1890ff' }} />}
-                    title={<a onClick={() => handleViewChunks(doc)}>{doc.filename}</a>}
-                    description={
-                      <Space>
-                        {(() => {
-                          const g = groups.find(x => x.id === (doc.group_id || 'ungrouped'));
-                          return g ? <Tag color={g.color}>{g.name}</Tag> : null;
-                        })()}
-                        <Tag>{doc.type}</Tag>
-                        <Text type="secondary">{doc.chunk_count} 个片段</Text>
-                        <Text type="secondary">{formatSize(doc.size)}</Text>
-                        <Text type="secondary">
-                          {dayjs(doc.created_at).format('YYYY-MM-DD HH:mm')}
-                        </Text>
-                      </Space>
-                    }
-                  />
-                </List.Item>
-              )}
-            />
-          )}
-        </Card>
+        <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', gap: 16, marginTop: 16 }}>
+          <Card title="已上传文档" style={{ flex: isMobile ? undefined : 4, minWidth: 0 }}>
+            {loading ? (
+              <div style={{ textAlign: 'center', padding: 40 }}>
+                <Spin />
+              </div>
+            ) : documents.length === 0 ? (
+              <Empty description="暂无文档，请先上传" />
+            ) : (
+              <List
+                dataSource={activeGroupFilter === 'all' ? documents : documents.filter(d => (d.group_id || 'ungrouped') === activeGroupFilter)}
+                renderItem={(doc: any) => {
+                  const g = groups.find(x => x.id === (doc.group_id || 'ungrouped'));
+                  return (
+                    <List.Item style={{ padding: '8px 0' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', width: '100%', gap: 8, minWidth: 0 }}>
+                        <Avatar icon={<FileTextOutlined />} style={{ background: '#1890ff', flexShrink: 0 }} />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            <a onClick={() => handleViewChunks(doc)} style={{ fontWeight: 500 }}>{doc.filename}</a>
+                          </div>
+                          <div style={{ fontSize: 12, color: '#999', marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                            {g && <Tag color={g.color} style={{ marginRight: 4, fontSize: 11 }}>{g.name}</Tag>}
+                            <Tag style={{ fontSize: 11 }}>{doc.type}</Tag>
+                            <span style={{ marginLeft: 4 }}>{doc.chunk_count}片段</span>
+                            <span style={{ marginLeft: 6 }}>{formatSize(doc.size)}</span>
+                          </div>
+                          <div style={{ fontSize: 11, color: '#bbb', marginTop: 2 }}>
+                            上传于 {dayjs(doc.created_at).format('YYYY-MM-DD HH:mm')}
+                          </div>
+                        </div>
+                        <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 2 }}>
+                          <select
+                            value={doc.group_id || 'ungrouped'}
+                            onChange={e => handleMoveGroup(doc.id, e.target.value)}
+                            style={{ fontSize: 11, padding: '1px 2px', borderRadius: 4, border: '1px solid #d9d9d9', cursor: 'pointer' }}
+                          >
+                            {groups.map(g => (
+                              <option key={g.id} value={g.id}>{g.name}</option>
+                            ))}
+                          </select>
+                          <Button type="text" danger size="small" icon={<DeleteOutlined />} onClick={() => handleDelete(doc.id)} />
+                          <Button type="text" size="small" icon={<EyeOutlined />} onClick={() => handlePreview(doc)} />
+                        </div>
+                      </div>
+                    </List.Item>
+                  );
+                }}
+              />
+            )}
+          </Card>
+          <Card
+            title={previewDoc ? `预览: ${previewDoc.filename}` : '文档预览'}
+            style={{ flex: isMobile ? undefined : 6, minWidth: 0 }}
+            extra={previewDoc && (
+              <Button type="text" size="small" onClick={() => { setPreviewDoc(null); setPreviewChunks([]); }}>
+                关闭
+              </Button>
+            )}
+          >
+            {!previewDoc ? (
+              <Empty description="点击文件预览按钮查看全文" image={Empty.PRESENTED_IMAGE_SIMPLE} />
+            ) : previewLoading ? (
+              <div style={{ textAlign: 'center', padding: 40 }}><Spin tip="加载中..." /></div>
+            ) : (
+              <div style={{ maxHeight: 'calc(100vh - 360px)', overflow: 'auto' }}>
+                <div style={{ marginBottom: 12 }}>
+                  <Space>
+                    <Tag>{previewDoc.type}</Tag>
+                    <Text type="secondary">{previewDoc.chunk_count} 个片段</Text>
+                    <Text type="secondary">{formatSize(previewDoc.size)}</Text>
+                  </Space>
+                </div>
+                <div style={{ whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.8 }}>
+                  {previewChunks.map((chunk: any, i: number) => (
+                    <div key={i}>
+                      {chunk.content}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </Card>
+        </div>
       )}
 
       {/* URL 导入弹窗 */}
@@ -757,9 +821,11 @@ interface Message {
   role: 'user' | 'assistant';
   content: string;
   sources?: any[];
+  worker_id?: string | null;
 }
 
 const ChatPage: React.FC = () => {
+  const isMobile = useIsMobile();
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
@@ -770,6 +836,9 @@ const ChatPage: React.FC = () => {
   const [activeGroupIds, setActiveGroupIds] = useState<string[]>([]);
   const [sessions, setSessions] = useState<any[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [showSidebar, setShowSidebar] = useState(false);
+  const [workers, setWorkers] = useState<any[]>([]);
+  const [selectedWorkerId, setSelectedWorkerId] = useState<string | null>(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -829,6 +898,7 @@ const ChatPage: React.FC = () => {
       setGroups(res.data);
       setActiveGroupIds(res.data.map((g: KnowledgeGroup) => g.id));
     }).catch(() => {});
+    api.listWorkers().then(res => setWorkers(res.data)).catch(() => {});
     fetchSessions();
   }, []);
 
@@ -849,9 +919,9 @@ const ChatPage: React.FC = () => {
     try {
       const allGroupIds = groups.map(g => g.id);
       const isAllSelected = activeGroupIds.length === allGroupIds.length;
-      const res = await api.chat(input, sessionId || undefined, true, isAllSelected ? null : activeGroupIds);
+      const res = await api.chat(input, sessionId || undefined, true, isAllSelected ? null : activeGroupIds, selectedWorkerId);
       const data = res.data;
-      
+
       if (data.session_id && !sessionId) {
         setSessionId(data.session_id);
       }
@@ -861,6 +931,7 @@ const ChatPage: React.FC = () => {
         role: 'assistant',
         content: data.answer,
         sources: data.sources,
+        worker_id: data.worker_id || null,
       };
 
       setMessages(prev => [...prev, assistantMessage]);
@@ -882,8 +953,52 @@ const ChatPage: React.FC = () => {
   };
 
   return (
-    <div style={{ display: 'flex', height: 'calc(100vh - 120px)', gap: 16 }}>
-      {/* 会话列表侧栏 */}
+    <div style={{ display: 'flex', height: 'calc(100vh - 120px)', gap: isMobile ? 0 : 16 }}>
+      {/* 会话列表 — 移动端用 Drawer */}
+      {isMobile && (
+        <Button
+          icon={<ClockCircleOutlined />}
+          onClick={() => setShowSidebar(true)}
+          style={{ position: 'absolute', top: 68, left: 8, zIndex: 10 }}
+          size="small"
+        >
+          历史
+        </Button>
+      )}
+      {isMobile ? (
+        <Drawer
+          title="会话历史"
+          placement="left"
+          open={showSidebar}
+          onClose={() => setShowSidebar(false)}
+          width={260}
+          extra={<Button size="small" type="primary" onClick={() => { handleNewSession(); setShowSidebar(false); }}>新对话</Button>}
+        >
+          <List
+            loading={sessionsLoading}
+            dataSource={sessions}
+            locale={{ emptyText: '暂无历史会话' }}
+            renderItem={(s: any) => (
+              <List.Item
+                style={{ cursor: 'pointer', background: sessionId === s.id ? '#e6f7ff' : undefined, padding: '8px 12px' }}
+                onClick={() => { handleResumeSession(s.id); setShowSidebar(false); }}
+                actions={[
+                  <Tooltip title="删除" key="del">
+                    <Button type="text" size="small" danger icon={<DeleteOutlined />}
+                      onClick={(e: React.MouseEvent) => { e.stopPropagation(); handleDeleteSession(s.id); }}
+                    />
+                  </Tooltip>,
+                ]}
+              >
+                <List.Item.Meta
+                  title={<Text ellipsis style={{ maxWidth: 140 }}>{s.title || '未命名会话'}</Text>}
+                  description={<Text type="secondary" style={{ fontSize: 11 }}>{dayjs(s.updated_at).format('MM-DD HH:mm')}</Text>}
+                />
+              </List.Item>
+            )}
+          />
+        </Drawer>
+      ) : (
       <Card
         title="会话历史"
         size="small"
@@ -923,6 +1038,7 @@ const ChatPage: React.FC = () => {
           )}
         />
       </Card>
+      )}
 
       {/* 原有聊天主区域 */}
       <Card style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
@@ -936,15 +1052,20 @@ const ChatPage: React.FC = () => {
               </Text>
             </div>
           ) : (
-            messages.map(msg => (
+            messages.map(msg => {
+              const msgWorker = msg.worker_id ? workers.find(w => w.id === msg.worker_id) : null;
+              return (
               <div key={msg.id} style={{ marginBottom: 16 }}>
                 <Space align="start">
-                  <Avatar
-                    icon={msg.role === 'user' ? <UploadOutlined /> : <RobotOutlined />}
-                    style={{ background: msg.role === 'user' ? '#1890ff' : '#52c41a' }}
-                  />
+                  {msg.role === 'user' ? (
+                    <Avatar icon={<UploadOutlined />} style={{ background: '#1890ff' }} />
+                  ) : msgWorker?.icon ? (
+                    <Avatar style={{ background: '#52c41a', fontSize: 18 }}>{msgWorker.icon}</Avatar>
+                  ) : (
+                    <Avatar icon={<RobotOutlined />} style={{ background: '#52c41a' }} />
+                  )}
                   <div style={{ flex: 1 }}>
-                    <Text strong>{msg.role === 'user' ? '你' : 'AI 助手'}</Text>
+                    <Text strong>{msg.role === 'user' ? '你' : (msgWorker?.display_name || msgWorker?.id || 'AI 助手')}</Text>
                     <Card size="small" style={{ marginTop: 8, background: msg.role === 'user' ? '#e6f7ff' : '#f6ffed' }}>
                       <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
                     </Card>
@@ -959,19 +1080,27 @@ const ChatPage: React.FC = () => {
                   </div>
                 </Space>
               </div>
-            ))
+              );
+            })
           )}
-          {loading && (
+          {loading && (() => {
+            const loadingWorker = selectedWorkerId ? workers.find(w => w.id === selectedWorkerId) : null;
+            return (
             <div style={{ marginBottom: 16 }}>
               <Space align="start">
-                <Avatar icon={<RobotOutlined />} style={{ background: '#52c41a' }} />
+                {loadingWorker?.icon ? (
+                  <Avatar style={{ background: '#52c41a', fontSize: 18 }}>{loadingWorker.icon}</Avatar>
+                ) : (
+                  <Avatar icon={<RobotOutlined />} style={{ background: '#52c41a' }} />
+                )}
                 <Card size="small" style={{ background: '#f6ffed' }}>
                   <Spin indicator={<LoadingOutlined style={{ fontSize: 16 }} spin />} />
-                  <Text style={{ marginLeft: 8 }}>正在思考...</Text>
+                  <Text style={{ marginLeft: 8 }}>{loadingWorker?.display_name || '正在思考'}...</Text>
                 </Card>
               </Space>
             </div>
-          )}
+            );
+          })()}
           <div ref={messagesEndRef} />
         </div>
 
@@ -1005,6 +1134,36 @@ const ChatPage: React.FC = () => {
             />
           </div>
         )}
+        {workers.length > 0 && (
+          <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 8, marginBottom: 4, display: 'flex', flexWrap: 'wrap', gap: 6, alignItems: 'center' }}>
+            <Text type="secondary" style={{ fontSize: 12, marginRight: 4 }}>回答模型：</Text>
+            <span
+              onClick={() => setSelectedWorkerId(null)}
+              style={{
+                cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4,
+                padding: '2px 10px', borderRadius: 12, fontSize: 12,
+                background: selectedWorkerId === null ? '#e6f7ff' : '#fafafa',
+                border: selectedWorkerId === null ? '1px solid #1890ff' : '1px solid #d9d9d9',
+              }}
+            >
+              <RobotOutlined style={{ fontSize: 14 }} /> 默认助手
+            </span>
+            {workers.map((w: any) => (
+              <span
+                key={w.id}
+                onClick={() => setSelectedWorkerId(w.id)}
+                style={{
+                  cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: 4,
+                  padding: '2px 10px', borderRadius: 12, fontSize: 12,
+                  background: selectedWorkerId === w.id ? '#e6f7ff' : '#fafafa',
+                  border: selectedWorkerId === w.id ? '1px solid #1890ff' : '1px solid #d9d9d9',
+                }}
+              >
+                {w.icon || <RobotOutlined style={{ fontSize: 14 }} />} {w.display_name || w.id}
+              </span>
+            ))}
+          </div>
+        )}
         <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 16 }}>
           <Space.Compact style={{ width: '100%' }}>
             <TextArea
@@ -1028,6 +1187,7 @@ const ChatPage: React.FC = () => {
 // ==================== 产物文件面板 ====================
 
 const TaskFilesPanel: React.FC<{ taskId: string }> = ({ taskId }) => {
+  const isMobile = useIsMobile();
   const [files, setFiles] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedFile, setSelectedFile] = useState<any>(null);
@@ -1051,8 +1211,8 @@ const TaskFilesPanel: React.FC<{ taskId: string }> = ({ taskId }) => {
   };
 
   return (
-    <div style={{ display: 'flex', gap: 16 }}>
-      <div style={{ width: 280, flexShrink: 0 }}>
+    <div style={{ display: 'flex', flexDirection: isMobile ? 'column' : 'row', gap: 16 }}>
+      <div style={{ width: isMobile ? '100%' : 280, flexShrink: 0 }}>
         <List
           size="small"
           bordered
@@ -1111,6 +1271,7 @@ const TaskFilesPanel: React.FC<{ taskId: string }> = ({ taskId }) => {
 // ==================== 任务执行页面 ====================
 
 const TasksPage: React.FC = () => {
+  const isMobile = useIsMobile();
   const [tasks, setTasks] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [taskInput, setTaskInput] = useState('');
@@ -1493,9 +1654,321 @@ const TasksPage: React.FC = () => {
 
 // ==================== Worker 监控页面 ====================
 
+const WorkerCard: React.FC<{
+  worker: any;
+  providers: any[];
+  onSaved: () => void;
+  onDelete: (id: string) => void;
+  workerCount: number;
+}> = ({ worker, providers, onSaved, onDelete, workerCount }) => {
+  const [editing, setEditing] = useState(false);
+  const [provider, setProvider] = useState(worker.provider);
+  const [model, setModel] = useState(worker.model);
+  const [skills, setSkills] = useState<string[]>(worker.skills || []);
+  const [tools, setTools] = useState<string[]>(worker.tools || []);
+  const [temperature, setTemperature] = useState(worker.temperature ?? 0.7);
+  const [maxTokens, setMaxTokens] = useState(worker.max_tokens ?? 4096);
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [skillInput, setSkillInput] = useState('');
+  const [toolInput, setToolInput] = useState('');
+  const [icon, setIcon] = useState(worker.icon || '');
+  const [displayName, setDisplayName] = useState(worker.display_name || '');
+  const [iconPickerOpen, setIconPickerOpen] = useState(false);
+
+  // Sync local state from props when not editing (e.g. after polling refresh)
+  useEffect(() => {
+    if (!editing) {
+      setProvider(worker.provider);
+      setModel(worker.model);
+      setSkills(worker.skills || []);
+      setTools(worker.tools || []);
+      setTemperature(worker.temperature ?? 0.7);
+      setMaxTokens(worker.max_tokens ?? 4096);
+      setIcon(worker.icon || '');
+      setDisplayName(worker.display_name || '');
+    }
+  }, [worker, editing]);
+
+  const ICON_OPTIONS = [
+    '🤖', '🧠', '💻', '🔬', '📝', '🎨', '🔧', '📊',
+    '🚀', '🛡️', '🔍', '📚', '⚡', '🌐', '🎯', '🏗️',
+  ];
+
+  const SKILL_DESC: Record<string, string> = {
+    'code-review': '代码审查与质量分析',
+    'frontend-design-3': '前端界面设计与开发',
+    'data-analysis': '数据分析与可视化',
+    'docx': 'Word 文档处理',
+    'pdf': 'PDF 文档解析',
+    'writing': '文本写作与编辑',
+    'translation': '多语言翻译',
+    'summarization': '文本摘要与总结',
+    'coding': '编程与代码生成',
+    'reasoning': '逻辑推理与问题分析',
+  };
+  const TOOL_DESC: Record<string, string> = {
+    'filesystem': '本地文件系统读写操作',
+    'shell': '终端命令执行',
+    'git': 'Git 版本控制操作',
+    'web_search': '互联网搜索',
+    'web_fetch': '网页内容抓取',
+    'python': 'Python 代码执行',
+    'browser': '浏览器自动化操作',
+    'calculator': '数学计算',
+  };
+
+  const currentProvider = providers.find((p: any) => p.name === provider);
+  const modelOptions = currentProvider?.models || [];
+
+  const handleProviderChange = (val: string) => {
+    setProvider(val);
+    const newP = providers.find((p: any) => p.name === val);
+    const newModels = newP?.models || [];
+    if (newModels.length > 0 && !newModels.includes(model)) {
+      setModel(newModels[0]);
+    }
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await api.updateWorkerConfig(worker.id, {
+        provider, model, skills, tools, temperature,
+        max_tokens: maxTokens, icon, display_name: displayName,
+      });
+      message.success(`${displayName || worker.id} 配置已保存`);
+      setEditing(false);
+      onSaved();
+    } catch (err: any) {
+      message.error(err.response?.data?.detail || '保存失败');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleCancel = () => {
+    setProvider(worker.provider);
+    setModel(worker.model);
+    setSkills(worker.skills || []);
+    setTools(worker.tools || []);
+    setTemperature(worker.temperature ?? 0.7);
+    setMaxTokens(worker.max_tokens ?? 4096);
+    setIcon(worker.icon || '');
+    setDisplayName(worker.display_name || '');
+    setShowAdvanced(false);
+    setIconPickerOpen(false);
+    setEditing(false);
+  };
+
+  const addSkill = () => {
+    const v = skillInput.trim();
+    if (v && !skills.includes(v)) setSkills([...skills, v]);
+    setSkillInput('');
+  };
+  const addTool = () => {
+    const v = toolInput.trim();
+    if (v && !tools.includes(v)) setTools([...tools, v]);
+    setToolInput('');
+  };
+
+  const fmtToken = (n: number) => n >= 10000 ? (n / 1000).toFixed(1) + 'k' : String(n);
+  const u = worker.token_usage || {};
+
+  return (
+    <Card size="small">
+      <Space direction="vertical" style={{ width: '100%' }} size={10}>
+        {/* 标题行 — 始终显示 */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <Space>
+            <Avatar
+              style={{ background: worker.busy ? '#ff4d4f' : '#52c41a', fontSize: (worker.icon || icon) ? 20 : 14 }}
+            >
+              {(editing ? icon : worker.icon) || <RobotOutlined />}
+            </Avatar>
+            <div style={{ lineHeight: 1.3 }}>
+              <Text strong>{(editing ? displayName : worker.display_name) || worker.id}</Text>
+              {(editing ? displayName : worker.display_name) && (
+                <div><Text type="secondary" style={{ fontSize: 11 }}>{worker.id}</Text></div>
+              )}
+            </div>
+            <Badge status={worker.busy ? 'error' : 'success'} text={worker.busy ? '忙碌' : '空闲'} />
+          </Space>
+          <Space size={0}>
+            {!editing && (
+              <Tooltip title="修改配置">
+                <Button type="text" size="small" icon={<EditOutlined />} onClick={() => setEditing(true)} disabled={worker.busy} />
+              </Tooltip>
+            )}
+            <Tooltip title={workerCount <= 1 ? '至少保留一个 Worker' : '删除此 Worker'}>
+              <Button type="text" danger size="small" icon={<DeleteOutlined />} disabled={worker.busy || workerCount <= 1} onClick={() => onDelete(worker.id)} />
+            </Tooltip>
+          </Space>
+        </div>
+
+        {/* 状态进度 — 始终显示 */}
+        <div>
+          <Text type="secondary" style={{ fontSize: 12 }}>状态: </Text>
+          <Progress
+            percent={worker.busy ? 100 : 0}
+            status={worker.busy ? 'active' : 'normal'}
+            size="small"
+            style={{ width: 100, display: 'inline-block', marginLeft: 8 }}
+          />
+        </div>
+
+        {/* 基本信息 — 非编辑模式显示 */}
+        {!editing && (
+          <>
+            <div style={{ fontSize: 12, color: '#666' }}>
+              <Space split={<Divider type="vertical" style={{ margin: '0 4px' }} />}>
+                <span>{worker.provider}</span>
+                <span>{worker.model}</span>
+              </Space>
+            </div>
+            {worker.skills?.length > 0 && (
+              <div>
+                <Text type="secondary" style={{ fontSize: 11, marginRight: 4 }}>技能</Text>
+                {worker.skills.map((s: string) => (
+                  <Tooltip key={s} title={SKILL_DESC[s] || `技能: ${s}`}>
+                    <Tag color="blue" style={{ fontSize: 11, cursor: 'default' }}>{s}</Tag>
+                  </Tooltip>
+                ))}
+              </div>
+            )}
+            {worker.tools?.length > 0 && (
+              <div>
+                <Text type="secondary" style={{ fontSize: 11, marginRight: 4 }}>工具</Text>
+                {worker.tools.map((t: string) => (
+                  <Tooltip key={t} title={TOOL_DESC[t] || `工具: ${t}`}>
+                    <Tag style={{ fontSize: 11, borderRadius: 2, cursor: 'default' }}>{t}</Tag>
+                  </Tooltip>
+                ))}
+              </div>
+            )}
+          </>
+        )}
+
+        {/* Token 用量 — 始终显示 */}
+        <div style={{ background: '#f6f8fa', padding: '6px 10px', borderRadius: 6, fontSize: 12 }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', color: '#666' }}>
+            <span>调用 <Text strong style={{ fontSize: 12 }}>{u.call_count || 0}</Text> 次</span>
+            <span>总计 <Text strong style={{ fontSize: 12 }}>{fmtToken(u.total_tokens || 0)}</Text> tokens</span>
+          </div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', color: '#999', marginTop: 2 }}>
+            <span>输入: {fmtToken(u.input_tokens || 0)}</span>
+            <span>输出: {fmtToken(u.output_tokens || 0)}</span>
+          </div>
+        </div>
+
+        {/* ========== 编辑模式 ========== */}
+        {editing && (
+          <>
+            <Divider style={{ margin: '4px 0' }} />
+
+            {/* 图标选择 */}
+            <div>
+              <Text type="secondary" style={{ fontSize: 12 }}>头像图标</Text>
+              <div style={{ marginTop: 4, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                {ICON_OPTIONS.map(e => (
+                  <span
+                    key={e}
+                    onClick={() => setIcon(e)}
+                    style={{
+                      cursor: 'pointer', fontSize: 20, padding: '3px 5px', borderRadius: 6,
+                      background: icon === e ? '#e6f7ff' : undefined,
+                      border: icon === e ? '1px solid #1890ff' : '1px solid transparent',
+                    }}
+                  >{e}</span>
+                ))}
+                <span
+                  onClick={() => setIcon('')}
+                  style={{ cursor: 'pointer', fontSize: 11, padding: '5px 8px', borderRadius: 6, color: '#999', alignSelf: 'center' }}
+                >默认</span>
+              </div>
+            </div>
+
+            {/* 显示名称 */}
+            <div>
+              <Text type="secondary" style={{ fontSize: 12 }}>显示名称</Text>
+              <Input size="small" placeholder={worker.id} value={displayName} onChange={e => setDisplayName(e.target.value)} style={{ marginTop: 4 }} />
+            </div>
+
+            {/* Provider */}
+            <div>
+              <Text type="secondary" style={{ fontSize: 12 }}>Provider</Text>
+              <Select value={provider} onChange={handleProviderChange} style={{ width: '100%', marginTop: 4 }} size="small">
+                {providers.map((p: any) => <Select.Option key={p.name} value={p.name}>{p.name}</Select.Option>)}
+              </Select>
+            </div>
+
+            {/* Model */}
+            <div>
+              <Text type="secondary" style={{ fontSize: 12 }}>Model</Text>
+              <Select value={model} onChange={setModel} style={{ width: '100%', marginTop: 4 }} size="small" showSearch>
+                {modelOptions.map((m: string) => <Select.Option key={m} value={m}>{m}</Select.Option>)}
+              </Select>
+            </div>
+
+            {/* Skills */}
+            <div>
+              <Text type="secondary" style={{ fontSize: 12 }}>Skills</Text>
+              <div style={{ marginTop: 4 }}>
+                {skills.map(s => <Tag key={s} closable onClose={() => setSkills(skills.filter(x => x !== s))} style={{ marginBottom: 4 }}>{s}</Tag>)}
+              </div>
+              <Input size="small" placeholder="输入技能名称后回车" value={skillInput} onChange={e => setSkillInput(e.target.value)} onPressEnter={addSkill} style={{ marginTop: 4 }} />
+            </div>
+
+            {/* 高级选项 */}
+            <Button type="link" size="small" icon={showAdvanced ? <UpOutlined /> : <DownOutlined />} onClick={() => setShowAdvanced(!showAdvanced)} style={{ padding: 0 }}>
+              高级选项
+            </Button>
+
+            {showAdvanced && (
+              <div style={{ background: '#fafafa', padding: 12, borderRadius: 6 }}>
+                <Space direction="vertical" style={{ width: '100%' }} size={10}>
+                  <div>
+                    <Text type="secondary" style={{ fontSize: 12 }}>Tools</Text>
+                    <div style={{ marginTop: 4 }}>
+                      {tools.map(t => <Tag key={t} closable onClose={() => setTools(tools.filter(x => x !== t))} style={{ marginBottom: 4 }}>{t}</Tag>)}
+                    </div>
+                    <Input size="small" placeholder="输入工具名称后回车" value={toolInput} onChange={e => setToolInput(e.target.value)} onPressEnter={addTool} style={{ marginTop: 4 }} />
+                  </div>
+                  <div>
+                    <Text type="secondary" style={{ fontSize: 12 }}>Temperature: {temperature}</Text>
+                    <Slider min={0} max={2} step={0.1} value={temperature} onChange={setTemperature} />
+                  </div>
+                  <div>
+                    <Text type="secondary" style={{ fontSize: 12 }}>Max Tokens</Text>
+                    <InputNumber size="small" min={256} max={128000} step={256} value={maxTokens} onChange={v => setMaxTokens(v || 4096)} style={{ width: '100%', marginTop: 4 }} />
+                  </div>
+                </Space>
+              </div>
+            )}
+
+            {/* 保存/取消 */}
+            <Space style={{ width: '100%' }}>
+              <Button type="primary" icon={<SaveOutlined />} loading={saving} onClick={handleSave} size="small">
+                保存
+              </Button>
+              <Button size="small" onClick={handleCancel}>取消</Button>
+            </Space>
+          </>
+        )}
+      </Space>
+    </Card>
+  );
+};
+
 const WorkersPage: React.FC = () => {
   const [workers, setWorkers] = useState<any[]>([]);
+  const [providers, setProviders] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [newProvider, setNewProvider] = useState('');
+  const [newModel, setNewModel] = useState('');
 
   const fetchWorkers = async () => {
     try {
@@ -1508,58 +1981,151 @@ const WorkersPage: React.FC = () => {
     }
   };
 
+  const fetchProviders = async () => {
+    try {
+      const res = await api.listProviders();
+      setProviders(res.data);
+    } catch (err) {
+      console.error(err);
+    }
+  };
+
   useEffect(() => {
     fetchWorkers();
-    const interval = setInterval(fetchWorkers, 5000); // 每5秒刷新
+    fetchProviders();
+    const interval = setInterval(fetchWorkers, 5000);
     return () => clearInterval(interval);
   }, []);
 
+  const handleCreate = async () => {
+    if (!newName.trim() || !newProvider || !newModel) return;
+    setCreating(true);
+    try {
+      await api.createWorker({ name: newName.trim(), provider: newProvider, model: newModel });
+      message.success(`Worker '${newName.trim()}' 已创建`);
+      setCreateOpen(false);
+      setNewName('');
+      setNewProvider('');
+      setNewModel('');
+      await fetchWorkers();
+    } catch (err: any) {
+      message.error(err.response?.data?.detail || '创建失败');
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    Modal.confirm({
+      title: `确认删除 Worker "${id}"？`,
+      content: '删除后将从配置中移除，不可恢复。',
+      okText: '删除',
+      okType: 'danger',
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          await api.deleteWorker(id);
+          message.success(`Worker '${id}' 已删除`);
+          await fetchWorkers();
+        } catch (err: any) {
+          message.error(err.response?.data?.detail || '删除失败');
+        }
+      },
+    });
+  };
+
+  // 新建弹窗中 provider 变化时联动 model
+  const createProviderModels = providers.find(p => p.name === newProvider)?.models || [];
+
   return (
-    <Card title="Agent Worker 状态">
+    <Card
+      title="Agent Worker 状态"
+      extra={
+        <Button type="primary" icon={<PlusOutlined />} onClick={() => setCreateOpen(true)}>
+          新增 Worker
+        </Button>
+      }
+    >
       <Alert
         message="Worker Agent 池"
         description="每个 Worker Agent 可以独立配置不同的大模型、技能和工具。任务会自动分配给空闲的 Worker 执行。"
         type="info"
         style={{ marginBottom: 16 }}
       />
-      
+
       {loading ? (
         <div style={{ textAlign: 'center', padding: 40 }}>
           <Spin />
         </div>
       ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 16 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 16 }}>
           {workers.map((worker: any) => (
-            <Card key={worker.id} size="small">
-              <Space direction="vertical" style={{ width: '100%' }}>
-                <div>
-                  <Space>
-                    <Avatar 
-                      icon={<RobotOutlined />} 
-                      style={{ background: worker.busy ? '#ff4d4f' : '#52c41a' }} 
-                    />
-                    <Text strong>{worker.id}</Text>
-                    <Badge status={worker.busy ? 'error' : 'success'} text={worker.busy ? '忙碌' : '空闲'} />
-                  </Space>
-                </div>
-                <div>
-                  <Text type="secondary">模型: </Text>
-                  <Tag>{worker.model}</Tag>
-                </div>
-                <div>
-                  <Text type="secondary">状态: </Text>
-                  <Progress 
-                    percent={worker.busy ? 100 : 0} 
-                    status={worker.busy ? 'active' : 'normal'}
-                    size="small"
-                    style={{ width: 100, display: 'inline-block', marginLeft: 8 }}
-                  />
-                </div>
-              </Space>
-            </Card>
+            <WorkerCard
+              key={worker.id}
+              worker={worker}
+              providers={providers}
+              onSaved={fetchWorkers}
+              onDelete={handleDelete}
+              workerCount={workers.length}
+            />
           ))}
         </div>
       )}
+
+      {/* 新增 Worker 弹窗 */}
+      <Modal
+        title="新增 Worker"
+        open={createOpen}
+        onCancel={() => { setCreateOpen(false); setNewName(''); setNewProvider(''); setNewModel(''); }}
+        onOk={handleCreate}
+        confirmLoading={creating}
+        okText="创建"
+        cancelText="取消"
+        okButtonProps={{ disabled: !newName.trim() || !newProvider || !newModel }}
+      >
+        <Space direction="vertical" style={{ width: '100%' }} size={12}>
+          <div>
+            <Text type="secondary" style={{ fontSize: 12 }}>名称（字母、数字、下划线）</Text>
+            <Input
+              placeholder="如 my_worker"
+              value={newName}
+              onChange={e => setNewName(e.target.value)}
+              style={{ marginTop: 4 }}
+            />
+          </div>
+          <div>
+            <Text type="secondary" style={{ fontSize: 12 }}>Provider</Text>
+            <Select
+              value={newProvider || undefined}
+              placeholder="选择 Provider"
+              onChange={(v: string) => { setNewProvider(v); setNewModel(''); }}
+              style={{ width: '100%', marginTop: 4 }}
+            >
+              {providers.map((p: any) => (
+                <Select.Option key={p.name} value={p.name}>{p.name}</Select.Option>
+              ))}
+            </Select>
+          </div>
+          <div>
+            <Text type="secondary" style={{ fontSize: 12 }}>Model</Text>
+            <Select
+              value={newModel || undefined}
+              placeholder="选择模型"
+              onChange={setNewModel}
+              style={{ width: '100%', marginTop: 4 }}
+              disabled={!newProvider}
+              showSearch
+            >
+              {createProviderModels.map((m: string) => (
+                <Select.Option key={m} value={m}>{m}</Select.Option>
+              ))}
+            </Select>
+          </div>
+          <Text type="secondary" style={{ fontSize: 11 }}>
+            创建后可在 Worker 名片中配置技能、工具等高级选项
+          </Text>
+        </Space>
+      </Modal>
     </Card>
   );
 };
