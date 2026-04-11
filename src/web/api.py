@@ -261,6 +261,9 @@ async def startup():
     init_store(db_path)
     print(f"   - 持久化存储: {db_path}")
 
+    # 确保技能目录存在
+    Path(_config.knowledge_base.skills_dir).mkdir(parents=True, exist_ok=True)
+
     # 初始化 Worker 池
     worker_pool = init_worker_pool(max_workers=_config.coordinator.max_workers)
     
