@@ -9,6 +9,9 @@ import subprocess
 import tempfile
 from datetime import datetime
 from pathlib import Path
+from typing import Callable, Optional
+
+ProgressCallback = Optional[Callable[[str, str], None]]
 
 from loguru import logger
 
@@ -63,13 +66,24 @@ def install_from_github(
     skills_dir: Path,
     name: str | None = None,
     force: bool = False,
+    progress: ProgressCallback = None,
 ) -> Skill:
-    """Clone a skill from GitHub into skills_dir. Returns the loaded Skill."""
+    """Clone a skill from GitHub into skills_dir. Returns the loaded Skill.
+
+    If `progress` is given, it's called as progress(stage, message) at each phase:
+      parse, cloning, validating, copying, done.
+    """
+    def _p(stage: str, msg: str) -> None:
+        if progress:
+            progress(stage, msg)
+
+    _p("parse", f"解析 URL: {url}")
     clone_url, subpath = _parse_github_url(url)
     skills_dir.mkdir(parents=True, exist_ok=True)
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp_clone = Path(tmp) / "clone"
+        _p("cloning", f"克隆仓库 {clone_url}...")
         _git_clone(clone_url, tmp_clone)
 
         source = tmp_clone / subpath if subpath else tmp_clone
@@ -79,6 +93,7 @@ def install_from_github(
                 f"no SKILL.md found at {subpath or '<repo root>'}"
             )
 
+        _p("validating", "校验 SKILL.md 前言区...")
         frontmatter, _ = _parse_skill_md(source_skill_md)
         fm_name = frontmatter.get("name")
         if not fm_name:
@@ -93,6 +108,7 @@ def install_from_github(
                 )
             shutil.rmtree(target)
 
+        _p("copying", f"安装到 {target}...")
         shutil.copytree(source, target, ignore=shutil.ignore_patterns(".git"))
 
         meta = {
@@ -111,6 +127,7 @@ def install_from_github(
             f"installed skill at {target} failed to load — check frontmatter"
         )
     logger.info(f"installed skill '{skill.name}' from {url}")
+    _p("done", f"已安装: {skill.name}")
     return skill
 
 

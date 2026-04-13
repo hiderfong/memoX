@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, createContext, useContext } from 'react';
-import { Layout, Menu, Typography, Card, Button, Upload, List, Space, Avatar, Input, message, Spin, Tag, Progress, Badge, Drawer, Timeline, Alert, Empty, Tooltip, Form, Divider, Checkbox, Modal, Tabs, Table, Select, Slider, InputNumber } from 'antd';
+import { Layout, Menu, Typography, Card, Button, Upload, List, Space, Avatar, Input, message, Spin, Tag, Progress, Badge, Drawer, Timeline, Alert, Empty, Tooltip, Form, Divider, Checkbox, Modal, Tabs, Table, Select, Slider, InputNumber, AutoComplete } from 'antd';
 import { UploadOutlined, FileTextOutlined, RobotOutlined, MessageOutlined, TeamOutlined, SettingOutlined, CloudUploadOutlined, DeleteOutlined, SendOutlined, LoadingOutlined, BulbOutlined, ThunderboltOutlined, ClockCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, InboxOutlined, UserOutlined, LockOutlined, LogoutOutlined, SafetyCertificateOutlined, LinkOutlined, FolderOpenOutlined, MailOutlined, LineChartOutlined, FileSearchOutlined, EyeOutlined, SaveOutlined, DownOutlined, UpOutlined, PlusOutlined, EditOutlined } from '@ant-design/icons';
 import { useNavigate, Routes, Route, Link, Navigate } from 'react-router-dom';
 import axios from 'axios';
@@ -126,6 +126,12 @@ const api = {
   updateWorkerConfig: (id: string, config: any) => axios.put(`${API_BASE}/workers/${id}/config`, config),
   createWorker: (data: any) => axios.post(`${API_BASE}/workers`, data),
   deleteWorker: (id: string) => axios.delete(`${API_BASE}/workers/${id}`),
+
+  // Skills
+  listInstalledSkills: () => axios.get(`${API_BASE}/skills`),
+  searchSkills: (q: string, limit: number = 10) =>
+    axios.get(`${API_BASE}/skills/search`, { params: { q, limit } }),
+  uninstallSkill: (name: string) => axios.delete(`${API_BASE}/skills/${name}`),
   
   // 系统
   health: () => axios.get(`${API_BASE}/health`),
@@ -1672,6 +1678,14 @@ const WorkerCard: React.FC<{
   const [saving, setSaving] = useState(false);
   const [skillInput, setSkillInput] = useState('');
   const [toolInput, setToolInput] = useState('');
+  const [skillOptions, setSkillOptions] = useState<{ value: string; label: any; data: any }[]>([]);
+  const [installModal, setInstallModal] = useState<null | {
+    name: string;
+    sourceUrl: string;
+    stages: { stage: string; message: string; ts: number }[];
+    status: 'running' | 'success' | 'error';
+    error?: string;
+  }>(null);
   const [icon, setIcon] = useState(worker.icon || '');
   const [displayName, setDisplayName] = useState(worker.display_name || '');
   const [iconPickerOpen, setIconPickerOpen] = useState(false);
@@ -1765,6 +1779,121 @@ const WorkerCard: React.FC<{
     const v = skillInput.trim();
     if (v && !skills.includes(v)) setSkills([...skills, v]);
     setSkillInput('');
+    setSkillOptions([]);
+  };
+
+  // 识别 GitHub 技能 URL:github.com/owner/repo[/tree/branch/subpath]
+  const GITHUB_URL_RE = /^(?:https?:\/\/)?(?:www\.)?github\.com\/[^/\s]+\/[^/\s]+(?:\/(?:tree|blob)\/[^/\s]+)?(?:\/[^\s]*)?$/;
+
+  // 搜索 registry(节流)
+  const skillSearchTimer = useRef<number | null>(null);
+  const handleSkillSearch = (val: string) => {
+    setSkillInput(val);
+    if (skillSearchTimer.current) window.clearTimeout(skillSearchTimer.current);
+
+    const trimmed = val.trim();
+    const isGitHubUrl = GITHUB_URL_RE.test(trimmed);
+
+    skillSearchTimer.current = window.setTimeout(async () => {
+      const buildOptions = (results: any[]) => {
+        const items = results.map((r: any) => ({
+          value: r.name,
+          data: { kind: 'registry', ...r },
+          label: (
+            <div style={{ display: 'flex', flexDirection: 'column', padding: '2px 0' }}>
+              <span style={{ fontWeight: 500 }}>{r.name}</span>
+              <span style={{ fontSize: 11, color: '#888', whiteSpace: 'normal' }}>{r.description}</span>
+            </div>
+          ),
+        }));
+        if (isGitHubUrl) {
+          items.unshift({
+            value: `__url__:${trimmed}`,
+            data: { kind: 'url', source_url: trimmed },
+            label: (
+              <div style={{ display: 'flex', flexDirection: 'column', padding: '2px 0' }}>
+                <span style={{ fontWeight: 500 }}>📦 安装此 GitHub URL</span>
+                <span style={{ fontSize: 11, color: '#888', whiteSpace: 'normal', wordBreak: 'break-all' }}>{trimmed}</span>
+              </div>
+            ),
+          });
+        }
+        return items;
+      };
+
+      try {
+        const res = await api.searchSkills(isGitHubUrl ? '' : val, 10);
+        setSkillOptions(buildOptions(res.data?.results || []));
+      } catch (err: any) {
+        console.error('[skills/search] failed:', err);
+        // 搜索挂了也不阻断 URL 安装入口
+        setSkillOptions(isGitHubUrl ? buildOptions([]) : []);
+        if (err?.response?.status === 404) {
+          message.error('搜索接口 404 — 后端需要重启以加载新路由');
+        }
+      }
+    }, 250);
+  };
+
+  // 选中推荐项 → 触发 SSE 安装
+  const handleSkillSelect = async (_value: string, option: any) => {
+    const r = option?.data;
+    if (!r) return;
+    setSkillInput('');
+    setSkillOptions([]);
+    const isUrl = r.kind === 'url';
+    if (!isUrl && skills.includes(r.name)) {
+      message.info(`${r.name} 已在列表中`);
+      return;
+    }
+    setInstallModal({
+      name: isUrl ? '(待从 SKILL.md 读取)' : r.name,
+      sourceUrl: r.source_url,
+      stages: [],
+      status: 'running',
+    });
+
+    try {
+      const token = localStorage.getItem(TOKEN_KEY) || '';
+      const resp = await fetch(`${API_BASE}/skills/install`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ source_url: r.source_url, force: false }),
+      });
+      if (!resp.ok || !resp.body) throw new Error(`HTTP ${resp.status}`);
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = '';
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const parts = buf.split('\n\n');
+        buf = parts.pop() || '';
+        for (const part of parts) {
+          const line = part.split('\n').find(l => l.startsWith('data: '));
+          if (!line) continue;
+          const evt = JSON.parse(line.slice(6));
+          setInstallModal(m => m && {
+            ...m,
+            name: evt.stage === 'success' && evt.name ? evt.name : m.name,
+            stages: [...m.stages, { stage: evt.stage, message: evt.message || evt.name || '', ts: Date.now() }],
+            status: evt.stage === 'success' ? 'success' : evt.stage === 'error' ? 'error' : m.status,
+            error: evt.stage === 'error' ? evt.message : m.error,
+          });
+          if (evt.stage === 'success') {
+            // 安装成功 → 把 skill 名加入当前 worker 的 skills 列表(尚未持久化,需点保存)
+            setSkills(prev => prev.includes(evt.name) ? prev : [...prev, evt.name]);
+          }
+        }
+      }
+    } catch (err: any) {
+      setInstallModal(m => m && { ...m, status: 'error', error: err?.message || String(err) });
+    }
   };
   const addTool = () => {
     const v = toolInput.trim();
@@ -1916,7 +2045,23 @@ const WorkerCard: React.FC<{
               <div style={{ marginTop: 4 }}>
                 {skills.map(s => <Tag key={s} closable onClose={() => setSkills(skills.filter(x => x !== s))} style={{ marginBottom: 4 }}>{s}</Tag>)}
               </div>
-              <Input size="small" placeholder="输入技能名称后回车" value={skillInput} onChange={e => setSkillInput(e.target.value)} onPressEnter={addSkill} style={{ marginTop: 4 }} />
+              <AutoComplete
+                size="small"
+                style={{ width: '100%', marginTop: 4 }}
+                value={skillInput}
+                options={skillOptions}
+                onSearch={handleSkillSearch}
+                onSelect={handleSkillSelect}
+                onChange={(v) => setSkillInput(typeof v === 'string' ? v : '')}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && skillOptions.length === 0) {
+                    addSkill();
+                  }
+                }}
+                placeholder="输入关键字搜索 → 下拉选择自动安装;无结果时回车按名添加"
+                popupMatchSelectWidth={360}
+                notFoundContent={skillInput ? <span style={{ color: '#999', fontSize: 12 }}>未在 registry 中匹配到,回车将直接添加名称</span> : null}
+              />
             </div>
 
             {/* 高级选项 */}
@@ -1956,6 +2101,49 @@ const WorkerCard: React.FC<{
           </>
         )}
       </Space>
+
+      {/* 安装进度 Modal */}
+      <Modal
+        open={!!installModal}
+        title={installModal ? `安装技能: ${installModal.name}` : ''}
+        onCancel={() => installModal?.status !== 'running' && setInstallModal(null)}
+        maskClosable={installModal?.status !== 'running'}
+        closable={installModal?.status !== 'running'}
+        footer={installModal?.status === 'running' ? null : (
+          <Button type="primary" onClick={() => setInstallModal(null)}>关闭</Button>
+        )}
+      >
+        {installModal && (
+          <div>
+            <div style={{ fontSize: 12, color: '#888', marginBottom: 8, wordBreak: 'break-all' }}>
+              来源: {installModal.sourceUrl}
+            </div>
+            <Timeline
+              items={[
+                ...installModal.stages.map(s => ({
+                  color: s.stage === 'error' ? 'red' : s.stage === 'success' ? 'green' : 'blue',
+                  children: (<span style={{ fontSize: 12 }}><b>{s.stage}</b> — {s.message}</span>) as React.ReactNode,
+                })),
+                ...(installModal.status === 'running'
+                  ? [{ color: 'gray', children: (<Spin size="small" />) as React.ReactNode }]
+                  : []),
+              ]}
+            />
+            {installModal.status === 'success' && (
+              <Alert
+                type="success"
+                showIcon
+                message="安装完成"
+                description={`已添加到当前 Worker 的技能列表,点击"保存"按钮提交配置。`}
+                style={{ marginTop: 8 }}
+              />
+            )}
+            {installModal.status === 'error' && (
+              <Alert type="error" showIcon message="安装失败" description={installModal.error} style={{ marginTop: 8 }} />
+            )}
+          </div>
+        )}
+      </Modal>
     </Card>
   );
 };

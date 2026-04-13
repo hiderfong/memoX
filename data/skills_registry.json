@@ -1,0 +1,150 @@
+{
+  "version": 2,
+  "updated": "2026-04-13",
+  "skills": [
+    {
+      "name": "docx",
+      "description": "读取、生成、改写 .docx Word 文档",
+      "keywords": ["docx", "word", "文档", "office"],
+      "source_url": "github.com/anthropics/skills/tree/main/skills/docx"
+    },
+    {
+      "name": "pdf",
+      "description": "解析 PDF 并抽取文本、表格、元数据",
+      "keywords": ["pdf", "文档", "解析", "抽取"],
+      "source_url": "github.com/anthropics/skills/tree/main/skills/pdf"
+    },
+    {
+      "name": "pptx",
+      "description": "读取与生成 PowerPoint .pptx 演示文稿",
+      "keywords": ["pptx", "powerpoint", "幻灯片", "演示"],
+      "source_url": "github.com/anthropics/skills/tree/main/skills/pptx"
+    },
+    {
+      "name": "xlsx",
+      "description": "读取、生成、修改 Excel .xlsx 表格",
+      "keywords": ["xlsx", "excel", "表格", "数据"],
+      "source_url": "github.com/anthropics/skills/tree/main/skills/xlsx"
+    },
+    {
+      "name": "brand-guidelines",
+      "description": "按品牌规范生成文案与视觉元素",
+      "keywords": ["brand", "品牌", "设计规范", "vi"],
+      "source_url": "github.com/anthropics/skills/tree/main/skills/brand-guidelines"
+    },
+    {
+      "name": "canvas-design",
+      "description": "生成 canvas 与平面设计稿、排版建议",
+      "keywords": ["canvas", "canva", "设计", "海报", "排版"],
+      "source_url": "github.com/anthropics/skills/tree/main/skills/canvas-design"
+    },
+    {
+      "name": "slack-gif-creator",
+      "description": "为 Slack 频道生成动图与表情反应建议",
+      "keywords": ["slack", "gif", "表情", "聊天"],
+      "source_url": "github.com/anthropics/skills/tree/main/skills/slack-gif-creator"
+    },
+    {
+      "name": "webapp-testing",
+      "description": "使用 Playwright 对 web 应用进行 UI 自动化测试",
+      "keywords": ["test", "测试", "playwright", "e2e", "ui", "web"],
+      "source_url": "github.com/anthropics/skills/tree/main/skills/webapp-testing"
+    },
+    {
+      "name": "web-artifacts-builder",
+      "description": "构建可在 Claude artifacts 里运行的单文件 HTML/React 组件",
+      "keywords": ["artifact", "html", "react", "单文件", "原型"],
+      "source_url": "github.com/anthropics/skills/tree/main/skills/web-artifacts-builder"
+    },
+    {
+      "name": "mcp-builder",
+      "description": "脚手架式构建 MCP (Model Context Protocol) 服务器",
+      "keywords": ["mcp", "server", "tool", "工具", "协议"],
+      "source_url": "github.com/anthropics/skills/tree/main/skills/mcp-builder"
+    },
+    {
+      "name": "skill-creator",
+      "description": "创建与评估新的 Claude Code skill",
+      "keywords": ["skill", "创建", "meta", "技能"],
+      "source_url": "github.com/anthropics/skills/tree/main/skills/skill-creator"
+    },
+    {
+      "name": "claude-api",
+      "description": "调用 Claude API、构建 Anthropic SDK 应用,含 prompt caching",
+      "keywords": ["claude", "api", "anthropic", "sdk"],
+      "source_url": "github.com/anthropics/skills/tree/main/skills/claude-api"
+    },
+    {
+      "name": "doc-coauthoring",
+      "description": "与人协作撰写/修订长文档",
+      "keywords": ["doc", "协作", "写作", "文档"],
+      "source_url": "github.com/anthropics/skills/tree/main/skills/doc-coauthoring"
+    },
+    {
+      "name": "frontend-design",
+      "description": "生成具有设计感、避免 AI 套版观感的前端界面",
+      "keywords": ["frontend", "前端", "ui", "设计", "react", "tailwind"],
+      "source_url": "github.com/anthropics/skills/tree/main/skills/frontend-design"
+    },
+    {
+      "name": "algorithmic-art",
+      "description": "用代码生成算法艺术与生成式图形",
+      "keywords": ["art", "艺术", "生成", "creative", "canvas"],
+      "source_url": "github.com/anthropics/skills/tree/main/skills/algorithmic-art"
+    },
+    {
+      "name": "internal-comms",
+      "description": "起草内部沟通/公告/邮件等企业文档",
+      "keywords": ["comms", "沟通", "邮件", "公告", "企业"],
+      "source_url": "github.com/anthropics/skills/tree/main/skills/internal-comms"
+    },
+    {
+      "name": "theme-factory",
+      "description": "生成主题配色、设计 token 与品牌风格包",
+      "keywords": ["theme", "配色", "主题", "token", "设计"],
+      "source_url": "github.com/anthropics/skills/tree/main/skills/theme-factory"
+    },
+    {
+      "name": "systematic-debugging",
+      "description": "遇到 bug 或测试失败时,系统性地定位根因",
+      "keywords": ["debug", "调试", "bug", "定位", "排查"],
+      "source_url": "github.com/obra/superpowers/tree/main/skills/systematic-debugging"
+    },
+    {
+      "name": "test-driven-development",
+      "description": "TDD:先写失败测试再实现功能",
+      "keywords": ["tdd", "test", "测试", "驱动开发"],
+      "source_url": "github.com/obra/superpowers/tree/main/skills/test-driven-development"
+    },
+    {
+      "name": "writing-plans",
+      "description": "把需求拆成可逐步执行的实现计划",
+      "keywords": ["plan", "计划", "拆分", "需求"],
+      "source_url": "github.com/obra/superpowers/tree/main/skills/writing-plans"
+    },
+    {
+      "name": "brainstorming",
+      "description": "在动手前探索用户意图、需求与设计方案",
+      "keywords": ["brainstorm", "头脑风暴", "需求", "方案"],
+      "source_url": "github.com/obra/superpowers/tree/main/skills/brainstorming"
+    },
+    {
+      "name": "writing-skills",
+      "description": "创建、编辑、验证 Claude Code skill",
+      "keywords": ["skill", "编写", "技能"],
+      "source_url": "github.com/obra/superpowers/tree/main/skills/writing-skills"
+    },
+    {
+      "name": "using-git-worktrees",
+      "description": "使用 git worktree 隔离开发任务",
+      "keywords": ["git", "worktree", "分支", "隔离"],
+      "source_url": "github.com/obra/superpowers/tree/main/skills/using-git-worktrees"
+    },
+    {
+      "name": "verification-before-completion",
+      "description": "声明完成前必须跑验证命令并看输出",
+      "keywords": ["verify", "验证", "完成", "检查"],
+      "source_url": "github.com/obra/superpowers/tree/main/skills/verification-before-completion"
+    }
+  ]
+}

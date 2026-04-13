@@ -52,7 +52,7 @@ providers:
 # Worker Agent 模板
 worker_templates:
   code_worker:
-    model: "kimi-coder"
+    model: "kimi-latest"
     provider: "kimi"
     temperature: 0.7
     icon: "💻"
@@ -71,6 +71,7 @@ worker_templates:
     temperature: 0.3
     skills:
     - "data-analysis"
+    - "doc-coauthoring"
     tools:
     - "web_search"
     - "web_fetch"

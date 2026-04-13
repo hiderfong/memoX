@@ -1169,6 +1169,14 @@ async def update_worker_config(worker_id: str, body: WorkerConfigUpdate) -> dict
     worker.config.model = body.model
     worker.config.skills = body.skills
     worker.config.tools = body.tools
+
+    # 同步刷新 LoadSkillTool 白名单 — 否则新加的 skill 会被当作未启用
+    from skills.tool import LoadSkillTool
+    if body.skills:
+        skills_dir = Path(_config.knowledge_base.skills_dir)
+        worker.tools.register(LoadSkillTool(skills_dir, set(body.skills)))
+    else:
+        worker.tools.unregister("load_skill")
     worker.config.temperature = body.temperature
     worker.config.max_tokens = body.max_tokens
     worker.config.icon = body.icon
@@ -1356,6 +1364,139 @@ async def delete_worker(worker_id: str) -> dict:
         config_path.write_text(new_text, encoding="utf-8")
 
     return {"success": True, "message": f"Worker '{worker_id}' 已删除"}
+
+
+# ==================== Skills API ====================
+
+@app.get("/api/skills")
+async def list_installed_skills() -> dict:
+    """列出已安装 skill。"""
+    from skills.loader import list_skills as _list_skills
+    skills_dir = Path(_config.knowledge_base.skills_dir)
+    out = []
+    for s in _list_skills(skills_dir):
+        source_url = ""
+        meta_path = s.path / ".install.json"
+        if meta_path.is_file():
+            try:
+                source_url = json.loads(meta_path.read_text(encoding="utf-8")).get("source_url", "")
+            except (OSError, json.JSONDecodeError):
+                pass
+        out.append({
+            "name": s.name,
+            "description": s.description,
+            "source_url": source_url,
+        })
+    return {"skills": out}
+
+
+@app.get("/api/skills/search")
+async def search_skills(q: str = "", limit: int = 10) -> dict:
+    """在 registry 里按关键字搜索 skill。已安装的会被排除。"""
+    from skills.loader import list_skills as _list_skills
+    from skills.registry import load_registry, search_registry
+
+    skills_dir = Path(_config.knowledge_base.skills_dir)
+    registry_path = Path("data/skills_registry.json")
+
+    installed = {s.name for s in _list_skills(skills_dir)}
+    entries = load_registry(registry_path)
+    results = search_registry(entries, q, installed, limit=limit)
+    return {
+        "query": q,
+        "results": [
+            {
+                "name": r.name,
+                "description": r.description,
+                "source_url": r.source_url,
+                "score": r.score,
+            }
+            for r in results
+        ],
+    }
+
+
+class SkillInstallRequest(BaseModel):
+    source_url: str
+    name: str | None = None
+    force: bool = False
+
+
+@app.post("/api/skills/install")
+async def install_skill(body: SkillInstallRequest):
+    """从 GitHub 安装 skill,以 SSE 流推送阶段进度。"""
+    from skills.installer import install_from_github
+
+    skills_dir = Path(_config.knowledge_base.skills_dir)
+    queue: asyncio.Queue = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+
+    def on_progress(stage: str, msg: str) -> None:
+        loop.call_soon_threadsafe(
+            queue.put_nowait,
+            {"stage": stage, "message": msg},
+        )
+
+    async def worker() -> None:
+        try:
+            skill = await asyncio.to_thread(
+                install_from_github,
+                body.source_url,
+                skills_dir,
+                body.name,
+                body.force,
+                on_progress,
+            )
+            # 回写 registry — 让下次搜索直接命中
+            try:
+                from skills.registry import upsert_registry_entry
+                changed = upsert_registry_entry(
+                    Path("data/skills_registry.json"),
+                    name=skill.name,
+                    description=skill.description,
+                    source_url=body.source_url,
+                )
+                if changed:
+                    await queue.put({"stage": "registry", "message": "已登记到 registry"})
+            except Exception as e:  # noqa: BLE001
+                await queue.put({"stage": "registry", "message": f"registry 写入失败: {e}"})
+            await queue.put({
+                "stage": "success",
+                "name": skill.name,
+                "description": skill.description,
+            })
+        except FileExistsError as e:
+            await queue.put({"stage": "error", "code": "exists", "message": str(e)})
+        except FileNotFoundError as e:
+            await queue.put({"stage": "error", "code": "not_found", "message": str(e)})
+        except (ValueError, RuntimeError) as e:
+            await queue.put({"stage": "error", "code": "invalid", "message": str(e)})
+        except Exception as e:  # noqa: BLE001
+            await queue.put({"stage": "error", "code": "unknown", "message": str(e)})
+        finally:
+            await queue.put(None)
+
+    async def event_stream():
+        asyncio.create_task(worker())
+        while True:
+            item = await queue.get()
+            if item is None:
+                break
+            yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@app.delete("/api/skills/{name}")
+async def uninstall_skill(name: str) -> dict:
+    """卸载已安装 skill。"""
+    from skills.installer import remove_skill as _remove
+    skills_dir = Path(_config.knowledge_base.skills_dir)
+    try:
+        _remove(skills_dir, name)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    return {"success": True, "name": name}
 
 
 # ==================== 系统 API ====================
