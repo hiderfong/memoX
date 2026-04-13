@@ -1721,15 +1721,14 @@ const WorkerCard: React.FC<{
     'coding': '编程与代码生成',
     'reasoning': '逻辑推理与问题分析',
   };
+  // 真实可用工具 — 与 src/coordinator/iterative_orchestrator.py:_prepare_workers 里的候选对应
   const TOOL_DESC: Record<string, string> = {
-    'filesystem': '本地文件系统读写操作',
-    'shell': '终端命令执行',
-    'git': 'Git 版本控制操作',
-    'web_search': '互联网搜索',
-    'web_fetch': '网页内容抓取',
-    'python': 'Python 代码执行',
-    'browser': '浏览器自动化操作',
-    'calculator': '数学计算',
+    'read_file': '读取自身沙箱、shared/ 与其他 Agent 沙箱(同任务内)的文件',
+    'write_file': '写入自身沙箱的文件',
+    'list_files': '列出自身沙箱目录',
+    'run_shell': '在自身沙箱内执行 shell 命令',
+    'send_mail': '向其他 Agent 发邮件',
+    'read_mail': '读取自己的未读邮件',
   };
 
   const currentProvider = providers.find((p: any) => p.name === provider);
@@ -1795,17 +1794,45 @@ const WorkerCard: React.FC<{
     const isGitHubUrl = GITHUB_URL_RE.test(trimmed);
 
     skillSearchTimer.current = window.setTimeout(async () => {
+      const fmtStars = (n?: number) => {
+        if (typeof n !== 'number') return null;
+        if (n >= 1000) return (n / 1000).toFixed(n >= 10000 ? 0 : 1) + 'k';
+        return String(n);
+      };
+      const fmtPushed = (iso?: string) => {
+        if (!iso) return null;
+        const d = new Date(iso);
+        const days = Math.floor((Date.now() - d.getTime()) / 86400000);
+        if (days < 1) return '今日';
+        if (days < 30) return `${days}d ago`;
+        if (days < 365) return `${Math.floor(days / 30)}mo ago`;
+        return `${Math.floor(days / 365)}y ago`;
+      };
+
       const buildOptions = (results: any[]) => {
-        const items = results.map((r: any) => ({
-          value: r.name,
-          data: { kind: 'registry', ...r },
-          label: (
-            <div style={{ display: 'flex', flexDirection: 'column', padding: '2px 0' }}>
-              <span style={{ fontWeight: 500 }}>{r.name}</span>
-              <span style={{ fontSize: 11, color: '#888', whiteSpace: 'normal' }}>{r.description}</span>
-            </div>
-          ),
-        }));
+        const items = results.map((r: any) => {
+          const stars = fmtStars(r.stars);
+          const pushed = fmtPushed(r.pushed_at);
+          return {
+            value: r.name,
+            data: { kind: 'registry', ...r },
+            label: (
+              <div style={{ display: 'flex', flexDirection: 'column', padding: '2px 0' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', gap: 8 }}>
+                  <span style={{ fontWeight: 500 }}>{r.name}</span>
+                  {(stars || pushed) && (
+                    <span style={{ fontSize: 11, color: '#aaa', whiteSpace: 'nowrap' }}>
+                      {stars && <span>⭐ {stars}</span>}
+                      {stars && pushed && <span style={{ margin: '0 4px' }}>·</span>}
+                      {pushed && <span>{pushed}</span>}
+                    </span>
+                  )}
+                </div>
+                <span style={{ fontSize: 11, color: '#888', whiteSpace: 'normal' }}>{r.description}</span>
+              </div>
+            ),
+          };
+        });
         if (isGitHubUrl) {
           items.unshift({
             value: `__url__:${trimmed}`,
@@ -2073,11 +2100,21 @@ const WorkerCard: React.FC<{
               <div style={{ background: '#fafafa', padding: 12, borderRadius: 6 }}>
                 <Space direction="vertical" style={{ width: '100%' }} size={10}>
                   <div>
-                    <Text type="secondary" style={{ fontSize: 12 }}>Tools</Text>
-                    <div style={{ marginTop: 4 }}>
-                      {tools.map(t => <Tag key={t} closable onClose={() => setTools(tools.filter(x => x !== t))} style={{ marginBottom: 4 }}>{t}</Tag>)}
-                    </div>
-                    <Input size="small" placeholder="输入工具名称后回车" value={toolInput} onChange={e => setToolInput(e.target.value)} onPressEnter={addTool} style={{ marginTop: 4 }} />
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      Tools <span style={{ color: '#aaa', fontSize: 11 }}>(留空 = 全部可用;勾选 = 仅白名单内可调用)</span>
+                    </Text>
+                    <Select
+                      mode="multiple"
+                      size="small"
+                      style={{ width: '100%', marginTop: 4 }}
+                      value={tools}
+                      onChange={setTools}
+                      placeholder="选择允许的工具;留空表示不限制"
+                      options={Object.entries(TOOL_DESC).map(([k, v]) => ({
+                        value: k,
+                        label: <span><b>{k}</b> <span style={{ color: '#999', fontSize: 11 }}>— {v}</span></span>,
+                      }))}
+                    />
                   </div>
                   <div>
                     <Text type="secondary" style={{ fontSize: 12 }}>Temperature: {temperature}</Text>

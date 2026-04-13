@@ -1392,16 +1392,25 @@ async def list_installed_skills() -> dict:
 
 @app.get("/api/skills/search")
 async def search_skills(q: str = "", limit: int = 10) -> dict:
-    """在 registry 里按关键字搜索 skill。已安装的会被排除。"""
+    """在 registry 里按关键字搜索 skill。已安装的会被排除。
+
+    结果会尽力附带 GitHub stars + pushed_at(本地 24h TTL 缓存,首次冷启会拉网);
+    若元数据未就绪(缓存没命中且抓取失败/超时),对应字段缺省,前端需容忍缺失。
+    """
     from skills.loader import list_skills as _list_skills
     from skills.registry import load_registry, search_registry
+    from skills.github_meta import enrich_with_repo_meta
 
     skills_dir = Path(_config.knowledge_base.skills_dir)
     registry_path = Path("data/skills_registry.json")
+    meta_cache_path = Path("data/github_meta_cache.json")
 
     installed = {s.name for s in _list_skills(skills_dir)}
     entries = load_registry(registry_path)
     results = search_registry(entries, q, installed, limit=limit)
+
+    meta = await enrich_with_repo_meta([r.source_url for r in results], meta_cache_path)
+
     return {
         "query": q,
         "results": [
@@ -1410,6 +1419,8 @@ async def search_skills(q: str = "", limit: int = 10) -> dict:
                 "description": r.description,
                 "source_url": r.source_url,
                 "score": r.score,
+                "stars": meta.get(r.source_url, {}).get("stars"),
+                "pushed_at": meta.get(r.source_url, {}).get("pushed_at"),
             }
             for r in results
         ],

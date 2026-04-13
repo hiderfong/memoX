@@ -269,12 +269,37 @@ class IterativeOrchestrator:
             sandbox_dir = self._sandbox_mgr.get_agent_sandbox(task.id, worker.config.name)
             registry = ToolRegistry()
 
-            registry.register(ReadFileTool(sandbox_dir, task.id, self._sandbox_mgr))
-            registry.register(WriteFileTool(sandbox_dir))
-            registry.register(ListFilesTool(sandbox_dir))
-            registry.register(ShellTool(cwd=sandbox_dir))
-            registry.register(SendMailTool(worker.config.name, mail_bus))
-            registry.register(ReadMailTool(worker.config.name, mail_bus))
+            # 候选工具 → 用 config.tools 做白名单过滤。空白名单 = 全部可用(兼容旧行为)。
+            candidates = [
+                ReadFileTool(sandbox_dir, task.id, self._sandbox_mgr),
+                WriteFileTool(sandbox_dir),
+                ListFilesTool(sandbox_dir),
+                ShellTool(cwd=sandbox_dir),
+                SendMailTool(worker.config.name, mail_bus),
+                ReadMailTool(worker.config.name, mail_bus),
+            ]
+            allowed = set(worker.config.tools or [])
+            if allowed:
+                unknown = allowed - {t.name for t in candidates}
+                if unknown:
+                    logger.warning(
+                        f"[Orchestrator] worker {worker.config.name} 白名单含未知工具: "
+                        f"{sorted(unknown)} (已忽略)"
+                    )
+                for t in candidates:
+                    if t.name in allowed:
+                        registry.register(t)
+            else:
+                for t in candidates:
+                    registry.register(t)
+
+            # load_skill 不受 config.tools 白名单影响 — 它由 config.skills 单独控制
+            if worker.config.skills:
+                from pathlib import Path
+                from config import get_config
+                from skills.tool import LoadSkillTool
+                skills_dir = Path(get_config().knowledge_base.skills_dir)
+                registry.register(LoadSkillTool(skills_dir, set(worker.config.skills)))
 
             worker.tools = registry
             worker.refinement_hint = refinement_instructions or None
