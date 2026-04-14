@@ -19,8 +19,8 @@ server:
 
 # Coordinator 配置
 coordinator:
-  model: "MiniMax-M2.7-highspeed"
-  provider: "minimax"
+  model: "qwen3.6-plus"
+  provider: "dashscope"
   temperature: 0.7
   max_tokens: 4096
   max_workers: 5  # 最多 5 个 Worker 并行
@@ -46,8 +46,35 @@ providers:
     headers:
       User-Agent: "claude-code/0.1.0"  # Kimi Coding Plan requires this header
   dashscope:
-    api_key: "${DASHSCOPE_API_KEY}"  # 阿里云 DashScope
-    base_url: "https://dashscope.aliyuncs.com/api/v1"
+    api_key: "${DASHSCOPE_API_KEY}"  # 阿里云 DashScope (OpenAI 兼容模式)
+    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+
+# 文生图配置
+image_generation:
+  enabled: true
+  provider: "dashscope"
+  model: "qwen-image-2.0-pro"
+  api_key: "${DASHSCOPE_API_KEY}"
+  default_size: "1024*1024"
+
+# 文生视频配置
+video_generation:
+  enabled: true
+  provider: "dashscope"
+  model: "wan2.7-t2v"
+  api_key: "${DASHSCOPE_API_KEY}"
+  default_resolution: "720P"
+  default_ratio: "16:9"
+  default_duration: 5
+
+# 图生视频配置
+image_to_video:
+  enabled: true
+  provider: "dashscope"
+  model: "wan2.7-i2v"
+  api_key: "${DASHSCOPE_API_KEY}"
+  default_resolution: "720P"
+  default_duration: 5
 
 # Worker Agent 模板
 worker_templates:

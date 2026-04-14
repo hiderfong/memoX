@@ -103,6 +103,57 @@ class AuthConfig:
 
 
 @dataclass
+class ImageGenerationConfig:
+    """文生图配置"""
+    enabled: bool = False
+    provider: str = "dashscope"
+    model: str = "qwen-image-2.0-pro"
+    api_key: str = ""
+    default_size: str = "1024*1024"
+
+    def resolve_api_key(self) -> str:
+        key = self.api_key
+        if key.startswith("${") and key.endswith("}"):
+            return os.getenv(key[2:-1], "")
+        return key
+
+
+@dataclass
+class VideoGenerationConfig:
+    """文生视频配置"""
+    enabled: bool = False
+    provider: str = "dashscope"
+    model: str = "wan2.7-t2v"
+    api_key: str = ""
+    default_resolution: str = "720P"
+    default_ratio: str = "16:9"
+    default_duration: int = 5
+
+    def resolve_api_key(self) -> str:
+        key = self.api_key
+        if key.startswith("${") and key.endswith("}"):
+            return os.getenv(key[2:-1], "")
+        return key
+
+
+@dataclass
+class ImageToVideoConfig:
+    """图生视频配置"""
+    enabled: bool = False
+    provider: str = "dashscope"
+    model: str = "wan2.7-i2v"
+    api_key: str = ""
+    default_resolution: str = "720P"
+    default_duration: int = 5
+
+    def resolve_api_key(self) -> str:
+        key = self.api_key
+        if key.startswith("${") and key.endswith("}"):
+            return os.getenv(key[2:-1], "")
+        return key
+
+
+@dataclass
 class Config:
     """全局配置"""
     app: AppConfig
@@ -112,6 +163,9 @@ class Config:
     worker_templates: dict[str, WorkerTemplate]
     knowledge_base: KnowledgeBaseConfig
     auth: AuthConfig = field(default_factory=AuthConfig)
+    image_generation: ImageGenerationConfig = field(default_factory=ImageGenerationConfig)
+    video_generation: VideoGenerationConfig = field(default_factory=VideoGenerationConfig)
+    image_to_video: ImageToVideoConfig = field(default_factory=ImageToVideoConfig)
     
     @classmethod
     def from_yaml(cls, path: str | Path) -> "Config":
@@ -151,6 +205,10 @@ class Config:
             users=auth_users,
         )
 
+        image_generation = ImageGenerationConfig(**data.get("image_generation", {}))
+        video_generation = VideoGenerationConfig(**data.get("video_generation", {}))
+        image_to_video = ImageToVideoConfig(**data.get("image_to_video", {}))
+
         return cls(
             app=app,
             server=server,
@@ -159,6 +217,9 @@ class Config:
             worker_templates=worker_templates,
             knowledge_base=knowledge_base,
             auth=auth,
+            image_generation=image_generation,
+            video_generation=video_generation,
+            image_to_video=image_to_video,
         )
 
 
