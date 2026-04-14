@@ -1,9 +1,10 @@
 import React, { useState, useEffect, useRef, createContext, useContext } from 'react';
 import { Layout, Menu, Typography, Card, Button, Upload, List, Space, Avatar, Input, message, Spin, Tag, Progress, Badge, Drawer, Timeline, Alert, Empty, Tooltip, Form, Divider, Checkbox, Modal, Tabs, Table, Select, Slider, InputNumber, AutoComplete } from 'antd';
 import { UploadOutlined, FileTextOutlined, RobotOutlined, MessageOutlined, TeamOutlined, SettingOutlined, CloudUploadOutlined, DeleteOutlined, SendOutlined, LoadingOutlined, BulbOutlined, ThunderboltOutlined, ClockCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, InboxOutlined, UserOutlined, LockOutlined, LogoutOutlined, SafetyCertificateOutlined, LinkOutlined, FolderOpenOutlined, MailOutlined, LineChartOutlined, FileSearchOutlined, EyeOutlined, SaveOutlined, DownOutlined, UpOutlined, PlusOutlined, EditOutlined } from '@ant-design/icons';
-import { useNavigate, Routes, Route, Link, Navigate } from 'react-router-dom';
+import { useNavigate, useLocation, Routes, Route, Link, Navigate } from 'react-router-dom';
 import axios from 'axios';
 import dayjs from 'dayjs';
+import { I2VModal } from './components/I2VModal';
 
 const { Header, Sider, Content } = Layout;
 const { Title, Text } = Typography;
@@ -153,9 +154,23 @@ const api = {
     axios.put(`${API_BASE}/documents/${docId}/group`, { group_id: groupId }),
 
   // 会话历史
-  listSessions: () => axios.get(`${API_BASE}/chat/sessions`),
+  listSessions: (archived?: 'archived' | 'all') =>
+    axios.get(`${API_BASE}/chat/sessions`, { params: archived ? { archived: archived === 'archived' ? '1' : 'all' } : {} }),
   getSessionMessages: (id: string) => axios.get(`${API_BASE}/chat/sessions/${id}/messages`),
   deleteSession: (id: string) => axios.delete(`${API_BASE}/chat/sessions/${id}`),
+  renameSession: (id: string, title: string) =>
+    axios.patch(`${API_BASE}/chat/sessions/${id}`, { title }),
+  archiveSession: (id: string, archived: boolean) =>
+    axios.patch(`${API_BASE}/chat/sessions/${id}`, { archived }),
+  summarizeSessionAsTask: (id: string, taskType?: string) =>
+    axios.post(`${API_BASE}/chat/sessions/${id}/summarize-task`, { task_type: taskType || null }),
+
+  // 定时任务
+  listScheduledTasks: () => axios.get(`${API_BASE}/scheduled-tasks`),
+  createScheduledTask: (data: any) => axios.post(`${API_BASE}/scheduled-tasks`, data),
+  updateScheduledTask: (id: string, data: any) =>
+    axios.patch(`${API_BASE}/scheduled-tasks/${id}`, data),
+  deleteScheduledTask: (id: string) => axios.delete(`${API_BASE}/scheduled-tasks/${id}`),
 
   // 任务取消
   cancelTask: (id: string) => axios.post(`${API_BASE}/tasks/${id}/cancel`),
@@ -258,7 +273,7 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   };
 
   return (
-    <Layout style={{ minHeight: '100vh' }}>
+    <Layout style={{ height: '100vh', overflow: 'hidden' }}>
       <Header style={{ display: 'flex', alignItems: 'center', background: '#001529', padding: isMobile ? '0 12px' : '0 24px' }}>
         <Title level={4} style={{ color: 'white', margin: 0, flexShrink: 0, fontSize: isMobile ? 16 : undefined }}>
           📚 MemoX
@@ -295,17 +310,18 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
             mode="inline"
             defaultSelectedKeys={['documents']}
             onClick={({ key }) => { navigate(`/${key}`); if (isMobile) setCollapsed(true); }}
-            style={{ height: '100%', borderRight: 0 }}
+            style={{ height: '100%', borderRight: 0, fontSize: 16 }}
             items={[
-              { key: 'documents', icon: <FileTextOutlined />, label: '知识库' },
-              { key: 'chat', icon: <MessageOutlined />, label: '智能问答' },
-              { key: 'tasks', icon: <RobotOutlined />, label: '任务执行' },
-              { key: 'workers', icon: <TeamOutlined />, label: 'Agent 监控' },
+              { key: 'documents', icon: <FileTextOutlined style={{ fontSize: 18 }} />, label: <span style={{ fontSize: 16, fontWeight: 500 }}>知识库</span> },
+              { key: 'chat', icon: <MessageOutlined style={{ fontSize: 18 }} />, label: <span style={{ fontSize: 16, fontWeight: 500 }}>智能问答</span> },
+              { key: 'tasks', icon: <RobotOutlined style={{ fontSize: 18 }} />, label: <span style={{ fontSize: 16, fontWeight: 500 }}>任务执行</span> },
+              { key: 'scheduled-tasks', icon: <ClockCircleOutlined style={{ fontSize: 18 }} />, label: <span style={{ fontSize: 16, fontWeight: 500 }}>定时任务</span> },
+              { key: 'workers', icon: <TeamOutlined style={{ fontSize: 18 }} />, label: <span style={{ fontSize: 16, fontWeight: 500 }}>Agent 监控</span> },
             ]}
           />
         </Sider>
         <Layout style={{ padding: '0' }}>
-          <Content style={{ padding: isMobile ? '12px' : '24px', background: '#f0f2f5', minHeight: '100vh' }}>
+          <Content style={{ padding: isMobile ? '12px' : '24px', background: '#f0f2f5', overflow: 'auto' }}>
             {children}
           </Content>
         </Layout>
@@ -828,6 +844,9 @@ interface Message {
   content: string;
   sources?: any[];
   worker_id?: string | null;
+  images?: { url?: string; prompt?: string; error?: string }[];
+  videos?: { url?: string; prompt?: string; error?: string }[];
+  pendingHint?: string;
 }
 
 const ChatPage: React.FC = () => {
@@ -842,9 +861,17 @@ const ChatPage: React.FC = () => {
   const [activeGroupIds, setActiveGroupIds] = useState<string[]>([]);
   const [sessions, setSessions] = useState<any[]>([]);
   const [sessionsLoading, setSessionsLoading] = useState(false);
+  const [sessionView, setSessionView] = useState<'active' | 'archived'>('active');
+  const [renameTarget, setRenameTarget] = useState<any | null>(null);
+  const [renameInput, setRenameInput] = useState('');
   const [showSidebar, setShowSidebar] = useState(false);
   const [workers, setWorkers] = useState<any[]>([]);
   const [selectedWorkerId, setSelectedWorkerId] = useState<string | null>(null);
+  const [summarizing, setSummarizing] = useState(false);
+  const [clarify, setClarify] = useState<{ question: string; options: string[] } | null>(null);
+  const [i2vModalOpen, setI2vModalOpen] = useState(false);
+  const [i2vSourceUrl, setI2vSourceUrl] = useState<string>('');
+  const navigate = useNavigate();
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -854,10 +881,10 @@ const ChatPage: React.FC = () => {
     scrollToBottom();
   }, [messages]);
 
-  const fetchSessions = async () => {
+  const fetchSessions = async (view: 'active' | 'archived' = sessionView) => {
     setSessionsLoading(true);
     try {
-      const res = await api.listSessions();
+      const res = await api.listSessions(view === 'archived' ? 'archived' : undefined);
       setSessions(res.data);
     } catch (err) {
       console.error('获取会话列表失败', err);
@@ -866,23 +893,124 @@ const ChatPage: React.FC = () => {
     }
   };
 
+  const handleRenameSubmit = async () => {
+    if (!renameTarget) return;
+    const title = renameInput.trim();
+    if (!title) {
+      message.warning('名称不能为空');
+      return;
+    }
+    try {
+      await api.renameSession(renameTarget.id, title);
+      message.success('已重命名');
+      setRenameTarget(null);
+      setRenameInput('');
+      fetchSessions();
+    } catch (err: any) {
+      message.error(err.response?.data?.detail || '重命名失败');
+    }
+  };
+
+  const handleSummarizeAsTask = async (taskType?: string) => {
+    if (!sessionId) {
+      message.warning('请先进行对话再提炼任务');
+      return;
+    }
+    setSummarizing(true);
+    try {
+      const res = await api.summarizeSessionAsTask(sessionId, taskType);
+      const data = res.data;
+      if (data.status === 'need_clarification') {
+        setClarify({ question: data.question, options: data.options || [] });
+      } else {
+        setClarify(null);
+        const isScheduled = (taskType || '').includes('定时');
+        if (isScheduled) {
+          navigate('/scheduled-tasks', {
+            state: { prefill: data.summary || '', sourceSessionId: sessionId },
+          });
+        } else {
+          navigate('/tasks', { state: { prefill: data.summary || '' } });
+        }
+      }
+    } catch (err: any) {
+      message.error(err.response?.data?.detail || '提炼任务失败');
+    } finally {
+      setSummarizing(false);
+    }
+  };
+
+  const handleArchiveSession = async (sid: string, archived: boolean) => {
+    try {
+      await api.archiveSession(sid, archived);
+      message.success(archived ? '会话已归档' : '已恢复为活跃会话');
+      if (sessionId === sid && archived) handleNewSession();
+      fetchSessions();
+    } catch (err: any) {
+      message.error(err.response?.data?.detail || (archived ? '归档失败' : '恢复失败'));
+    }
+  };
+
+  useEffect(() => {
+    fetchSessions(sessionView);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionView]);
+
+  const groupsStorageKey = (sid: string) => `memox_chat_groups_${sid}`;
+  const loadSessionGroups = (sid: string): string[] | null => {
+    try {
+      const raw = localStorage.getItem(groupsStorageKey(sid));
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : null;
+    } catch { return null; }
+  };
+  const saveSessionGroups = (sid: string, ids: string[]) => {
+    try { localStorage.setItem(groupsStorageKey(sid), JSON.stringify(ids)); } catch {}
+  };
+
   const handleNewSession = () => {
     setSessionId('');
     setMessages([]);
     setSources([]);
+    setActiveGroupIds(groups.map(g => g.id));
   };
 
   const handleResumeSession = async (sid: string) => {
     try {
       const res = await api.getSessionMessages(sid);
-      const msgs: Message[] = res.data.map((m: any, i: number) => ({
-        id: `${sid}_${i}`,
-        role: m.role,
-        content: m.content,
-      }));
+      const imgRe = /!\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/g;
+      const vidRe = /\[video:([^\]]*)\]\((https?:\/\/[^\s)]+)\)/g;
+      const msgs: Message[] = res.data.map((m: any, i: number) => {
+        const images: { url: string; prompt: string }[] = [];
+        const videos: { url: string; prompt: string }[] = [];
+        let match;
+        const raw: string = m.content || '';
+        while ((match = imgRe.exec(raw)) !== null) {
+          images.push({ prompt: match[1], url: match[2] });
+        }
+        while ((match = vidRe.exec(raw)) !== null) {
+          videos.push({ prompt: match[1], url: match[2] });
+        }
+        const content = raw.replace(imgRe, '').replace(vidRe, '').replace(/\n{3,}/g, '\n\n').trim();
+        return {
+          id: `${sid}_${i}`,
+          role: m.role,
+          content,
+          images: images.length ? images : undefined,
+          videos: videos.length ? videos : undefined,
+        };
+      });
       setSessionId(sid);
       setMessages(msgs);
       setSources([]);
+      const stored = loadSessionGroups(sid);
+      if (stored) {
+        const valid = stored.filter(id => groups.some(g => g.id === id));
+        setActiveGroupIds(valid.length ? valid : groups.map(g => g.id));
+      } else {
+        setActiveGroupIds(groups.map(g => g.id));
+      }
     } catch (err) {
       message.error('恢复会话失败');
     }
@@ -891,6 +1019,7 @@ const ChatPage: React.FC = () => {
   const handleDeleteSession = async (sid: string) => {
     try {
       await api.deleteSession(sid);
+      try { localStorage.removeItem(groupsStorageKey(sid)); } catch {}
       message.success('会话已删除');
       if (sessionId === sid) handleNewSession();
       fetchSessions();
@@ -905,7 +1034,6 @@ const ChatPage: React.FC = () => {
       setActiveGroupIds(res.data.map((g: KnowledgeGroup) => g.id));
     }).catch(() => {});
     api.listWorkers().then(res => setWorkers(res.data)).catch(() => {});
-    fetchSessions();
   }, []);
 
   const handleSend = async () => {
@@ -916,36 +1044,149 @@ const ChatPage: React.FC = () => {
       role: 'user',
       content: input,
     };
+    const assistantId = (Date.now() + 1).toString();
+    const assistantMessage: Message = {
+      id: assistantId,
+      role: 'assistant',
+      content: '',
+      worker_id: selectedWorkerId || null,
+      images: [],
+      videos: [],
+    };
 
-    setMessages(prev => [...prev, userMessage]);
+    setMessages(prev => [...prev, userMessage, assistantMessage]);
+    const currentInput = input;
     setInput('');
     setLoading(true);
     setSources([]);
 
+    const updateAssistant = (patch: (m: Message) => Message) => {
+      setMessages(prev => prev.map(m => m.id === assistantId ? patch(m) : m));
+    };
+
     try {
       const allGroupIds = groups.map(g => g.id);
       const isAllSelected = activeGroupIds.length === allGroupIds.length;
-      const res = await api.chat(input, sessionId || undefined, true, isAllSelected ? null : activeGroupIds, selectedWorkerId);
-      const data = res.data;
-
-      if (data.session_id && !sessionId) {
-        setSessionId(data.session_id);
+      const token = localStorage.getItem('memox_token');
+      const resp = await fetch(`${API_BASE}/chat/stream`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          message: currentInput,
+          session_id: sessionId || undefined,
+          use_rag: true,
+          stream: true,
+          active_group_ids: isAllSelected ? null : activeGroupIds,
+          worker_id: selectedWorkerId || undefined,
+        }),
+      });
+      if (!resp.ok || !resp.body) {
+        throw new Error(`HTTP ${resp.status}`);
       }
 
-      const assistantMessage: Message = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: data.answer,
-        sources: data.sources,
-        worker_id: data.worker_id || null,
-      };
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder('utf-8');
+      let buffer = '';
+      let finalSessionId = sessionId;
 
-      setMessages(prev => [...prev, assistantMessage]);
-      setSources(data.sources || []);
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+
+        let idx;
+        while ((idx = buffer.indexOf('\n\n')) !== -1) {
+          const block = buffer.slice(0, idx).trim();
+          buffer = buffer.slice(idx + 2);
+          if (!block.startsWith('data:')) continue;
+          const payload = block.slice(5).trim();
+          if (!payload) continue;
+          let evt: any;
+          try { evt = JSON.parse(payload); } catch { continue; }
+
+          switch (evt.type) {
+            case 'sources':
+              updateAssistant(m => ({ ...m, sources: evt.data }));
+              setSources(evt.data || []);
+              break;
+            case 'chunk':
+              updateAssistant(m => ({ ...m, content: (m.content || '') + (evt.content || '') }));
+              break;
+            case 'image_pending':
+              updateAssistant(m => ({ ...m, pendingHint: `正在生成图像：${evt.prompt || ''}` }));
+              break;
+            case 'image':
+              updateAssistant(m => ({
+                ...m,
+                pendingHint: undefined,
+                images: [...(m.images || []), { url: evt.url, prompt: evt.prompt }],
+              }));
+              break;
+            case 'image_error':
+              updateAssistant(m => ({
+                ...m,
+                pendingHint: undefined,
+                images: [...(m.images || []), { error: evt.message, prompt: evt.prompt }],
+              }));
+              break;
+            case 'video_pending':
+              updateAssistant(m => ({ ...m, pendingHint: `正在生成视频（约 30s–数分钟）：${evt.prompt || ''}` }));
+              break;
+            case 'video':
+              updateAssistant(m => ({
+                ...m,
+                pendingHint: undefined,
+                videos: [...(m.videos || []), { url: evt.url, prompt: evt.prompt }],
+              }));
+              break;
+            case 'video_error':
+              updateAssistant(m => ({
+                ...m,
+                pendingHint: undefined,
+                videos: [...(m.videos || []), { error: evt.message, prompt: evt.prompt }],
+              }));
+              break;
+            case 'i2v_pending':
+              // optional inline status — no-op for now
+              break;
+            case 'i2v':
+              updateAssistant(m => ({
+                ...m,
+                pendingHint: undefined,
+                videos: [...(m.videos || []), { url: evt.url, prompt: evt.prompt }],
+              }));
+              break;
+            case 'i2v_error':
+              updateAssistant(m => ({
+                ...m,
+                pendingHint: undefined,
+                videos: [...(m.videos || []), { error: evt.message, prompt: evt.prompt }],
+              }));
+              break;
+            case 'done':
+              finalSessionId = evt.session_id || finalSessionId;
+              if (evt.worker_id) {
+                updateAssistant(m => ({ ...m, worker_id: evt.worker_id, pendingHint: undefined }));
+              }
+              break;
+            case 'error':
+              message.error(evt.message || '生成失败');
+              break;
+          }
+        }
+      }
+
+      if (finalSessionId && !sessionId) {
+        setSessionId(finalSessionId);
+        saveSessionGroups(finalSessionId, activeGroupIds);
+      }
       fetchSessions();
     } catch (err: any) {
-      message.error(err.response?.data?.detail || '发送失败');
-      setMessages(prev => prev.filter(m => m.id !== userMessage.id));
+      message.error(err?.message || '发送失败');
+      setMessages(prev => prev.filter(m => m.id !== userMessage.id && m.id !== assistantId));
     } finally {
       setLoading(false);
     }
@@ -959,7 +1200,7 @@ const ChatPage: React.FC = () => {
   };
 
   return (
-    <div style={{ display: 'flex', height: 'calc(100vh - 120px)', gap: isMobile ? 0 : 16 }}>
+    <div style={{ display: 'flex', height: '100%', minHeight: 0, gap: isMobile ? 0 : 16 }}>
       {/* 会话列表 — 移动端用 Drawer */}
       {isMobile && (
         <Button
@@ -977,29 +1218,59 @@ const ChatPage: React.FC = () => {
           placement="left"
           open={showSidebar}
           onClose={() => setShowSidebar(false)}
-          width={260}
+          width={300}
           extra={<Button size="small" type="primary" onClick={() => { handleNewSession(); setShowSidebar(false); }}>新对话</Button>}
         >
+          <Tabs
+            size="small"
+            activeKey={sessionView}
+            onChange={(k) => setSessionView(k as 'active' | 'archived')}
+            items={[
+              { key: 'active', label: '活跃' },
+              { key: 'archived', label: '归档' },
+            ]}
+            style={{ marginBottom: 8 }}
+          />
           <List
             loading={sessionsLoading}
             dataSource={sessions}
-            locale={{ emptyText: '暂无历史会话' }}
+            locale={{ emptyText: sessionView === 'archived' ? '暂无归档会话' : '暂无历史会话' }}
             renderItem={(s: any) => (
               <List.Item
-                style={{ cursor: 'pointer', background: sessionId === s.id ? '#e6f7ff' : undefined, padding: '8px 12px' }}
+                style={{ cursor: 'pointer', background: sessionId === s.id ? '#e6f7ff' : undefined, padding: '8px 12px', display: 'block' }}
                 onClick={() => { handleResumeSession(s.id); setShowSidebar(false); }}
-                actions={[
-                  <Tooltip title="删除" key="del">
-                    <Button type="text" size="small" danger icon={<DeleteOutlined />}
-                      onClick={(e: React.MouseEvent) => { e.stopPropagation(); handleDeleteSession(s.id); }}
-                    />
-                  </Tooltip>,
-                ]}
               >
-                <List.Item.Meta
-                  title={<Text ellipsis style={{ maxWidth: 140 }}>{s.title || '未命名会话'}</Text>}
-                  description={<Text type="secondary" style={{ fontSize: 11 }}>{dayjs(s.updated_at).format('MM-DD HH:mm')}</Text>}
-                />
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 4, width: '100%' }}>
+                  <Text ellipsis style={{ width: '100%' }}>{s.title || '未命名会话'}</Text>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+                    <Text type="secondary" style={{ fontSize: 11 }}>{dayjs(s.updated_at).format('MM-DD HH:mm')}</Text>
+                    <Space size={0}>
+                      <Tooltip title="重命名">
+                        <Button type="text" size="small" icon={<EditOutlined />}
+                          onClick={(e: React.MouseEvent) => { e.stopPropagation(); setRenameTarget(s); setRenameInput(s.title || ''); }}
+                        />
+                      </Tooltip>
+                      {sessionView === 'archived' ? (
+                        <Tooltip title="恢复">
+                          <Button type="text" size="small" icon={<FolderOpenOutlined />}
+                            onClick={(e: React.MouseEvent) => { e.stopPropagation(); handleArchiveSession(s.id, false); }}
+                          />
+                        </Tooltip>
+                      ) : (
+                        <Tooltip title="归档">
+                          <Button type="text" size="small" icon={<InboxOutlined />}
+                            onClick={(e: React.MouseEvent) => { e.stopPropagation(); handleArchiveSession(s.id, true); }}
+                          />
+                        </Tooltip>
+                      )}
+                      <Tooltip title="删除">
+                        <Button type="text" size="small" danger icon={<DeleteOutlined />}
+                          onClick={(e: React.MouseEvent) => { e.stopPropagation(); handleDeleteSession(s.id); }}
+                        />
+                      </Tooltip>
+                    </Space>
+                  </div>
+                </div>
               </List.Item>
             )}
           />
@@ -1008,38 +1279,78 @@ const ChatPage: React.FC = () => {
       <Card
         title="会话历史"
         size="small"
-        style={{ width: 240, flexShrink: 0, display: 'flex', flexDirection: 'column' }}
+        style={{ width: 260, flexShrink: 0, display: 'flex', flexDirection: 'column' }}
         bodyStyle={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}
         extra={<Button size="small" type="primary" onClick={handleNewSession}>新对话</Button>}
       >
+        <Tabs
+          size="small"
+          activeKey={sessionView}
+          onChange={(k) => setSessionView(k as 'active' | 'archived')}
+          items={[
+            { key: 'active', label: '活跃' },
+            { key: 'archived', label: '归档' },
+          ]}
+          style={{ padding: '0 12px' }}
+        />
         <List
           loading={sessionsLoading}
           dataSource={sessions}
-          locale={{ emptyText: '暂无历史会话' }}
+          locale={{ emptyText: sessionView === 'archived' ? '暂无归档会话' : '暂无历史会话' }}
           renderItem={(s: any) => (
             <List.Item
               style={{
                 cursor: 'pointer',
                 background: sessionId === s.id ? '#e6f7ff' : undefined,
                 padding: '8px 12px',
+                display: 'block',
               }}
               onClick={() => handleResumeSession(s.id)}
-              actions={[
-                <Tooltip title="删除" key="del">
-                  <Button
-                    type="text"
-                    size="small"
-                    danger
-                    icon={<DeleteOutlined />}
-                    onClick={(e: React.MouseEvent) => { e.stopPropagation(); handleDeleteSession(s.id); }}
-                  />
-                </Tooltip>,
-              ]}
             >
-              <List.Item.Meta
-                title={<Text ellipsis style={{ maxWidth: 140 }}>{s.title || '未命名会话'}</Text>}
-                description={<Text type="secondary" style={{ fontSize: 11 }}>{dayjs(s.updated_at).format('MM-DD HH:mm')}</Text>}
-              />
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4, width: '100%' }}>
+                <Text ellipsis style={{ width: '100%' }}>{s.title || '未命名会话'}</Text>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%' }}>
+                  <Text type="secondary" style={{ fontSize: 11 }}>{dayjs(s.updated_at).format('MM-DD HH:mm')}</Text>
+                  <Space size={0}>
+                    <Tooltip title="重命名">
+                      <Button
+                        type="text"
+                        size="small"
+                        icon={<EditOutlined />}
+                        onClick={(e: React.MouseEvent) => { e.stopPropagation(); setRenameTarget(s); setRenameInput(s.title || ''); }}
+                      />
+                    </Tooltip>
+                    {sessionView === 'archived' ? (
+                      <Tooltip title="恢复">
+                        <Button
+                          type="text"
+                          size="small"
+                          icon={<FolderOpenOutlined />}
+                          onClick={(e: React.MouseEvent) => { e.stopPropagation(); handleArchiveSession(s.id, false); }}
+                        />
+                      </Tooltip>
+                    ) : (
+                      <Tooltip title="归档">
+                        <Button
+                          type="text"
+                          size="small"
+                          icon={<InboxOutlined />}
+                          onClick={(e: React.MouseEvent) => { e.stopPropagation(); handleArchiveSession(s.id, true); }}
+                        />
+                      </Tooltip>
+                    )}
+                    <Tooltip title="删除">
+                      <Button
+                        type="text"
+                        size="small"
+                        danger
+                        icon={<DeleteOutlined />}
+                        onClick={(e: React.MouseEvent) => { e.stopPropagation(); handleDeleteSession(s.id); }}
+                      />
+                    </Tooltip>
+                  </Space>
+                </div>
+              </div>
             </List.Item>
           )}
         />
@@ -1047,8 +1358,25 @@ const ChatPage: React.FC = () => {
       )}
 
       {/* 原有聊天主区域 */}
-      <Card style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-        <div style={{ flex: 1, overflowY: 'auto', padding: '16px 0' }}>
+      <Card
+        style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}
+        bodyStyle={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}
+      >
+        {sessionId && messages.length > 0 && (
+          <div style={{ display: 'flex', justifyContent: 'flex-end', paddingBottom: 8, borderBottom: '1px solid #f0f0f0' }}>
+            <Tooltip title="把本次会话汇总为任务描述并跳转到任务执行页">
+              <Button
+                icon={<ThunderboltOutlined />}
+                size="small"
+                loading={summarizing}
+                onClick={() => handleSummarizeAsTask()}
+              >
+                提炼为任务
+              </Button>
+            </Tooltip>
+          </div>
+        )}
+        <div style={{ flex: 1, minHeight: 0, overflowY: 'auto', padding: '16px 0' }}>
           {messages.length === 0 ? (
             <div style={{ textAlign: 'center', padding: 60 }}>
               <Avatar size={64} icon={<MessageOutlined />} style={{ marginBottom: 16 }} />
@@ -1074,7 +1402,50 @@ const ChatPage: React.FC = () => {
                     <Text strong>{msg.role === 'user' ? '你' : (msgWorker?.display_name || msgWorker?.id || 'AI 助手')}</Text>
                     <Card size="small" style={{ marginTop: 8, background: msg.role === 'user' ? '#e6f7ff' : '#f6ffed' }}>
                       <div style={{ whiteSpace: 'pre-wrap' }}>{msg.content}</div>
+                      {msg.pendingHint && (
+                        <div style={{ marginTop: 6, display: 'flex', alignItems: 'center', gap: 6, color: '#888' }}>
+                          <Spin indicator={<LoadingOutlined style={{ fontSize: 14 }} spin />} />
+                          <Text type="secondary" style={{ fontSize: 12 }}>{msg.pendingHint}</Text>
+                        </div>
+                      )}
                     </Card>
+                    {msg.images && msg.images.length > 0 && (
+                      <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                        {msg.images.map((img, i) =>
+                          img.url ? (
+                            <div key={i} style={{ position: 'relative', display: 'inline-block' }}>
+                              <a href={img.url} target="_blank" rel="noreferrer" title={img.prompt}>
+                                <img src={img.url} alt={img.prompt || 'generated'}
+                                  style={{ maxWidth: 320, maxHeight: 320, borderRadius: 6, border: '1px solid #eee' }} />
+                              </a>
+                              <Tooltip title="生成视频">
+                                <Button
+                                  size="small"
+                                  shape="circle"
+                                  icon={<span>🎬</span>}
+                                  style={{ position: 'absolute', top: 4, right: 4 }}
+                                  onClick={() => { setI2vSourceUrl(img.url!); setI2vModalOpen(true); }}
+                                />
+                              </Tooltip>
+                            </div>
+                          ) : (
+                            <Tag key={i} color="error">图像生成失败: {img.error}</Tag>
+                          )
+                        )}
+                      </div>
+                    )}
+                    {msg.videos && msg.videos.length > 0 && (
+                      <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 8 }}>
+                        {msg.videos.map((vid, i) => (
+                          vid.url ? (
+                            <video key={i} src={vid.url} controls title={vid.prompt}
+                              style={{ maxWidth: 480, borderRadius: 6, border: '1px solid #eee' }} />
+                          ) : (
+                            <Tag key={i} color="error">视频生成失败: {vid.error}</Tag>
+                          )
+                        ))}
+                      </div>
+                    )}
                     {msg.sources && msg.sources.length > 0 && (
                       <div style={{ marginTop: 8 }}>
                         <Text type="secondary" style={{ fontSize: 12 }}>📚 参考来源：</Text>
@@ -1135,7 +1506,11 @@ const ChatPage: React.FC = () => {
             <Text type="secondary" style={{ fontSize: 12, marginRight: 8 }}>激活分组：</Text>
             <Checkbox.Group
               value={activeGroupIds}
-              onChange={vals => setActiveGroupIds(vals as string[])}
+              onChange={vals => {
+                const ids = vals as string[];
+                setActiveGroupIds(ids);
+                if (sessionId) saveSessionGroups(sessionId, ids);
+              }}
               options={groups.map(g => ({ label: <Tag color={g.color}>{g.name}</Tag>, value: g.id }))}
             />
           </div>
@@ -1186,6 +1561,70 @@ const ChatPage: React.FC = () => {
           </Space.Compact>
         </div>
       </Card>
+
+      <Modal
+        title="重命名会话"
+        open={!!renameTarget}
+        onOk={handleRenameSubmit}
+        onCancel={() => { setRenameTarget(null); setRenameInput(''); }}
+        okText="保存"
+        cancelText="取消"
+        destroyOnClose
+      >
+        <Input
+          value={renameInput}
+          onChange={(e) => setRenameInput(e.target.value)}
+          onPressEnter={handleRenameSubmit}
+          placeholder="输入新名称"
+          maxLength={100}
+          autoFocus
+        />
+      </Modal>
+
+      <Modal
+        title="请选择任务类型"
+        open={!!clarify}
+        onCancel={() => setClarify(null)}
+        footer={null}
+        destroyOnClose
+      >
+        {clarify && (
+          <>
+            <div style={{ marginBottom: 12 }}>{clarify.question}</div>
+            <Space wrap>
+              {clarify.options.map((opt) => (
+                <Button
+                  key={opt}
+                  type="primary"
+                  ghost
+                  loading={summarizing}
+                  onClick={() => handleSummarizeAsTask(opt)}
+                >
+                  {opt}
+                </Button>
+              ))}
+            </Space>
+          </>
+        )}
+      </Modal>
+
+      <I2VModal
+        open={i2vModalOpen}
+        imageUrl={i2vSourceUrl}
+        authToken={localStorage.getItem('memox_token') || ''}
+        onClose={() => setI2vModalOpen(false)}
+        onSuccess={(videoUrl, prompt, sourceImageUrl) => {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: `i2v_${Date.now()}`,
+              role: 'assistant',
+              content: `图生视频完成（源图: ${sourceImageUrl}）`,
+              videos: [{ url: videoUrl, prompt }],
+            },
+          ]);
+        }}
+      />
     </div>
   );
 };
@@ -1274,13 +1713,279 @@ const TaskFilesPanel: React.FC<{ taskId: string }> = ({ taskId }) => {
   );
 };
 
+// ==================== 定时任务页面 ====================
+
+const CRON_PRESETS: { label: string; value: string }[] = [
+  { label: '每分钟', value: '* * * * *' },
+  { label: '每 5 分钟', value: '*/5 * * * *' },
+  { label: '每小时整点', value: '0 * * * *' },
+  { label: '每天 09:00', value: '0 9 * * *' },
+  { label: '每天 18:00', value: '0 18 * * *' },
+  { label: '工作日 09:00', value: '0 9 * * 1-5' },
+  { label: '每周一 09:00', value: '0 9 * * 1' },
+  { label: '每月 1 号 09:00', value: '0 9 1 * *' },
+];
+
+const ScheduledTasksPage: React.FC = () => {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [items, setItems] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [editing, setEditing] = useState<any | null>(null);
+  const [editForm, setEditForm] = useState<{ description: string; cron: string; enabled: boolean }>({
+    description: '',
+    cron: '0 9 * * *',
+    enabled: true,
+  });
+  const [saving, setSaving] = useState(false);
+
+  const fetchList = async () => {
+    setLoading(true);
+    try {
+      const res = await api.listScheduledTasks();
+      setItems(res.data);
+    } catch (err: any) {
+      message.error(err.response?.data?.detail || '加载定时任务失败');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchList();
+    // 来自智能问答的"配置定时任务"预填
+    const prefill = (location.state as any)?.prefill;
+    const sourceSessionId = (location.state as any)?.sourceSessionId;
+    if (prefill && typeof prefill === 'string') {
+      setEditing({ __new: true, source_session_id: sourceSessionId || '' });
+      setEditForm({ description: prefill, cron: '0 9 * * *', enabled: true });
+      navigate(location.pathname, { replace: true, state: {} });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const openCreate = () => {
+    setEditing({ __new: true });
+    setEditForm({ description: '', cron: '0 9 * * *', enabled: true });
+  };
+
+  const openEdit = (t: any) => {
+    setEditing(t);
+    setEditForm({ description: t.description, cron: t.cron, enabled: t.enabled });
+  };
+
+  const handleToggle = async (t: any, enabled: boolean) => {
+    try {
+      await api.updateScheduledTask(t.id, { enabled });
+      message.success(enabled ? '已启用' : '已停用');
+      fetchList();
+    } catch (err: any) {
+      message.error(err.response?.data?.detail || '更新失败');
+    }
+  };
+
+  const handleDelete = (t: any) => {
+    Modal.confirm({
+      title: '删除定时任务',
+      content: `确认删除 "${t.description.slice(0, 30)}..." ？`,
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        try {
+          await api.deleteScheduledTask(t.id);
+          message.success('已删除');
+          fetchList();
+        } catch (err: any) {
+          message.error(err.response?.data?.detail || '删除失败');
+        }
+      },
+    });
+  };
+
+  const handleSave = async () => {
+    const desc = editForm.description.trim();
+    const cron = editForm.cron.trim();
+    if (!desc) { message.warning('任务描述不能为空'); return; }
+    if (!cron || cron.split(/\s+/).length !== 5) {
+      message.warning('cron 表达式需为 5 段（分 时 日 月 周）');
+      return;
+    }
+    setSaving(true);
+    try {
+      if (editing?.__new) {
+        await api.createScheduledTask({
+          description: desc,
+          cron,
+          enabled: editForm.enabled,
+          source_session_id: editing.source_session_id || null,
+        });
+        message.success('定时任务已创建');
+      } else {
+        await api.updateScheduledTask(editing.id, {
+          description: desc,
+          cron,
+          enabled: editForm.enabled,
+        });
+        message.success('已保存');
+      }
+      setEditing(null);
+      fetchList();
+    } catch (err: any) {
+      message.error(err.response?.data?.detail || '保存失败');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const columns = [
+    {
+      title: '任务描述',
+      dataIndex: 'description',
+      key: 'description',
+      render: (v: string) => (
+        <Tooltip title={v}>
+          <div style={{ maxWidth: 360, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v}</div>
+        </Tooltip>
+      ),
+    },
+    {
+      title: '执行时间/频率',
+      dataIndex: 'cron',
+      key: 'cron',
+      render: (v: string) => <Tag color="blue">{v}</Tag>,
+    },
+    {
+      title: '下次执行',
+      dataIndex: 'next_run_at',
+      key: 'next_run_at',
+      render: (v: string) => v ? <Text type="secondary" style={{ fontSize: 12 }}>{dayjs(v).format('MM-DD HH:mm')}</Text> : <Text type="secondary">—</Text>,
+    },
+    {
+      title: '上次执行',
+      dataIndex: 'last_run_at',
+      key: 'last_run_at',
+      render: (v: string) => v ? <Text type="secondary" style={{ fontSize: 12 }}>{dayjs(v).format('MM-DD HH:mm')}</Text> : <Text type="secondary">—</Text>,
+    },
+    {
+      title: '启用',
+      dataIndex: 'enabled',
+      key: 'enabled',
+      render: (v: boolean, t: any) => (
+        <Checkbox checked={v} onChange={(e) => handleToggle(t, e.target.checked)} />
+      ),
+    },
+    {
+      title: '操作',
+      key: 'actions',
+      render: (_: any, t: any) => (
+        <Space>
+          <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(t)}>编辑</Button>
+          <Button size="small" danger icon={<DeleteOutlined />} onClick={() => handleDelete(t)}>删除</Button>
+        </Space>
+      ),
+    },
+  ];
+
+  return (
+    <div>
+      <Card
+        title="定时任务"
+        extra={<Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新建定时任务</Button>}
+      >
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 12 }}
+          message="说明"
+          description={<span>cron 格式：<code>分 时 日 月 周</code>（周：0=周日…6=周六）。在智能问答中把会话类型选为"配置定时任务"可直接预填创建。</span>}
+        />
+        <Table
+          rowKey="id"
+          loading={loading}
+          dataSource={items}
+          columns={columns as any}
+          pagination={{ pageSize: 10 }}
+          locale={{ emptyText: '尚未创建定时任务' }}
+        />
+      </Card>
+
+      <Modal
+        title={editing?.__new ? '新建定时任务' : '编辑定时任务'}
+        open={!!editing}
+        onCancel={() => setEditing(null)}
+        onOk={handleSave}
+        confirmLoading={saving}
+        okText="保存"
+        cancelText="取消"
+        destroyOnClose
+        width={640}
+      >
+        <div style={{ marginBottom: 12 }}>
+          <Text strong>任务描述</Text>
+          <Input.TextArea
+            value={editForm.description}
+            onChange={(e) => setEditForm(s => ({ ...s, description: e.target.value }))}
+            autoSize={{ minRows: 3, maxRows: 8 }}
+            placeholder="将作为任务被下发给 worker，请尽量写清楚目标与产物"
+          />
+        </div>
+        <div style={{ marginBottom: 12 }}>
+          <Text strong>Cron 表达式</Text>
+          <Input
+            value={editForm.cron}
+            onChange={(e) => setEditForm(s => ({ ...s, cron: e.target.value }))}
+            placeholder="分 时 日 月 周，例如 0 9 * * 1-5"
+            style={{ fontFamily: 'monospace' }}
+          />
+          <div style={{ marginTop: 8 }}>
+            <Text type="secondary" style={{ fontSize: 12 }}>预设：</Text>
+            <Space wrap size={[4, 4]} style={{ marginTop: 4 }}>
+              {CRON_PRESETS.map(p => (
+                <Tag
+                  key={p.value}
+                  style={{ cursor: 'pointer' }}
+                  color={editForm.cron === p.value ? 'blue' : undefined}
+                  onClick={() => setEditForm(s => ({ ...s, cron: p.value }))}
+                >
+                  {p.label}
+                </Tag>
+              ))}
+            </Space>
+          </div>
+        </div>
+        <div>
+          <Checkbox
+            checked={editForm.enabled}
+            onChange={(e) => setEditForm(s => ({ ...s, enabled: e.target.checked }))}
+          >
+            创建后立即启用
+          </Checkbox>
+        </div>
+      </Modal>
+    </div>
+  );
+};
+
+
 // ==================== 任务执行页面 ====================
 
 const TasksPage: React.FC = () => {
   const isMobile = useIsMobile();
+  const location = useLocation();
+  const navigate = useNavigate();
   const [tasks, setTasks] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [taskInput, setTaskInput] = useState('');
+
+  useEffect(() => {
+    const prefill = (location.state as any)?.prefill;
+    if (prefill && typeof prefill === 'string') {
+      setTaskInput(prefill);
+      message.info('已从会话提炼任务描述，请确认后点击"执行任务"');
+      // 清除 state 防止刷新再次触发
+      navigate(location.pathname, { replace: true, state: {} });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const [executing, setExecuting] = useState(false);
   const [currentTask, setCurrentTask] = useState<any>(null);
   const [suggestions, setSuggestions] = useState<any[]>([]);
@@ -2420,6 +3125,7 @@ const App: React.FC = () => {
                 <Route path="/documents" element={<DocumentsPage />} />
                 <Route path="/chat" element={<ChatPage />} />
                 <Route path="/tasks" element={<TasksPage />} />
+                <Route path="/scheduled-tasks" element={<ScheduledTasksPage />} />
                 <Route path="/workers" element={<WorkersPage />} />
               </Routes>
             </AppLayout>
