@@ -1265,6 +1265,34 @@ async def generate_video(request: VideoGenRequest) -> dict:
     return {"url": url, "prompt": request.prompt}
 
 
+class I2VRequest(BaseModel):
+    image_url: str
+    prompt: str
+    resolution: str | None = None
+    duration: int | None = None
+    negative_prompt: str | None = None
+
+
+@app.post("/api/videos/i2v")
+async def generate_i2v(request: I2VRequest) -> dict:
+    """图生视频（异步任务，等待完成后返回视频 URL）"""
+    from imaging import get_i2v_client
+    client = get_i2v_client()
+    if not client:
+        raise HTTPException(status_code=503, detail="图生视频未启用")
+    try:
+        url = await client.generate(
+            image_url=request.image_url,
+            prompt=request.prompt,
+            resolution=request.resolution,
+            duration=request.duration,
+            negative_prompt=request.negative_prompt,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"图生视频失败: {e}")
+    return {"url": url, "prompt": request.prompt, "image_url": request.image_url}
+
+
 # ==================== 任务执行 API ====================
 
 @app.post("/api/tasks")
