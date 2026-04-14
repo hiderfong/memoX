@@ -837,7 +837,8 @@ async def chat(request: ChatRequest) -> dict:
     import re as _re
     image_prompts: list[str] = _re.findall(r"\[\[IMAGE:\s*(.+?)\]\]", raw_answer, flags=_re.DOTALL)
     video_prompts: list[str] = _re.findall(r"\[\[VIDEO:\s*(.+?)\]\]", raw_answer, flags=_re.DOTALL)
-    display_text = _re.sub(r"\[\[(IMAGE|VIDEO):\s*.+?\]\]", "", raw_answer, flags=_re.DOTALL).strip()
+    i2v_pairs = parse_i2v_markers(raw_answer)
+    display_text = _re.sub(r"\[\[(IMAGE|VIDEO|I2V):\s*.+?\]\]", "", raw_answer, flags=_re.DOTALL).strip()
 
     image_results: list[dict] = []
     if image_prompts and image_client:
@@ -860,6 +861,18 @@ async def chat(request: ChatRequest) -> dict:
             except Exception as ve:
                 video_results.append({"error": str(ve), "prompt": ptext})
 
+    i2v_results: list[dict] = []
+    if i2v_pairs:
+        from imaging import get_i2v_client
+        i2v_client = get_i2v_client()
+        if i2v_client:
+            for image_url, prompt_text in i2v_pairs:
+                try:
+                    url = await i2v_client.generate(image_url=image_url, prompt=prompt_text)
+                    i2v_results.append({"url": url, "prompt": prompt_text, "source_image_url": image_url})
+                except Exception as ve:
+                    i2v_results.append({"error": str(ve), "prompt": prompt_text, "image_url": image_url})
+
     answer = display_text
     md_parts: list[str] = []
     for r in image_results:
@@ -872,6 +885,9 @@ async def chat(request: ChatRequest) -> dict:
             md_parts.append(f"[video:{r.get('prompt','')}]({r['url']})")
         elif r.get("error"):
             md_parts.append(f"_视频生成失败: {r['error']}_")
+    for r in i2v_results:
+        if r.get("url"):
+            md_parts.append(f"[video:{r.get('prompt','')}]({r['url']})")
     if md_parts:
         answer = (display_text + "\n\n" + "\n\n".join(md_parts)).strip()
 
@@ -895,6 +911,7 @@ async def chat(request: ChatRequest) -> dict:
         "worker_id": resolved_worker_id,
         "images": image_results,
         "videos": video_results,
+        "i2v": i2v_results,
         "sources": [
             {
                 "content": r.content[:200] + "..." if len(r.content) > 200 else r.content,
