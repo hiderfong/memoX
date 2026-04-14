@@ -5,6 +5,7 @@ import sys
 import asyncio
 import json
 import uuid
+import re as _re
 from pathlib import Path
 from typing import Any
 
@@ -71,6 +72,27 @@ _orchestrator: IterativeOrchestrator | None = None
 _group_store: GroupStore | None = None
 _task_results: dict[str, dict] = {}  # task_id -> full result dict (for later retrieval)
 _ws_connections: set[WebSocket] = set()
+
+# ==================== I2V 标记解析 ====================
+
+_I2V_RE = _re.compile(r"\[\[I2V:\s*(.+?)\s*\|\s*(.+?)\]\]", flags=_re.DOTALL)
+
+
+def parse_i2v_markers(text: str) -> list[tuple[str, str]]:
+    """从 LLM 输出中抽取 [[I2V: <image_url> | <prompt>]] 对。
+
+    过滤非 http(s) URL 和空 prompt。
+    """
+    out: list[tuple[str, str]] = []
+    for url, prompt in _I2V_RE.findall(text):
+        url = url.strip()
+        prompt = prompt.strip()
+        if not (url.startswith("http://") or url.startswith("https://")):
+            continue
+        if not prompt:
+            continue
+        out.append((url, prompt))
+    return out
 
 
 async def _ws_broadcast(data: dict) -> None:
@@ -1152,12 +1174,12 @@ async def chat_stream(request: ChatRequest):
                 on_chunk=lambda c: None,
             )
             
-            # 解析 [[IMAGE: prompt]] / [[VIDEO: prompt]] 标记
-            import re as _re
+            # 解析 [[IMAGE: prompt]] / [[VIDEO: prompt]] / [[I2V: url | prompt]] 标记
             raw_text = response.content or ""
             image_prompts: list[str] = _re.findall(r"\[\[IMAGE:\s*(.+?)\]\]", raw_text, flags=_re.DOTALL)
             video_prompts: list[str] = _re.findall(r"\[\[VIDEO:\s*(.+?)\]\]", raw_text, flags=_re.DOTALL)
-            display_text = _re.sub(r"\[\[(IMAGE|VIDEO):\s*.+?\]\]", "", raw_text, flags=_re.DOTALL).strip()
+            display_text = _re.sub(r"\[\[(IMAGE|VIDEO|I2V):\s*.+?\]\]", "", raw_text, flags=_re.DOTALL).strip()
+            i2v_pairs = parse_i2v_markers(raw_text)
 
             # 直接发送完整内容作为流
             for i in range(0, len(display_text), 10):
@@ -1192,6 +1214,23 @@ async def chat_stream(request: ChatRequest):
                     except Exception as ve:
                         yield f"data: {json.dumps({'type': 'video_error', 'prompt': prompt_text, 'message': str(ve)})}\n\n"
 
+            # 图生视频（LLM 路径）
+            i2v_results: list[tuple[str, str, str]] = []  # (url, prompt, source_image_url)
+            if i2v_pairs:
+                from imaging import get_i2v_client
+                i2v_client = get_i2v_client()
+                for image_url, prompt_text in i2v_pairs:
+                    if not i2v_client:
+                        yield f"data: {json.dumps({'type': 'i2v_error', 'prompt': prompt_text, 'image_url': image_url, 'message': '图生视频未启用'})}\n\n"
+                        continue
+                    yield f"data: {json.dumps({'type': 'i2v_pending', 'prompt': prompt_text, 'image_url': image_url})}\n\n"
+                    try:
+                        url = await i2v_client.generate(image_url=image_url, prompt=prompt_text)
+                        i2v_results.append((url, prompt_text, image_url))
+                        yield f"data: {json.dumps({'type': 'i2v', 'url': url, 'prompt': prompt_text, 'source_image_url': image_url})}\n\n"
+                    except Exception as ie:
+                        yield f"data: {json.dumps({'type': 'i2v_error', 'prompt': prompt_text, 'image_url': image_url, 'message': str(ie)})}\n\n"
+
             # 发送完成
             answer = display_text
             md_tail: list[str] = []
@@ -1199,6 +1238,8 @@ async def chat_stream(request: ChatRequest):
                 md_tail += [f"![image]({u})" for u in image_urls]
             if video_urls:
                 md_tail += [f"[video:{pt}]({u})" for u, pt in video_urls]
+            if i2v_results:
+                md_tail += [f"[video:{pt}]({u})" for u, pt, _ in i2v_results]
             if md_tail:
                 answer = display_text + "\n\n" + "\n".join(md_tail)
             _rag_engine.add_message(session_id, "assistant", answer)
