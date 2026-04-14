@@ -142,6 +142,7 @@ auth:
     - "/api/health"
     - "/api/docs"
     - "/api/openapi.json"
+    - "/api/files/"
   # 开发测试用户（生产环境应改用数据库）
   users:
     - username: "admin"

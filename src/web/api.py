@@ -62,6 +62,8 @@ app.add_middleware(
     allow_headers=["Authorization", "Content-Type", "Accept"],
 )
 
+UPLOADS_DIR = Path("data/uploads")
+
 _config: Config | None = None
 _rag_engine: RAGEngine | None = None
 _task_planner: TaskPlanner | None = None
@@ -105,7 +107,12 @@ async def auth_middleware(request: Request, call_next):
         return await call_next(request)
 
     # API 公开路径（登录、健康检查、文档）直接放行
-    if path in _PUBLIC_PATHS:
+    # 支持精确匹配和以 "/" 结尾的前缀匹配
+    _is_public = any(
+        (path == p) if not p.endswith("/") else path.startswith(p)
+        for p in _PUBLIC_PATHS
+    )
+    if _is_public:
         return await call_next(request)
 
     # WebSocket 路径：token 通过 query param 传递
@@ -1291,6 +1298,28 @@ async def generate_i2v(request: I2VRequest) -> dict:
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"图生视频失败: {e}")
     return {"url": url, "prompt": request.prompt, "image_url": request.image_url}
+
+
+@app.get("/api/files/{name:path}")
+async def serve_upload(name: str, request: Request):
+    """暴露 data/uploads/ 下的文件（供 DashScope 拉取图片等场景）"""
+    # 从原始 URL 中提取文件名，防止编码绕过
+    raw_path = request.url.path  # e.g. /api/files/abc.png
+    # 检查原始 URL 中是否含有编码斜杠或点点
+    raw_name = request.url.path.removeprefix("/api/files/")
+    if "/" in raw_name or "\\" in raw_name or ".." in raw_name:
+        raise HTTPException(status_code=400, detail="非法文件名")
+    # 同时对解码后的 name 参数做检查
+    if "/" in name or "\\" in name or ".." in name:
+        raise HTTPException(status_code=400, detail="非法文件名")
+    path = (UPLOADS_DIR / name).resolve()
+    try:
+        path.relative_to(UPLOADS_DIR.resolve())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="非法路径")
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="文件不存在")
+    return FileResponse(str(path))
 
 
 # ==================== 任务执行 API ====================
