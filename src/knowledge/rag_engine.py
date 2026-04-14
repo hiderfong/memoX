@@ -200,23 +200,48 @@ class RAGEngine:
         doc_ids: list[str] | None = None,
         group_ids: list[str] | None = None,
     ) -> list[SearchResult]:
-        """检索相关文档片段"""
+        """检索相关文档片段
+
+        始终把"当前真实存在的文档 id"作为 Chroma 的 where 过滤条件之一，
+        避免已删除文档残留的 chunk 被召回并作为参考来源下发给前端。
+        """
         k = top_k or self.top_k
-        
-        # 构建过滤器
-        filter_metadata = None
+
+        # 当前仍存在于向量库中的文档 id —— 作为硬约束兜底
+        try:
+            valid_doc_ids = {d["doc_id"] for d in self.vector_store.list_documents(collection_name)}
+        except Exception:
+            valid_doc_ids = None  # 读取失败则退化为不加此约束
+
+        # 根据调用方传入的 doc_ids / group_ids 求交集，组合成 $and 过滤条件
+        conditions: list[dict] = []
         if doc_ids:
-            filter_metadata = {"doc_id": {"$in": doc_ids}}
-        elif group_ids is not None:
-            filter_metadata = {"group_id": {"$in": group_ids}}
-        
-        # 执行检索
+            effective = list(set(doc_ids) & valid_doc_ids) if valid_doc_ids is not None else list(doc_ids)
+            if not effective:
+                return []
+            conditions.append({"doc_id": {"$in": effective}})
+        elif valid_doc_ids is not None:
+            if not valid_doc_ids:
+                return []
+            conditions.append({"doc_id": {"$in": list(valid_doc_ids)}})
+
+        if group_ids is not None:
+            conditions.append({"group_id": {"$in": group_ids}})
+
+        if not conditions:
+            filter_metadata = None
+        elif len(conditions) == 1:
+            filter_metadata = conditions[0]
+        else:
+            filter_metadata = {"$and": conditions}
+
         results = await self.vector_store.search(
             query, k, collection_name, filter_metadata
         )
 
-        # 过滤掉已删除文档的残留 chunk（ChromaDB 删除可能存在延迟）
-        valid_doc_ids = {d["doc_id"] for d in self.vector_store.list_documents(collection_name)}
+        # 过滤掉低相关度结果：score = 1 - cosine_distance，低于阈值视为无关
+        MIN_SCORE = 0.2
+        results = [r for r in results if (r.get("score") or 0) >= MIN_SCORE]
 
         return [
             SearchResult(
@@ -226,7 +251,6 @@ class RAGEngine:
                 metadata=r.get("metadata", {}),
             )
             for r in results
-            if r.get("metadata", {}).get("doc_id") in valid_doc_ids
         ]
     
     def build_rag_prompt(

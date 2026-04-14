@@ -538,6 +538,7 @@ def create_provider(
         "openai": OpenAIProvider,
         "minimax": MiniMaxProvider,
         "kimi": OpenAIProvider,  # Kimi 使用 OpenAI 兼容 API
+        "dashscope": OpenAIProvider,  # 阿里云 DashScope 使用 OpenAI 兼容 API
     }
 
     ptype = provider_type.lower()

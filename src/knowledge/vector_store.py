@@ -325,15 +325,31 @@ class ChromaVectorStore:
     async def delete_by_document_id(self, doc_id_prefix: str, collection_name: str = "documents") -> int:
         """删除文档相关的所有块"""
         collection = self.get_or_create_collection(collection_name)
-        
-        # 获取该文档的所有块（metadata 中字段名为 doc_id）
-        results = collection.get(where={"doc_id": doc_id_prefix})
 
-        if results and results["ids"]:
-            collection.delete(ids=results["ids"])
-            return len(results["ids"])
+        # 先统计实际 chunk 数（也用于返回值判断是否真的删掉了东西）
+        existing = collection.get(where={"doc_id": doc_id_prefix}, include=[])
+        count = len(existing.get("ids") or [])
 
-        return 0
+        if count == 0:
+            print(f"[VectorStore] delete_by_document_id: no chunks found for doc_id={doc_id_prefix}")
+            return 0
+
+        # 直接按 where 条件删除，避免 ids 列表过长或 ChromaDB 分页导致的遗漏
+        try:
+            collection.delete(where={"doc_id": doc_id_prefix})
+        except Exception as e:
+            print(f"[VectorStore ERROR] delete_by_document_id failed for doc_id={doc_id_prefix}: {type(e).__name__}: {e}")
+            raise
+
+        # 二次校验：确认已无残留，若还有则再用 ids 方式强制清理
+        leftover = collection.get(where={"doc_id": doc_id_prefix}, include=[])
+        leftover_ids = leftover.get("ids") or []
+        if leftover_ids:
+            print(f"[VectorStore WARN] {len(leftover_ids)} chunks remained after where-delete, retry by ids")
+            collection.delete(ids=leftover_ids)
+
+        print(f"[VectorStore] Deleted {count} chunks for doc_id={doc_id_prefix}")
+        return count
     
     def list_documents(self, collection_name: str = "documents") -> list[dict]:
         """列出所有文档"""

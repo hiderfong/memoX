@@ -27,7 +27,8 @@ class PersistenceStore:
                 id TEXT PRIMARY KEY,
                 title TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
+                updated_at TEXT NOT NULL,
+                archived INTEGER NOT NULL DEFAULT 0
             );
 
             CREATE TABLE IF NOT EXISTS chat_messages (
@@ -64,7 +65,25 @@ class PersistenceStore:
 
             CREATE INDEX IF NOT EXISTS idx_messages_session ON chat_messages(session_id);
             CREATE INDEX IF NOT EXISTS idx_task_created ON task_history(created_at);
+
+            CREATE TABLE IF NOT EXISTS scheduled_tasks (
+                id TEXT PRIMARY KEY,
+                description TEXT NOT NULL,
+                cron TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                active_group_ids TEXT DEFAULT '',
+                source_session_id TEXT DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_run_at TEXT DEFAULT '',
+                next_run_at TEXT DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS idx_sched_enabled ON scheduled_tasks(enabled);
         """)
+        # 旧库迁移：为 chat_sessions 补齐 archived 列
+        cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(chat_sessions)").fetchall()}
+        if "archived" not in cols:
+            self._conn.execute("ALTER TABLE chat_sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
         self._conn.commit()
 
     # ==================== 会话 ====================
@@ -120,16 +139,53 @@ class PersistenceStore:
             for r in rows
         ]
 
-    def list_sessions(self, limit: int = 50) -> list[dict]:
-        """列出最近的会话"""
+    def list_sessions(self, limit: int = 50, archived: bool | None = False) -> list[dict]:
+        """列出最近的会话
+
+        archived:
+            - False: 仅返回未归档（默认）
+            - True:  仅返回已归档
+            - None:  全部
+        """
+        where = ""
+        params: tuple = ()
+        if archived is True:
+            where = "WHERE s.archived = 1"
+        elif archived is False:
+            where = "WHERE s.archived = 0"
+
         rows = self._conn.execute(
-            """SELECT s.id, s.title, s.created_at, s.updated_at,
-                      (SELECT COUNT(*) FROM chat_messages WHERE session_id=s.id) as message_count
-               FROM chat_sessions s
-               ORDER BY s.updated_at DESC LIMIT ?""",
-            (limit,),
+            f"""SELECT s.id, s.title, s.created_at, s.updated_at, s.archived,
+                       (SELECT COUNT(*) FROM chat_messages WHERE session_id=s.id) as message_count
+                FROM chat_sessions s
+                {where}
+                ORDER BY s.updated_at DESC LIMIT ?""",
+            (*params, limit),
         ).fetchall()
-        return [dict(r) for r in rows]
+        return [
+            {**dict(r), "archived": bool(r["archived"])}
+            for r in rows
+        ]
+
+    def set_session_archived(self, session_id: str, archived: bool) -> bool:
+        """归档 / 取消归档"""
+        now = datetime.now().isoformat()
+        cursor = self._conn.execute(
+            "UPDATE chat_sessions SET archived=?, updated_at=? WHERE id=?",
+            (1 if archived else 0, now, session_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def rename_session(self, session_id: str, title: str) -> bool:
+        """重命名会话（update_session_title 的 rowcount 版本）"""
+        now = datetime.now().isoformat()
+        cursor = self._conn.execute(
+            "UPDATE chat_sessions SET title=?, updated_at=? WHERE id=?",
+            (title, now, session_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
 
     def delete_session(self, session_id: str) -> bool:
         """删除会话及其消息"""
@@ -199,6 +255,120 @@ class PersistenceStore:
             "suggestions": json.loads(row["suggestions"]),
             "created_at": row["created_at"],
             "completed_at": row["completed_at"],
+        }
+
+    # ==================== 定时任务 ====================
+
+    def create_scheduled_task(
+        self,
+        task_id: str,
+        description: str,
+        cron: str,
+        active_group_ids: list[str] | None = None,
+        source_session_id: str = "",
+        next_run_at: str = "",
+        enabled: bool = True,
+    ) -> None:
+        now = datetime.now().isoformat()
+        self._conn.execute(
+            """INSERT INTO scheduled_tasks
+               (id, description, cron, enabled, active_group_ids, source_session_id,
+                created_at, updated_at, last_run_at, next_run_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', ?)""",
+            (
+                task_id,
+                description,
+                cron,
+                1 if enabled else 0,
+                json.dumps(active_group_ids or [], ensure_ascii=False),
+                source_session_id,
+                now,
+                now,
+                next_run_at,
+            ),
+        )
+        self._conn.commit()
+
+    def list_scheduled_tasks(self, enabled_only: bool = False) -> list[dict]:
+        where = "WHERE enabled = 1" if enabled_only else ""
+        rows = self._conn.execute(
+            f"SELECT * FROM scheduled_tasks {where} ORDER BY created_at DESC"
+        ).fetchall()
+        return [self._row_to_scheduled(r) for r in rows]
+
+    def get_scheduled_task(self, task_id: str) -> dict | None:
+        row = self._conn.execute(
+            "SELECT * FROM scheduled_tasks WHERE id=?", (task_id,)
+        ).fetchone()
+        return self._row_to_scheduled(row) if row else None
+
+    def update_scheduled_task(
+        self,
+        task_id: str,
+        description: str | None = None,
+        cron: str | None = None,
+        enabled: bool | None = None,
+        active_group_ids: list[str] | None = None,
+        next_run_at: str | None = None,
+    ) -> bool:
+        fields = []
+        params: list = []
+        if description is not None:
+            fields.append("description=?")
+            params.append(description)
+        if cron is not None:
+            fields.append("cron=?")
+            params.append(cron)
+        if enabled is not None:
+            fields.append("enabled=?")
+            params.append(1 if enabled else 0)
+        if active_group_ids is not None:
+            fields.append("active_group_ids=?")
+            params.append(json.dumps(active_group_ids, ensure_ascii=False))
+        if next_run_at is not None:
+            fields.append("next_run_at=?")
+            params.append(next_run_at)
+        if not fields:
+            return False
+        fields.append("updated_at=?")
+        params.append(datetime.now().isoformat())
+        params.append(task_id)
+        cursor = self._conn.execute(
+            f"UPDATE scheduled_tasks SET {', '.join(fields)} WHERE id=?",
+            tuple(params),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def delete_scheduled_task(self, task_id: str) -> bool:
+        cursor = self._conn.execute("DELETE FROM scheduled_tasks WHERE id=?", (task_id,))
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def mark_scheduled_task_run(self, task_id: str, when_iso: str) -> None:
+        self._conn.execute(
+            "UPDATE scheduled_tasks SET last_run_at=? WHERE id=?", (when_iso, task_id)
+        )
+        self._conn.commit()
+
+    def set_scheduled_task_next_run(self, task_id: str, when_iso: str | None) -> None:
+        self._conn.execute(
+            "UPDATE scheduled_tasks SET next_run_at=? WHERE id=?", (when_iso or "", task_id)
+        )
+        self._conn.commit()
+
+    def _row_to_scheduled(self, row: sqlite3.Row) -> dict:
+        return {
+            "id": row["id"],
+            "description": row["description"],
+            "cron": row["cron"],
+            "enabled": bool(row["enabled"]),
+            "active_group_ids": row["active_group_ids"] or "[]",
+            "source_session_id": row["source_session_id"] or "",
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "last_run_at": row["last_run_at"] or "",
+            "next_run_at": row["next_run_at"] or "",
         }
 
     def close(self) -> None:
