@@ -28,6 +28,7 @@ data/chroma/
 data/chroma_*/
 data/test_chroma/
 data/uploads/
+data/workspace/
 data/memox.db
 data/memox.db-journal
 data/groups.json
