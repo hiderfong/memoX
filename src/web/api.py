@@ -336,6 +336,45 @@ async def startup():
     if migrated > 0:
         print(f"   - 迁移 {migrated} 个历史 chunk，补写 group_id=ungrouped")
 
+    # 启动定时任务运行器（与 orchestrator、store 解耦）
+    if _orchestrator:
+        from scheduler import init_runner
+        runner = init_runner(get_store(), _orchestrator)
+        runner.start()
+
+    # 初始化文生图客户端
+    img_cfg = _config.image_generation if _config else None
+    if img_cfg and img_cfg.enabled:
+        from imaging import init_image_client
+        init_image_client(
+            api_key=img_cfg.resolve_api_key(),
+            model=img_cfg.model,
+            default_size=img_cfg.default_size,
+        )
+
+    # 初始化文生视频客户端
+    vid_cfg = _config.video_generation if _config else None
+    if vid_cfg and vid_cfg.enabled:
+        from imaging import init_video_client
+        init_video_client(
+            api_key=vid_cfg.resolve_api_key(),
+            model=vid_cfg.model,
+            default_resolution=vid_cfg.default_resolution,
+            default_ratio=vid_cfg.default_ratio,
+            default_duration=vid_cfg.default_duration,
+        )
+
+    # 初始化图生视频客户端
+    i2v_cfg = _config.image_to_video if _config else None
+    if i2v_cfg and i2v_cfg.enabled:
+        from imaging import init_i2v_client
+        init_i2v_client(
+            api_key=i2v_cfg.resolve_api_key(),
+            model=i2v_cfg.model,
+            default_resolution=i2v_cfg.default_resolution,
+            default_duration=i2v_cfg.default_duration,
+        )
+
     print(f"✅ MemoX 启动完成")
     print(f"   - RAG 引擎: {len(_rag_engine.list_documents())} 个文档")
 
@@ -713,11 +752,31 @@ async def chat(request: ChatRequest) -> dict:
         search_results = await _rag_engine.search(request.message, group_ids=request.active_group_ids)
 
     # 构建提示
+    from imaging import get_image_client, get_video_client
+    image_client = get_image_client()
+    video_client = get_video_client()
+    media_instruction = ""
+    if image_client:
+        media_instruction += (
+            "\n\n【图像生成能力】当用户明确要求生成/绘制/画一张图片、插图、海报、参考图、示意图等视觉内容时，"
+            "你必须在回答的合适位置输出形如 [[IMAGE: 英文或中文的详细画面描述]] 的标记（每张图片一个标记）。"
+            "系统会自动将标记替换为真实图像展示给用户。描述要具体、包含风格、主体、场景、光线等要素。"
+            "不要在标记外再贴链接，不要解释这是占位符。若用户未要求图片，则不要输出此标记。"
+        )
+    if video_client:
+        media_instruction += (
+            "\n\n【视频生成能力】当用户明确要求生成/制作一段视频、短片、动画、演示视频等动态视觉内容时，"
+            "你必须在回答的合适位置输出形如 [[VIDEO: 详细画面与动作描述]] 的标记（每段视频一个标记）。"
+            "描述要包含主体、动作、场景、时长氛围等。视频生成耗时较长（30s~数分钟），请如实告知用户需要等待。"
+            "不要在标记外贴链接，不要解释这是占位符。若用户未要求视频，则不要输出此标记。"
+        )
     if search_results:
         messages = _rag_engine.build_rag_prompt(request.message, search_results)
+        if media_instruction:
+            messages[0]["content"] = (messages[0]["content"] or "") + media_instruction
     else:
         messages = [
-            {"role": "system", "content": "你是一个智能助手。"},
+            {"role": "system", "content": "你是一个智能助手。" + media_instruction},
             {"role": "user", "content": request.message},
         ]
 
@@ -743,7 +802,49 @@ async def chat(request: ChatRequest) -> dict:
                 raise HTTPException(status_code=502, detail=f"LLM 服务返回错误 {status}")
         raise HTTPException(status_code=502, detail=f"LLM 调用失败: {type(e).__name__}: {str(e)}")
 
-    answer = response.content or "抱歉，我无法回答这个问题。"
+    raw_answer = response.content or "抱歉，我无法回答这个问题。"
+
+    # 解析 [[IMAGE: ...]] / [[VIDEO: ...]] 标记并并行生成媒体
+    import re as _re
+    image_prompts: list[str] = _re.findall(r"\[\[IMAGE:\s*(.+?)\]\]", raw_answer, flags=_re.DOTALL)
+    video_prompts: list[str] = _re.findall(r"\[\[VIDEO:\s*(.+?)\]\]", raw_answer, flags=_re.DOTALL)
+    display_text = _re.sub(r"\[\[(IMAGE|VIDEO):\s*.+?\]\]", "", raw_answer, flags=_re.DOTALL).strip()
+
+    image_results: list[dict] = []
+    if image_prompts and image_client:
+        for p in image_prompts:
+            ptext = p.strip()
+            try:
+                urls = await image_client.generate(ptext)
+                for u in urls:
+                    image_results.append({"url": u, "prompt": ptext})
+            except Exception as ie:
+                image_results.append({"error": str(ie), "prompt": ptext})
+
+    video_results: list[dict] = []
+    if video_prompts and video_client:
+        for p in video_prompts:
+            ptext = p.strip()
+            try:
+                url = await video_client.generate(ptext)
+                video_results.append({"url": url, "prompt": ptext})
+            except Exception as ve:
+                video_results.append({"error": str(ve), "prompt": ptext})
+
+    answer = display_text
+    md_parts: list[str] = []
+    for r in image_results:
+        if r.get("url"):
+            md_parts.append(f"![{r.get('prompt','')}]({r['url']})")
+        elif r.get("error"):
+            md_parts.append(f"_图像生成失败: {r['error']}_")
+    for r in video_results:
+        if r.get("url"):
+            md_parts.append(f"[video:{r.get('prompt','')}]({r['url']})")
+        elif r.get("error"):
+            md_parts.append(f"_视频生成失败: {r['error']}_")
+    if md_parts:
+        answer = (display_text + "\n\n" + "\n\n".join(md_parts)).strip()
 
     # 添加助手消息
     _rag_engine.add_message(session_id, "assistant", answer)
@@ -763,6 +864,8 @@ async def chat(request: ChatRequest) -> dict:
         "session_id": session_id,
         "answer": answer,
         "worker_id": resolved_worker_id,
+        "images": image_results,
+        "videos": video_results,
         "sources": [
             {
                 "content": r.content[:200] + "..." if len(r.content) > 200 else r.content,
@@ -775,12 +878,63 @@ async def chat(request: ChatRequest) -> dict:
 
 
 @app.get("/api/chat/sessions")
-async def list_chat_sessions() -> list[dict]:
-    """列出聊天会话历史"""
+async def list_chat_sessions(archived: str | None = None) -> list[dict]:
+    """列出聊天会话历史
+
+    archived 查询参数:
+        - 省略 / "0" / "false": 仅未归档（默认）
+        - "1" / "true":          仅已归档
+        - "all":                 全部
+    """
     store = get_store()
-    if store:
-        return store.list_sessions()
-    return []
+    if not store:
+        return []
+
+    if archived is None:
+        flag: bool | None = False
+    else:
+        v = archived.lower()
+        if v == "all":
+            flag = None
+        elif v in ("1", "true", "yes"):
+            flag = True
+        else:
+            flag = False
+    return store.list_sessions(archived=flag)
+
+
+class SessionUpdateRequest(BaseModel):
+    title: str | None = None
+    archived: bool | None = None
+
+
+@app.patch("/api/chat/sessions/{session_id}")
+async def update_chat_session(session_id: str, request: SessionUpdateRequest) -> dict:
+    """更新会话属性：重命名 / 归档 / 取消归档"""
+    store = get_store()
+    if not store:
+        raise HTTPException(status_code=500, detail="Storage not initialized")
+
+    if request.title is None and request.archived is None:
+        raise HTTPException(status_code=400, detail="No fields to update")
+
+    touched = False
+    if request.title is not None:
+        title = request.title.strip()
+        if not title:
+            raise HTTPException(status_code=400, detail="Title cannot be empty")
+        if len(title) > 100:
+            raise HTTPException(status_code=400, detail="Title too long (max 100)")
+        if not store.rename_session(session_id, title):
+            raise HTTPException(status_code=404, detail="Session not found")
+        touched = True
+
+    if request.archived is not None:
+        if not store.set_session_archived(session_id, request.archived):
+            raise HTTPException(status_code=404, detail="Session not found")
+        touched = True
+
+    return {"success": touched}
 
 
 @app.get("/api/chat/sessions/{session_id}/messages")
@@ -808,6 +962,122 @@ async def delete_chat_session(session_id: str) -> dict:
     return {"success": True}
 
 
+class SummarizeTaskRequest(BaseModel):
+    task_type: str | None = None  # 用户已选择的任务类型（如：撰写文档 / 撰写ppt / 开发应用 / 配置定时任务 / 生成参考图片视频）
+
+
+_TASK_TYPE_OPTIONS = [
+    "撰写文档",
+    "撰写PPT",
+    "开发应用",
+    "配置定时任务",
+    "生成参考图片视频",
+]
+
+
+@app.post("/api/chat/sessions/{session_id}/summarize-task")
+async def summarize_session_as_task(session_id: str, request: SummarizeTaskRequest) -> dict:
+    """把一段聊天会话提炼为可直接交给任务执行引擎的任务描述。
+
+    - 若模型能明确用户想要的产物形态，返回 {status: "ready", summary: "..."}。
+    - 若不确定，返回 {status: "need_clarification", question: "...", options: [...]}，
+      由前端让用户选定任务类型后再次带 task_type 调用本接口。
+    """
+    store = get_store()
+    if not store:
+        raise HTTPException(status_code=500, detail="Storage not initialized")
+
+    history = store.get_session_messages(session_id)
+    if not history:
+        raise HTTPException(status_code=404, detail="Session not found or empty")
+
+    # 拼接对话
+    convo_lines = []
+    for m in history:
+        role = {"user": "用户", "assistant": "AI助手", "system": "系统"}.get(m["role"], m["role"])
+        convo_lines.append(f"【{role}】{m['content']}")
+    conversation = "\n\n".join(convo_lines)
+
+    options_str = "、".join(_TASK_TYPE_OPTIONS)
+    chosen_type_hint = (
+        f"\n\n用户已明确任务类型为：「{request.task_type}」。请按该类型组织摘要，不要再询问。"
+        if request.task_type else ""
+    )
+
+    system_prompt = f"""你是一个任务编排助手。用户刚刚与另一个 AI 助手进行了一段对话，现在希望把对话内容提炼为一个独立、可执行的任务描述，交给下游 worker 执行。
+
+你的职责：
+1. 阅读整段对话，识别用户真实意图与最终期望的"产物"（交付物）。
+2. 如果你能明确判断交付物形态（例如 {options_str}），就直接输出一段自包含的任务描述。
+3. 如果你无法唯一确定交付物形态，就向用户提一个澄清问题，列出候选任务类型供用户选择。
+
+严格使用以下 JSON 格式输出，不要输出任何 JSON 之外的文字、注释或 markdown 代码块：
+
+情况 A（可直接生成）：
+{{"status": "ready", "summary": "<一段自包含的任务描述，包含：背景、目标、关键输入/约束、期望产物与交付形式>"}}
+
+情况 B（需要用户澄清任务类型）：
+{{"status": "need_clarification", "question": "<给用户看的简短追问>", "options": ["撰写文档", "撰写PPT", ...]}}
+
+要求：
+- summary 用中文书写，需要承载下游 worker 执行所需的全部关键信息，不要保留"你/我"这类对话口吻，改为第三人称任务表述。
+- summary 结尾应显式标注"交付形式：xxx"。
+- 候选 options 必须从以下列表中选取：{options_str}。{chosen_type_hint}
+"""
+
+    user_prompt = f"以下是完整的对话历史，请按要求输出 JSON：\n\n{conversation}"
+
+    provider, model, temperature, max_tokens, _ = _resolve_chat_llm(None)
+
+    try:
+        response = await provider.chat(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            model=model,
+            temperature=0.3,
+            max_tokens=max_tokens,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"LLM 调用失败: {type(e).__name__}: {str(e)}")
+
+    raw = (response.content or "").strip()
+
+    # 兼容模型误加的 ```json 代码块
+    import re as _re
+    fenced = _re.search(r"```(?:json)?\s*(\{.*?\})\s*```", raw, _re.DOTALL)
+    if fenced:
+        raw = fenced.group(1)
+    else:
+        brace = _re.search(r"\{.*\}", raw, _re.DOTALL)
+        if brace:
+            raw = brace.group(0)
+
+    try:
+        parsed = json.loads(raw)
+    except Exception:
+        # 解析失败则把原始内容当作 summary 返回，避免前端彻底卡住
+        return {"status": "ready", "summary": response.content or "", "raw_fallback": True}
+
+    status = parsed.get("status")
+    if status == "need_clarification" and not request.task_type:
+        # 校准 options
+        opts = [o for o in (parsed.get("options") or []) if o in _TASK_TYPE_OPTIONS]
+        if not opts:
+            opts = list(_TASK_TYPE_OPTIONS)
+        return {
+            "status": "need_clarification",
+            "question": parsed.get("question") or "请选择期望的任务类型：",
+            "options": opts,
+        }
+
+    summary = parsed.get("summary") or ""
+    if request.task_type and request.task_type not in summary:
+        summary = f"{summary}\n\n任务类型：{request.task_type}".strip()
+    return {"status": "ready", "summary": summary}
+
+
 @app.post("/api/chat/stream")
 async def chat_stream(request: ChatRequest):
     """流式聊天问答"""
@@ -831,11 +1101,31 @@ async def chat_stream(request: ChatRequest):
             yield f"data: {json.dumps({'type': 'sources', 'data': [{'filename': r.metadata.get('filename', 'unknown'), 'score': r.score} for r in search_results]})}\n\n"
         
         # 构建提示
+        from imaging import get_image_client, get_video_client
+        image_client = get_image_client()
+        video_client = get_video_client()
+        media_instruction = ""
+        if image_client:
+            media_instruction += (
+                "\n\n【图像生成能力】当用户明确要求生成/绘制/画一张图片、插图、海报、参考图、示意图等视觉内容时，"
+                "你必须在回答的合适位置输出形如 [[IMAGE: 英文或中文的详细画面描述]] 的标记（每张图片一个标记）。"
+                "系统会自动将标记替换为真实图像展示给用户。描述要具体、包含风格、主体、场景、光线等要素。"
+                "不要在标记外再贴链接，不要解释这是占位符。若用户未要求图片，则不要输出此标记。"
+            )
+        if video_client:
+            media_instruction += (
+                "\n\n【视频生成能力】当用户明确要求生成/制作一段视频、短片、动画、演示视频等动态视觉内容时，"
+                "你必须在回答的合适位置输出形如 [[VIDEO: 详细画面与动作描述]] 的标记（每段视频一个标记）。"
+                "描述要包含主体、动作、场景、时长氛围等。视频生成耗时较长（30s~数分钟），请如实告知用户需要等待。"
+                "不要在标记外贴链接，不要解释这是占位符。若用户未要求视频，则不要输出此标记。"
+            )
         if search_results:
             messages = _rag_engine.build_rag_prompt(request.message, search_results)
+            if media_instruction:
+                messages[0]["content"] = (messages[0]["content"] or "") + media_instruction
         else:
             messages = [
-                {"role": "system", "content": "你是一个智能助手。"},
+                {"role": "system", "content": "你是一个智能助手。" + media_instruction},
                 {"role": "user", "content": request.message},
             ]
         
@@ -855,14 +1145,55 @@ async def chat_stream(request: ChatRequest):
                 on_chunk=lambda c: None,
             )
             
+            # 解析 [[IMAGE: prompt]] / [[VIDEO: prompt]] 标记
+            import re as _re
+            raw_text = response.content or ""
+            image_prompts: list[str] = _re.findall(r"\[\[IMAGE:\s*(.+?)\]\]", raw_text, flags=_re.DOTALL)
+            video_prompts: list[str] = _re.findall(r"\[\[VIDEO:\s*(.+?)\]\]", raw_text, flags=_re.DOTALL)
+            display_text = _re.sub(r"\[\[(IMAGE|VIDEO):\s*.+?\]\]", "", raw_text, flags=_re.DOTALL).strip()
+
             # 直接发送完整内容作为流
-            for i in range(0, len(response.content or ""), 10):
-                chunk = response.content[i:i+10]
+            for i in range(0, len(display_text), 10):
+                chunk = display_text[i:i+10]
                 yield f"data: {json.dumps({'type': 'chunk', 'content': chunk})}\n\n"
                 await asyncio.sleep(0.02)
-            
+
+            # 生成图像并逐张推送
+            image_urls: list[str] = []
+            if image_prompts and image_client:
+                for p in image_prompts:
+                    prompt_text = p.strip()
+                    yield f"data: {json.dumps({'type': 'image_pending', 'prompt': prompt_text})}\n\n"
+                    try:
+                        urls = await image_client.generate(prompt_text)
+                        for u in urls:
+                            image_urls.append(u)
+                            yield f"data: {json.dumps({'type': 'image', 'url': u, 'prompt': prompt_text})}\n\n"
+                    except Exception as ie:
+                        yield f"data: {json.dumps({'type': 'image_error', 'prompt': prompt_text, 'message': str(ie)})}\n\n"
+
+            # 生成视频并逐段推送
+            video_urls: list[tuple[str, str]] = []  # (url, prompt)
+            if video_prompts and video_client:
+                for p in video_prompts:
+                    prompt_text = p.strip()
+                    yield f"data: {json.dumps({'type': 'video_pending', 'prompt': prompt_text})}\n\n"
+                    try:
+                        url = await video_client.generate(prompt_text)
+                        video_urls.append((url, prompt_text))
+                        yield f"data: {json.dumps({'type': 'video', 'url': url, 'prompt': prompt_text})}\n\n"
+                    except Exception as ve:
+                        yield f"data: {json.dumps({'type': 'video_error', 'prompt': prompt_text, 'message': str(ve)})}\n\n"
+
             # 发送完成
-            answer = response.content or ""
+            answer = display_text
+            md_tail: list[str] = []
+            if image_urls:
+                md_tail += [f"![image]({u})" for u in image_urls]
+            if video_urls:
+                md_tail += [f"[video:{pt}]({u})" for u, pt in video_urls]
+            if md_tail:
+                answer = display_text + "\n\n" + "\n".join(md_tail)
             _rag_engine.add_message(session_id, "assistant", answer)
 
             # 持久化消息
@@ -882,6 +1213,56 @@ async def chat_stream(request: ChatRequest):
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
     
     return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+# ==================== 文生图 API ====================
+
+class ImageGenRequest(BaseModel):
+    prompt: str
+    size: str | None = None
+    n: int = 1
+
+
+@app.post("/api/images/generate")
+async def generate_image(request: ImageGenRequest) -> dict:
+    """文生图（同步等待，返回图像 URL 列表）"""
+    from imaging import get_image_client
+    client = get_image_client()
+    if not client:
+        raise HTTPException(status_code=503, detail="图像生成未启用")
+    try:
+        urls = await client.generate(request.prompt, size=request.size, n=request.n)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"图像生成失败: {e}")
+    return {"urls": urls, "prompt": request.prompt}
+
+
+class VideoGenRequest(BaseModel):
+    prompt: str
+    resolution: str | None = None
+    ratio: str | None = None
+    duration: int | None = None
+    negative_prompt: str | None = None
+
+
+@app.post("/api/videos/generate")
+async def generate_video(request: VideoGenRequest) -> dict:
+    """文生视频（异步任务，等待完成后返回视频 URL）"""
+    from imaging import get_video_client
+    client = get_video_client()
+    if not client:
+        raise HTTPException(status_code=503, detail="视频生成未启用")
+    try:
+        url = await client.generate(
+            request.prompt,
+            resolution=request.resolution,
+            ratio=request.ratio,
+            duration=request.duration,
+            negative_prompt=request.negative_prompt,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"视频生成失败: {e}")
+    return {"url": url, "prompt": request.prompt}
 
 
 # ==================== 任务执行 API ====================
@@ -1095,6 +1476,117 @@ async def submit_task_feedback(task_id: str, request: FeedbackRequest) -> dict:
     _orchestrator.submit_feedback(task_id, request.feedback)
     return {"success": True}
 
+
+
+# ==================== 定时任务 API ====================
+
+class ScheduledTaskCreate(BaseModel):
+    description: str
+    cron: str
+    enabled: bool = True
+    active_group_ids: list[str] | None = None
+    source_session_id: str | None = None
+
+
+class ScheduledTaskUpdate(BaseModel):
+    description: str | None = None
+    cron: str | None = None
+    enabled: bool | None = None
+    active_group_ids: list[str] | None = None
+
+
+def _serialize_scheduled(t: dict) -> dict:
+    import json as _json
+    try:
+        gids = _json.loads(t.get("active_group_ids") or "[]")
+    except Exception:
+        gids = []
+    return {**t, "active_group_ids": gids}
+
+
+@app.get("/api/scheduled-tasks")
+async def list_scheduled_tasks() -> list[dict]:
+    store = get_store()
+    if not store:
+        return []
+    return [_serialize_scheduled(t) for t in store.list_scheduled_tasks()]
+
+
+@app.post("/api/scheduled-tasks")
+async def create_scheduled_task_api(request: ScheduledTaskCreate) -> dict:
+    from scheduler import validate_cron, next_run_after
+    from datetime import datetime as _dt
+
+    store = get_store()
+    if not store:
+        raise HTTPException(status_code=500, detail="Storage not initialized")
+    ok, msg = validate_cron(request.cron)
+    if not ok:
+        raise HTTPException(status_code=400, detail=f"Cron 表达式无效: {msg}")
+    description = (request.description or "").strip()
+    if not description:
+        raise HTTPException(status_code=400, detail="任务描述不能为空")
+
+    tid = str(uuid.uuid4())[:12]
+    nxt = next_run_after(request.cron, _dt.now())
+    next_iso = nxt.isoformat(timespec="minutes") if nxt else ""
+    store.create_scheduled_task(
+        task_id=tid,
+        description=description,
+        cron=request.cron,
+        active_group_ids=request.active_group_ids or [],
+        source_session_id=request.source_session_id or "",
+        next_run_at=next_iso,
+        enabled=request.enabled,
+    )
+    return _serialize_scheduled(store.get_scheduled_task(tid))
+
+
+@app.patch("/api/scheduled-tasks/{task_id}")
+async def update_scheduled_task_api(task_id: str, request: ScheduledTaskUpdate) -> dict:
+    from scheduler import validate_cron, next_run_after
+    from datetime import datetime as _dt
+
+    store = get_store()
+    if not store:
+        raise HTTPException(status_code=500, detail="Storage not initialized")
+    existing = store.get_scheduled_task(task_id)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Scheduled task not found")
+
+    if request.cron is not None:
+        ok, msg = validate_cron(request.cron)
+        if not ok:
+            raise HTTPException(status_code=400, detail=f"Cron 表达式无效: {msg}")
+    if request.description is not None and not request.description.strip():
+        raise HTTPException(status_code=400, detail="任务描述不能为空")
+
+    desc = request.description.strip() if request.description is not None else None
+    next_iso: str | None = None
+    if request.cron is not None or request.enabled is True:
+        use_cron = request.cron if request.cron is not None else existing["cron"]
+        nxt = next_run_after(use_cron, _dt.now())
+        next_iso = nxt.isoformat(timespec="minutes") if nxt else ""
+
+    store.update_scheduled_task(
+        task_id,
+        description=desc,
+        cron=request.cron,
+        enabled=request.enabled,
+        active_group_ids=request.active_group_ids,
+        next_run_at=next_iso,
+    )
+    return _serialize_scheduled(store.get_scheduled_task(task_id))
+
+
+@app.delete("/api/scheduled-tasks/{task_id}")
+async def delete_scheduled_task_api(task_id: str) -> dict:
+    store = get_store()
+    if not store:
+        raise HTTPException(status_code=500, detail="Storage not initialized")
+    if not store.delete_scheduled_task(task_id):
+        raise HTTPException(status_code=404, detail="Scheduled task not found")
+    return {"success": True}
 
 
 # ==================== Worker 状态 API ====================
