@@ -1,6 +1,7 @@
 """End-to-end: install -> worker -> tool invocation."""
-import sys, os
+import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest

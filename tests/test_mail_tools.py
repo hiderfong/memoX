@@ -1,8 +1,11 @@
-import sys, os, asyncio, pytest
+import asyncio
+import os
+import sys
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from agents.mail_bus import MailBus
-from tools.mail import SendMailTool, ReadMailTool
+from tools.mail import ReadMailTool, SendMailTool
 
 
 def make_bus():

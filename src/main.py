@@ -1,7 +1,6 @@
 """MemoX - 主入口"""
 
 import sys
-import os
 from pathlib import Path
 
 # 添加 src 目录到路径
@@ -18,7 +17,7 @@ def main():
     # 加载配置
     config_path = Path(__file__).parent.parent / "config.yaml"
     config = load_config(config_path)
-    
+
     # 配置日志
     logger.remove()
     logger.add(
@@ -26,12 +25,12 @@ def main():
         level=config.app.log_level,
         format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>",
     )
-    
+
     # 启动服务器
     logger.info(f"🚀 启动 {config.app.name}...")
     logger.info(f"📂 工作目录: {config.app.workspace}")
     logger.info(f"🔧 最大 Worker 数: {config.coordinator.max_workers}")
-    
+
     # SSL 证书路径（相对于项目根目录）
     ssl_cert = Path(__file__).parent.parent / "ssl" / "cert.pem"
     ssl_key  = Path(__file__).parent.parent / "ssl" / "key.pem"

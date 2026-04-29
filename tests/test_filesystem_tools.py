@@ -1,9 +1,11 @@
-import sys, os, asyncio, pytest
-from pathlib import Path
+import asyncio
+import os
+import sys
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from agents.sandbox import SandboxManager
-from tools.filesystem import ReadFileTool, WriteFileTool, ListFilesTool
+from tools.filesystem import ListFilesTool, ReadFileTool, WriteFileTool
 
 
 def make_tools(tmp_path):

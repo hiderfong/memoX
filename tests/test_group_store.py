@@ -1,7 +1,11 @@
-import sys, os, tempfile, pytest
+import os
+import sys
+
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-from knowledge.group_store import GroupStore, UNGROUPED_ID
+from knowledge.group_store import UNGROUPED_ID, GroupStore
 
 
 def make_store(tmp_path):

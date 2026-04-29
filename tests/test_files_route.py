@@ -1,5 +1,5 @@
-from pathlib import Path
 from unittest.mock import MagicMock
+
 from fastapi.testclient import TestClient
 
 from src.web.api import app

@@ -1,5 +1,9 @@
 """文档 chunk 检索测试"""
-import sys, os, pytest
+import os
+import sys
+
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from knowledge.document_parser import TextChunk

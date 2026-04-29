@@ -62,3 +62,4 @@ tests/**/__pycache__/
 
 # ---- Root-level screenshots (scratch) ----
 /*.png
+test_output.txt

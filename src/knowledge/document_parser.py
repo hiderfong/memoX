@@ -5,7 +5,6 @@ import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import AsyncGenerator
 
 
 @dataclass
@@ -15,7 +14,7 @@ class Document:
     filename: str
     content: str
     metadata: dict = field(default_factory=dict)
-    
+
     @property
     def extension(self) -> str:
         return Path(self.filename).suffix.lower()
@@ -32,12 +31,12 @@ class TextChunk:
 
 class BaseParser(ABC):
     """解析器基类"""
-    
+
     @abstractmethod
     async def parse(self, file_path: Path, doc_id: str) -> Document:
         """解析文件"""
         pass
-    
+
     @abstractmethod
     async def chunk(self, document: Document, chunk_size: int = 500, overlap: int = 50) -> list[TextChunk]:
         """分块"""
@@ -46,7 +45,7 @@ class BaseParser(ABC):
 
 class MarkdownParser(BaseParser):
     """Markdown 解析器"""
-    
+
     async def parse(self, file_path: Path, doc_id: str) -> Document:
         content = file_path.read_text(encoding="utf-8")
         return Document(
@@ -58,47 +57,47 @@ class MarkdownParser(BaseParser):
                 "path": str(file_path),
             }
         )
-    
+
     async def chunk(self, document: Document, chunk_size: int = 500, overlap: int = 50) -> list[TextChunk]:
         return self._text_chunk(document.content, document.id, document.metadata, chunk_size, overlap)
-    
+
     def _text_chunk(self, text: str, doc_id: str, metadata: dict, chunk_size: int, overlap: int) -> list[TextChunk]:
         chunks: list[TextChunk] = []
         start = 0
         index = 0
-        
+
         while start < len(text):
             end = start + chunk_size
             chunk_text = text[start:end]
-            
+
             # 尝试在句号或换行处分割
             if end < len(text):
                 last_period = chunk_text.rfind("。")
                 last_newline = chunk_text.rfind("\n")
                 last_punctuation = max(last_period, last_newline)
-                
+
                 if last_punctuation > chunk_size * 0.5:
                     chunk_text = chunk_text[:last_punctuation + 1]
                     end = start + len(chunk_text)
-            
+
             chunks.append(TextChunk(
                 id=f"{doc_id}_chunk_{index}",
                 content=chunk_text.strip(),
                 metadata={**metadata, "chunk_index": index},
                 index=index,
             ))
-            
+
             index += 1
             start = end - overlap
             if start <= chunks[-1].index * (chunk_size - overlap):
                 break
-        
+
         return chunks
 
 
 class TextParser(MarkdownParser):
     """纯文本解析器"""
-    
+
     async def parse(self, file_path: Path, doc_id: str) -> Document:
         content = file_path.read_text(encoding="utf-8")
         return Document(
@@ -114,51 +113,51 @@ class TextParser(MarkdownParser):
 
 class PDFParser(BaseParser):
     """PDF 解析器"""
-    
+
     # 解析限制
     MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB
     MAX_PAGES = 500  # 最大页数
     PARSE_TIMEOUT = 60  # 解析超时时间（秒）
-    
+
     async def parse(self, file_path: Path, doc_id: str) -> Document:
         try:
             import pymupdf
         except ImportError:
-            raise ImportError("请安装 pymupdf: pip install pymupdf")
-        
+            raise ImportError("请安装 pymupdf: pip install pymupdf") from None
+
         # 检查文件大小
         file_size = file_path.stat().st_size
         if file_size > self.MAX_FILE_SIZE:
             raise ValueError(f"文件过大: {file_size / 1024 / 1024:.1f}MB > {self.MAX_FILE_SIZE / 1024 / 1024}MB")
-        
+
         def _parse_sync():
             content_parts: list[str] = []
             metadata: dict = {}
-            
+
             with pymupdf.open(file_path) as doc:
                 page_count = len(doc)
                 metadata = {
                     "pages": min(page_count, self.MAX_PAGES),
                     "title": doc.metadata.get("title", ""),
                 }
-                
+
                 # 限制页数
                 for page_num, page in enumerate(doc):
                     if page_num >= self.MAX_PAGES:
                         content_parts.append(f"[... 省略 {page_count - page_num} 页 ...]")
                         break
-                    
+
                     text = page.get_text()
                     if text.strip():
                         content_parts.append(f"[第 {page_num + 1} 页]\n{text}")
-            
+
             return Document(
                 id=doc_id,
                 filename=file_path.name,
                 content="\n\n".join(content_parts),
                 metadata={**metadata, "type": "pdf", "path": str(file_path), "file_size": file_size},
             )
-        
+
         # 在线程池中运行同步的 PDF 解析，带超时
         loop = asyncio.get_running_loop()
         try:
@@ -167,22 +166,22 @@ class PDFParser(BaseParser):
                 timeout=self.PARSE_TIMEOUT
             )
         except asyncio.TimeoutError:
-            raise TimeoutError(f"PDF 解析超时（>{self.PARSE_TIMEOUT}秒），文件可能过于复杂")
-    
+            raise TimeoutError(f"PDF 解析超时（>{self.PARSE_TIMEOUT}秒），文件可能过于复杂") from None
+
     async def chunk(self, document: Document, chunk_size: int = 500, overlap: int = 50) -> list[TextChunk]:
         return self._text_chunk(document.content, document.id, document.metadata, chunk_size, overlap)
-    
+
     def _text_chunk(self, text: str, doc_id: str, metadata: dict, chunk_size: int, overlap: int) -> list[TextChunk]:
         # 按页分割
         pages = re.split(r'\[第 \d+ 页\]', text)
         chunks: list[TextChunk] = []
         current_chunk = ""
         index = 0
-        
+
         for page_text in pages:
             if not page_text.strip():
                 continue
-            
+
             if len(current_chunk) + len(page_text) <= chunk_size:
                 current_chunk += page_text + "\n\n"
             else:
@@ -194,9 +193,9 @@ class PDFParser(BaseParser):
                         index=index,
                     ))
                     index += 1
-                
+
                 current_chunk = page_text + "\n\n"
-                
+
                 while len(current_chunk) > chunk_size:
                     chunks.append(TextChunk(
                         id=f"{doc_id}_chunk_{index}",
@@ -206,7 +205,7 @@ class PDFParser(BaseParser):
                     ))
                     index += 1
                     current_chunk = current_chunk[chunk_size - overlap:]
-        
+
         if current_chunk.strip():
             chunks.append(TextChunk(
                 id=f"{doc_id}_chunk_{index}",
@@ -214,13 +213,13 @@ class PDFParser(BaseParser):
                 metadata={**metadata, "chunk_index": index},
                 index=index,
             ))
-        
+
         return chunks
 
 
 class DOCXParser(BaseParser):
     """DOCX 解析器"""
-    
+
     # 解析限制
     MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
     MAX_PARAGRAPHS = 10000  # 最大段落数
@@ -228,22 +227,22 @@ class DOCXParser(BaseParser):
     MAX_TABLE_ROWS = 1000  # 单个表格最大行数
     MAX_TABLE_CELLS = 100  # 单行最大单元格数
     PARSE_TIMEOUT = 30  # 解析超时时间（秒）
-    
+
     async def parse(self, file_path: Path, doc_id: str) -> Document:
         try:
             import docx
         except ImportError:
-            raise ImportError("请安装 python-docx: pip install python-docx")
-        
+            raise ImportError("请安装 python-docx: pip install python-docx") from None
+
         # 检查文件大小
         file_size = file_path.stat().st_size
         if file_size > self.MAX_FILE_SIZE:
             raise ValueError(f"文件过大: {file_size / 1024 / 1024:.1f}MB > {self.MAX_FILE_SIZE / 1024 / 1024}MB")
-        
+
         def _parse_sync():
             doc = docx.Document(file_path)
             paragraphs: list[str] = []
-            
+
             # 限制段落数
             for i, para in enumerate(doc.paragraphs):
                 if i >= self.MAX_PARAGRAPHS:
@@ -252,19 +251,19 @@ class DOCXParser(BaseParser):
                 text = para.text.strip()
                 if text:
                     paragraphs.append(text)
-            
+
             # 提取表格（带限制）
             tables_text: list[str] = []
             for table_idx, table in enumerate(doc.tables):
                 if table_idx >= self.MAX_TABLES:
                     tables_text.append(f"[... 省略 {len(doc.tables) - table_idx} 个表格 ...]")
                     break
-                
+
                 for row_idx, row in enumerate(table.rows):
                     if row_idx >= self.MAX_TABLE_ROWS:
                         tables_text.append(f"[... 省略 {len(table.rows) - row_idx} 行 ...]")
                         break
-                    
+
                     # 限制单元格数
                     cells = []
                     for cell_idx, cell in enumerate(row.cells):
@@ -272,15 +271,15 @@ class DOCXParser(BaseParser):
                             cells.append(f"[+{len(row.cells) - cell_idx} more]")
                             break
                         cells.append(cell.text.strip())
-                    
+
                     if any(cells):
                         tables_text.append(" | ".join(cells))
                 tables_text.append("")
-            
+
             content = "\n\n".join(paragraphs)
             if tables_text:
                 content += "\n\n### 表格内容 ###\n" + "\n".join(tables_text)
-            
+
             return Document(
                 id=doc_id,
                 filename=file_path.name,
@@ -293,7 +292,7 @@ class DOCXParser(BaseParser):
                     "file_size": file_size,
                 }
             )
-        
+
         # 在线程池中运行同步的 DOCX 解析，带超时
         loop = asyncio.get_running_loop()
         try:
@@ -302,11 +301,11 @@ class DOCXParser(BaseParser):
                 timeout=self.PARSE_TIMEOUT
             )
         except asyncio.TimeoutError:
-            raise TimeoutError(f"DOCX 解析超时（>{self.PARSE_TIMEOUT}秒），文件可能过于复杂")
-    
+            raise TimeoutError(f"DOCX 解析超时（>{self.PARSE_TIMEOUT}秒），文件可能过于复杂") from None
+
     async def chunk(self, document: Document, chunk_size: int = 500, overlap: int = 50) -> list[TextChunk]:
         return self._text_chunk(document.content, document.id, document.metadata, chunk_size, overlap)
-    
+
     def _text_chunk(self, text: str, doc_id: str, metadata: dict, chunk_size: int, overlap: int) -> list[TextChunk]:
         chunks: list[TextChunk] = []
         start = 0
@@ -365,7 +364,7 @@ class WebPageParser(BaseParser):
         try:
             from bs4 import BeautifulSoup
         except ImportError:
-            raise ImportError("请安装 beautifulsoup4: pip install beautifulsoup4")
+            raise ImportError("请安装 beautifulsoup4: pip install beautifulsoup4") from None
 
         import httpx
 
@@ -511,7 +510,7 @@ class XLSXParser(BaseParser):
         try:
             import openpyxl
         except ImportError:
-            raise ImportError("请安装 openpyxl: pip install openpyxl")
+            raise ImportError("请安装 openpyxl: pip install openpyxl") from None
 
         file_size = file_path.stat().st_size
         if file_size > self.MAX_FILE_SIZE:
@@ -532,7 +531,7 @@ class XLSXParser(BaseParser):
 
                 for row in ws.iter_rows(values_only=True):
                     if row_count >= self.MAX_ROWS:
-                        parts.append(f"[... 省略更多行 ...]")
+                        parts.append("[... 省略更多行 ...]")
                         break
                     cells = []
                     for col_idx, cell in enumerate(row):
@@ -565,7 +564,7 @@ class XLSXParser(BaseParser):
                 timeout=self.PARSE_TIMEOUT,
             )
         except asyncio.TimeoutError:
-            raise TimeoutError(f"XLSX 解析超时（>{self.PARSE_TIMEOUT}秒）")
+            raise TimeoutError(f"XLSX 解析超时（>{self.PARSE_TIMEOUT}秒）") from None
 
     async def chunk(self, document: Document, chunk_size: int = 500, overlap: int = 50) -> list[TextChunk]:
         return self._text_chunk(document.content, document.id, document.metadata, chunk_size, overlap)
@@ -620,7 +619,7 @@ class PPTXParser(BaseParser):
             from pptx import Presentation
             from pptx.util import Pt
         except ImportError:
-            raise ImportError("请安装 python-pptx: pip install python-pptx")
+            raise ImportError("请安装 python-pptx: pip install python-pptx") from None
 
         file_size = file_path.stat().st_size
         if file_size > self.MAX_FILE_SIZE:
@@ -676,7 +675,7 @@ class PPTXParser(BaseParser):
                 timeout=self.PARSE_TIMEOUT,
             )
         except asyncio.TimeoutError:
-            raise TimeoutError(f"PPTX 解析超时（>{self.PARSE_TIMEOUT}秒）")
+            raise TimeoutError(f"PPTX 解析超时（>{self.PARSE_TIMEOUT}秒）") from None
 
     async def chunk(self, document: Document, chunk_size: int = 500, overlap: int = 50) -> list[TextChunk]:
         return self._text_chunk(document.content, document.id, document.metadata, chunk_size, overlap)
@@ -767,6 +766,7 @@ class ImageParser(BaseParser):
     async def _ocr_qwen_vl(self, file_path: Path) -> str:
         """调用 Qwen VL 进行 OCR"""
         import base64
+
         import httpx
 
         image_data = file_path.read_bytes()
@@ -871,32 +871,32 @@ class DocumentParser:
             ".jpeg": image_parser,
             ".webp": image_parser,
         }
-    
+
     def get_parser(self, filename: str) -> BaseParser:
         """获取对应的解析器"""
         ext = Path(filename).suffix.lower()
-        
+
         # 尝试精确匹配
         if ext in self._parsers:
             return self._parsers[ext]
-        
+
         # 尝试不带点的扩展名
         if f".{ext.lstrip('.')}" in self._parsers:
             return self._parsers[f".{ext.lstrip('.')}"]
-        
+
         # 默认使用文本解析器
         return TextParser()
-    
+
     async def parse(self, file_path: Path, doc_id: str) -> Document:
         """解析文档"""
         parser = self.get_parser(file_path.name)
         return await parser.parse(file_path, doc_id)
-    
+
     async def parse_and_chunk(
-        self, 
-        file_path: Path, 
-        doc_id: str, 
-        chunk_size: int = 500, 
+        self,
+        file_path: Path,
+        doc_id: str,
+        chunk_size: int = 500,
         overlap: int = 50
     ) -> tuple[Document, list[TextChunk]]:
         """解析并分块"""
@@ -904,7 +904,7 @@ class DocumentParser:
         document = await parser.parse(file_path, doc_id)
         chunks = await parser.chunk(document, chunk_size, overlap)
         return document, chunks
-    
+
     @property
     def supported_extensions(self) -> list[str]:
         """支持的扩展名"""

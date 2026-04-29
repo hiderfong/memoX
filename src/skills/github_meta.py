@@ -16,7 +16,6 @@ from typing import Any
 import httpx
 from loguru import logger
 
-
 _REPO_RE = re.compile(
     r"(?:https?://)?(?:www\.)?github\.com/(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?(?:/|$)"
 )
@@ -102,7 +101,7 @@ async def enrich_with_repo_meta(
                 *(_fetch_one(client, r) for r in stale),
                 return_exceptions=False,
             )
-        for repo, meta in zip(stale, results):
+        for repo, meta in zip(stale, results, strict=False):
             if meta:
                 cache[repo] = meta
         _save_cache(cache_path, cache)

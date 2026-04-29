@@ -7,9 +7,10 @@ import re
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Optional
 
 ProgressCallback = Optional[Callable[[str, str], None]]
 

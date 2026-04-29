@@ -1,7 +1,8 @@
 """Tests for the skill installer."""
-import sys, os
 import json
+import os
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest

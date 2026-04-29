@@ -1,11 +1,14 @@
 """图片 OCR 解析器测试"""
-import sys, os, pytest
+import os
+import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, patch, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-from knowledge.document_parser import ImageParser, DocumentParser
+from knowledge.document_parser import DocumentParser, ImageParser
 
 
 def _create_test_image(path: Path) -> Path:

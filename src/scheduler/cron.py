@@ -15,7 +15,6 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-
 _FIELD_BOUNDS = [
     (0, 59),  # minute
     (0, 23),  # hour
@@ -56,7 +55,7 @@ def _parse(expr: str) -> list[set[int]]:
     parts = expr.strip().split()
     if len(parts) != 5:
         raise ValueError(f"Cron expression must have 5 fields, got {len(parts)}: '{expr}'")
-    return [_parse_field(p, lo, hi) for p, (lo, hi) in zip(parts, _FIELD_BOUNDS)]
+    return [_parse_field(p, lo, hi) for p, (lo, hi) in zip(parts, _FIELD_BOUNDS, strict=False)]
 
 
 def validate_cron(expr: str) -> tuple[bool, str]:

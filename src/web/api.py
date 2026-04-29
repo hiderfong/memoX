@@ -1,13 +1,13 @@
 """Web API - FastAPI 服务"""
 
-import os
-import sys
 import asyncio
+import contextlib
 import json
-import uuid
+import os
 import re as _re
+import sys
+import uuid
 from pathlib import Path
-from typing import Any
 
 from loguru import logger
 
@@ -16,35 +16,32 @@ _src_dir = Path(__file__).parent.parent
 if str(_src_dir) not in sys.path:
     sys.path.insert(0, str(_src_dir))
 
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException, WebSocket, WebSocketDisconnect, Request
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, JSONResponse, FileResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from config import load_config, Config
-from dataclasses import asdict
-from knowledge.group_store import GroupStore, UNGROUPED_ID
-from auth import init_auth, get_auth_manager
-from knowledge.document_parser import WebPageParser
-from knowledge import (
-    RAGEngine,
-    init_rag_engine,
-    get_rag_engine,
-    DocumentInfo,
-    SearchResult,
-)
-from knowledge.vector_store import (
-    SentenceTransformerEmbedding,
-    OpenAIEmbedding,
-    DashScopeEmbedding,
-)
-from agents.base_agent import create_provider, AnthropicProvider, ToolRegistry
-from agents.worker_pool import init_worker_pool, get_worker_pool, WorkerConfig, WorkerAgent
+from agents.base_agent import ToolRegistry, create_provider
+from agents.worker_pool import WorkerAgent, WorkerConfig, get_worker_pool, init_worker_pool
+from auth import get_auth_manager, init_auth
+from config import Config, load_config
+from coordinator.iterative_orchestrator import IterativeOrchestrator
 from coordinator.task_planner import TaskPlanner, init_task_planner
-from coordinator.iterative_orchestrator import IterativeOrchestrator, IterationResult
-from storage import init_store, get_store
-
+from knowledge import (
+    DocumentInfo,
+    RAGEngine,
+    SearchResult,
+    init_rag_engine,
+)
+from knowledge.document_parser import WebPageParser
+from knowledge.group_store import UNGROUPED_ID, GroupStore
+from knowledge.vector_store import (
+    DashScopeEmbedding,
+    OpenAIEmbedding,
+    SentenceTransformerEmbedding,
+)
+from storage import get_store, init_store
 
 # ==================== 配置 ====================
 
@@ -234,13 +231,13 @@ async def startup():
         ])
         _PUBLIC_PATHS.update(_config.auth.public_paths)
         logger.info(f"   - 认证已启用，{len(_config.auth.users)} 个用户")
-    
+
     # CORS 已在创建 app 时配置
-    
+
     # 根据配置创建 Embedding Function
     kb_config = _config.knowledge_base
     embedding_provider = kb_config.embedding_provider
-    
+
     if embedding_provider == "dashscope":
         # 阿里云 DashScope
         dashscope_config = _config.providers.get("dashscope")
@@ -269,7 +266,7 @@ async def startup():
             model_name=kb_config.embedding_model or "sentence-transformers/all-MiniLM-L6-v2"
         )
         logger.info(f"   - 使用本地 Embedding: {kb_config.embedding_model}")
-    
+
     # DashScope config for image OCR
     dashscope_config = _config.providers.get("dashscope")
     dashscope_api_key = dashscope_config.resolve_api_key() if dashscope_config else ""
@@ -285,7 +282,7 @@ async def startup():
         dashscope_api_key=dashscope_api_key,
         dashscope_base_url=dashscope_base_url,
     )
-    
+
     # 预热嵌入模型（避免首次请求时延迟）
     logger.info("   - 预热嵌入模型...")
     await _rag_engine.vector_store.embedding_function.embed(["预热模型"])
@@ -300,7 +297,7 @@ async def startup():
 
     # 初始化 Worker 池
     worker_pool = init_worker_pool(max_workers=_config.coordinator.max_workers)
-    
+
     # 注册 Worker（从模板）
     for name, template in _config.worker_templates.items():
         provider_config = _config.providers.get(template.provider)
@@ -313,7 +310,7 @@ async def startup():
             )
         else:
             continue
-        
+
         worker_config = WorkerConfig(
             name=name,
             provider_type=template.provider,
@@ -325,11 +322,11 @@ async def startup():
             icon=template.icon,
             display_name=template.display_name,
         )
-        
+
         worker_pool.register_worker(
             WorkerAgent(worker_config, ToolRegistry(), worker_provider)
         )
-    
+
     # 初始化 Coordinator
     coordinator_provider_config = _config.providers.get(_config.coordinator.provider)
     if coordinator_provider_config:
@@ -405,7 +402,7 @@ async def startup():
             default_duration=i2v_cfg.default_duration,
         )
 
-    logger.info(f"✅ MemoX 启动完成")
+    logger.info("✅ MemoX 启动完成")
     logger.info(f"   - RAG 引擎: {len(_rag_engine.list_documents())} 个文档")
 
 
@@ -478,22 +475,22 @@ async def upload_document(
     group_id: str = Form(default="ungrouped"),
 ) -> DocumentResponse:
     """上传文档"""
-    import traceback
     import asyncio
-    
+    import traceback
+
     upload_dir = Path(_config.knowledge_base.upload_directory)
     upload_dir.mkdir(parents=True, exist_ok=True)
-    
+
     # 保存文件
     file_path = upload_dir / f"{uuid.uuid4().hex}_{file.filename}"
     try:
         content = await file.read()
         file_path.write_bytes(content)
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"文件保存失败: {str(e)}")
-    
+        raise HTTPException(status_code=400, detail=f"文件保存失败: {str(e)}") from e
+
     logger.info(f"[UPLOAD] File saved: {file_path}, size: {len(content)} bytes")
-    
+
     # 添加到知识库（带整体超时）
     try:
         # 总超时 300 秒（5分钟），给大文件处理足够时间
@@ -512,36 +509,28 @@ async def upload_document(
             group_id=doc_info.group_id,
         )
     except asyncio.TimeoutError:
-        logger.error(f"[UPLOAD ERROR] 文档处理超时")
+        logger.error("[UPLOAD ERROR] 文档处理超时")
         # 清理文件
-        try:
+        with contextlib.suppress(Exception):
             file_path.unlink(missing_ok=True)
-        except Exception:
-            pass
-        raise HTTPException(status_code=504, detail="文档处理超时，请尝试上传更小的文件或简化文档格式")
+        raise HTTPException(status_code=504, detail="文档处理超时，请尝试上传更小的文件或简化文档格式") from e
     except TimeoutError as e:
         logger.error(f"[UPLOAD ERROR] {e}")
-        try:
+        with contextlib.suppress(Exception):
             file_path.unlink(missing_ok=True)
-        except Exception:
-            pass
-        raise HTTPException(status_code=504, detail=str(e))
+        raise HTTPException(status_code=504, detail=str(e)) from e
     except ValueError as e:
         logger.error(f"[UPLOAD ERROR] {e}")
-        try:
+        with contextlib.suppress(Exception):
             file_path.unlink(missing_ok=True)
-        except Exception:
-            pass
-        raise HTTPException(status_code=413, detail=str(e))
+        raise HTTPException(status_code=413, detail=str(e)) from e
     except Exception as e:
         logger.exception(f"[UPLOAD ERROR] {type(e).__name__}: {e}")
         traceback.print_exc()
         # 清理文件
-        try:
+        with contextlib.suppress(Exception):
             file_path.unlink(missing_ok=True)
-        except Exception:
-            pass
-        raise HTTPException(status_code=500, detail=f"文档处理失败: {type(e).__name__}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"文档处理失败: {type(e).__name__}: {str(e)}") from e
 
 
 @app.post("/api/documents/url")
@@ -561,9 +550,9 @@ async def import_url(request: URLRequest) -> DocumentResponse:
             timeout=35.0,
         )
     except asyncio.TimeoutError:
-        raise HTTPException(status_code=504, detail="网页抓取超时")
+        raise HTTPException(status_code=504, detail="网页抓取超时") from e
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"网页抓取失败: {type(e).__name__}: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"网页抓取失败: {type(e).__name__}: {str(e)}") from e
 
     # 分块并存入向量库
     chunks = await parser.chunk(doc_info_raw, chunk_size=500, overlap=50)
@@ -642,9 +631,9 @@ async def update_group(group_id: str, request: GroupUpdate) -> dict:
         group = _group_store.update_group(group_id, request.name, request.color)
         return {"id": group.id, "name": group.name, "color": group.color, "created_at": group.created_at}
     except KeyError:
-        raise HTTPException(status_code=404, detail="Group not found")
+        raise HTTPException(status_code=404, detail="Group not found") from e
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @app.delete("/api/groups/{group_id}")
@@ -658,7 +647,7 @@ async def delete_group(group_id: str) -> dict:
         _group_store.delete_group(group_id)
         return {"success": True}
     except (KeyError, ValueError) as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e)) from e
 
 
 @app.put("/api/documents/{doc_id}/group")
@@ -812,15 +801,15 @@ def _resolve_chat_llm(worker_id: str | None) -> tuple:
 async def chat(request: ChatRequest) -> dict:
     """聊天问答（非流式）"""
     session_id = request.session_id or str(uuid.uuid4())[:8]
-    
+
     # 获取或创建会话
     session = _rag_engine.get_session(session_id)
     if not session:
         session = _rag_engine.create_session()
-    
+
     # 添加用户消息
     _rag_engine.add_message(session_id, "user", request.message)
-    
+
     # RAG 检索
     search_results: list[SearchResult] = []
     if request.use_rag:
@@ -873,7 +862,7 @@ async def chat(request: ChatRequest) -> dict:
         if isinstance(e, _httpx.HTTPStatusError):
             status = e.response.status_code
             if status == 401:
-                raise HTTPException(status_code=502, detail="LLM API Key 无效或已过期")
+                raise HTTPException(status_code=502, detail="LLM API Key 无效或已过期") from e
             elif status == 429:
                 raise HTTPException(status_code=429, detail="LLM API 请求频率超限，请稍后重试")
             else:
@@ -1135,7 +1124,7 @@ async def summarize_session_as_task(session_id: str, request: SummarizeTaskReque
             max_tokens=max_tokens,
         )
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"LLM 调用失败: {type(e).__name__}: {str(e)}")
+        raise HTTPException(status_code=502, detail=f"LLM 调用失败: {type(e).__name__}: {str(e)}") from e
 
     raw = (response.content or "").strip()
 
@@ -1177,16 +1166,16 @@ async def summarize_session_as_task(session_id: str, request: SummarizeTaskReque
 async def chat_stream(request: ChatRequest):
     """流式聊天问答"""
     session_id = request.session_id or str(uuid.uuid4())[:8]
-    
+
     async def generate():
         # 获取或创建会话
         session = _rag_engine.get_session(session_id)
         if not session:
             session = _rag_engine.create_session()
-        
+
         # 添加用户消息
         _rag_engine.add_message(session_id, "user", request.message)
-        
+
         # RAG 检索
         search_results: list[SearchResult] = []
         if request.use_rag:
@@ -1194,7 +1183,7 @@ async def chat_stream(request: ChatRequest):
 
             # 先发送检索结果
             yield f"data: {json.dumps({'type': 'sources', 'data': [{'filename': r.metadata.get('filename', 'unknown'), 'score': r.score} for r in search_results]})}\n\n"
-        
+
         # 构建提示
         from imaging import get_image_client, get_video_client
         image_client = get_image_client()
@@ -1242,7 +1231,7 @@ async def chat_stream(request: ChatRequest):
                 max_tokens=max_tokens,
                 on_chunk=lambda c: None,
             )
-            
+
             # 解析 [[IMAGE: prompt]] / [[VIDEO: prompt]] / [[I2V: url | prompt]] 标记
             raw_text = response.content or ""
             image_prompts: list[str] = _re.findall(r"\[\[IMAGE:\s*(.+?)\]\]", raw_text, flags=_re.DOTALL)
@@ -1325,10 +1314,10 @@ async def chat_stream(request: ChatRequest):
                     store.update_session_title(session_id, title)
 
             yield f"data: {json.dumps({'type': 'done', 'session_id': session_id, 'worker_id': resolved_worker_id})}\n\n"
-            
+
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
-    
+
     return StreamingResponse(generate(), media_type="text/event-stream")
 
 
@@ -1350,7 +1339,7 @@ async def generate_image(request: ImageGenRequest) -> dict:
     try:
         urls = await client.generate(request.prompt, size=request.size, n=request.n)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"图像生成失败: {e}")
+        raise HTTPException(status_code=500, detail=f"图像生成失败: {e}") from e
     return {"urls": urls, "prompt": request.prompt}
 
 
@@ -1378,7 +1367,7 @@ async def generate_video(request: VideoGenRequest) -> dict:
             negative_prompt=request.negative_prompt,
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"视频生成失败: {e}")
+        raise HTTPException(status_code=500, detail=f"视频生成失败: {e}") from e
     return {"url": url, "prompt": request.prompt}
 
 
@@ -1406,7 +1395,7 @@ async def generate_i2v(request: I2VRequest) -> dict:
             negative_prompt=request.negative_prompt,
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"图生视频失败: {e}")
+        raise HTTPException(status_code=500, detail=f"图生视频失败: {e}") from e
     return {"url": url, "prompt": request.prompt, "image_url": request.image_url}
 
 
@@ -1414,7 +1403,6 @@ async def generate_i2v(request: I2VRequest) -> dict:
 async def serve_upload(name: str, request: Request):
     """暴露 data/uploads/ 下的文件（供 DashScope 拉取图片等场景）"""
     # 从原始 URL 中提取文件名，防止编码绕过
-    raw_path = request.url.path  # e.g. /api/files/abc.png
     # 检查原始 URL 中是否含有编码斜杠或点点
     raw_name = request.url.path.removeprefix("/api/files/")
     if "/" in raw_name or "\\" in raw_name or ".." in raw_name:
@@ -1426,7 +1414,7 @@ async def serve_upload(name: str, request: Request):
     try:
         path.relative_to(UPLOADS_DIR.resolve())
     except ValueError:
-        raise HTTPException(status_code=400, detail="非法路径")
+        raise HTTPException(status_code=400, detail="非法路径") from e
     if not path.is_file():
         raise HTTPException(status_code=404, detail="文件不存在")
     return FileResponse(str(path))
@@ -1452,7 +1440,7 @@ async def create_task(request: TaskRequest) -> dict:
         else:
             result = await coro
     except asyncio.TimeoutError:
-        raise HTTPException(status_code=504, detail=f"任务执行超时（{timeout}秒）")
+        raise HTTPException(status_code=504, detail=f"任务执行超时（{timeout}秒）") from e
 
     suggestions = []
     if request.generate_suggestions and _task_planner:
@@ -1681,8 +1669,9 @@ async def list_scheduled_tasks() -> list[dict]:
 
 @app.post("/api/scheduled-tasks")
 async def create_scheduled_task_api(request: ScheduledTaskCreate) -> dict:
-    from scheduler import validate_cron, next_run_after
     from datetime import datetime as _dt
+
+    from scheduler import next_run_after, validate_cron
 
     store = get_store()
     if not store:
@@ -1711,8 +1700,9 @@ async def create_scheduled_task_api(request: ScheduledTaskCreate) -> dict:
 
 @app.patch("/api/scheduled-tasks/{task_id}")
 async def update_scheduled_task_api(task_id: str, request: ScheduledTaskUpdate) -> dict:
-    from scheduler import validate_cron, next_run_after
     from datetime import datetime as _dt
+
+    from scheduler import next_run_after, validate_cron
 
     store = get_store()
     if not store:
@@ -1808,7 +1798,6 @@ class WorkerConfigUpdate(BaseModel):
 @app.put("/api/workers/{worker_id}/config")
 async def update_worker_config(worker_id: str, body: WorkerConfigUpdate) -> dict:
     """更新 Worker 配置并持久化到 config.yaml"""
-    import yaml as _yaml
 
     worker_pool = get_worker_pool()
     if not worker_pool or worker_id not in worker_pool._workers:
@@ -2037,10 +2026,8 @@ async def list_installed_skills() -> dict:
         source_url = ""
         meta_path = s.path / ".install.json"
         if meta_path.is_file():
-            try:
+            with contextlib.suppress(OSError, json.JSONDecodeError):
                 source_url = json.loads(meta_path.read_text(encoding="utf-8")).get("source_url", "")
-            except (OSError, json.JSONDecodeError):
-                pass
         out.append({
             "name": s.name,
             "description": s.description,
@@ -2056,9 +2043,9 @@ async def search_skills(q: str = "", limit: int = 10) -> dict:
     结果会尽力附带 GitHub stars + pushed_at(本地 24h TTL 缓存,首次冷启会拉网);
     若元数据未就绪(缓存没命中且抓取失败/超时),对应字段缺省,前端需容忍缺失。
     """
+    from skills.github_meta import enrich_with_repo_meta
     from skills.loader import list_skills as _list_skills
     from skills.registry import load_registry, search_registry
-    from skills.github_meta import enrich_with_repo_meta
 
     skills_dir = Path(_config.knowledge_base.skills_dir)
     registry_path = Path("data/skills_registry.json")
@@ -2165,7 +2152,7 @@ async def uninstall_skill(name: str) -> dict:
     try:
         _remove(skills_dir, name)
     except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
     return {"success": True, "name": name}
 
 
@@ -2194,19 +2181,19 @@ async def websocket_endpoint(websocket: WebSocket):
         while True:
             data = await websocket.receive_text()
             message = json.loads(data)
-            
+
             msg_type = message.get("type")
-            
+
             if msg_type == "chat":
                 # 流式聊天
                 session_id = message.get("session_id", str(uuid.uuid4())[:8])
                 user_message = message.get("message", "")
-                
+
                 # RAG 检索
                 search_results = []
                 if _rag_engine:
                     search_results = await _rag_engine.search(user_message)
-                    
+
                     await websocket.send_json({
                         "type": "sources",
                         "data": [
@@ -2214,7 +2201,7 @@ async def websocket_endpoint(websocket: WebSocket):
                             for r in search_results
                         ],
                     })
-                
+
                 # 构建提示
                 if search_results and _rag_engine:
                     messages = _rag_engine.build_rag_prompt(user_message, search_results)
@@ -2223,7 +2210,7 @@ async def websocket_endpoint(websocket: WebSocket):
                         {"role": "system", "content": "你是一个智能助手。"},
                         {"role": "user", "content": user_message},
                     ]
-                
+
                 # 调用 LLM
                 coordinator_provider_config = _config.providers.get(_config.coordinator.provider)
                 if coordinator_provider_config:
@@ -2233,46 +2220,44 @@ async def websocket_endpoint(websocket: WebSocket):
                         base_url=coordinator_provider_config.base_url,
                         headers=coordinator_provider_config.headers,
                     )
-                    
+
                     try:
                         response = await provider.chat_stream(
                             messages=messages,
                             model=_config.coordinator.model,
                         )
-                        
+
                         # 流式发送
                         for i in range(0, len(response.content or ""), 10):
                             chunk = response.content[i:i+10]
                             await websocket.send_json({"type": "chunk", "content": chunk})
                             await asyncio.sleep(0.02)
-                        
+
                         await websocket.send_json({
                             "type": "done",
                             "session_id": session_id,
                             "content": response.content,
                         })
-                        
+
                     except Exception as e:
                         await websocket.send_json({
                             "type": "error",
                             "message": str(e),
                         })
-                
+
             elif msg_type == "task_progress":
                 # 任务进度
                 await websocket.send_json({
                     "type": "task_progress",
                     "data": message.get("data"),
                 })
-                
+
     except WebSocketDisconnect:
         _ws_connections.discard(websocket)
     except Exception as e:
         _ws_connections.discard(websocket)
-        try:
+        with contextlib.suppress(BaseException):
             await websocket.send_json({"type": "error", "message": str(e)})
-        except:
-            pass
 
 
 # ==================== 前端静态文件 ====================

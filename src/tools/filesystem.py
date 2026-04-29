@@ -85,7 +85,7 @@ class WriteFileTool(BaseTool):
         path = path.resolve()
 
         if not str(path).startswith(str(self._sandbox_dir)):
-            return f"Error: 写入被拒绝，只能写入自身沙箱"
+            return "Error: 写入被拒绝，只能写入自身沙箱"
 
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(content, encoding="utf-8")
@@ -125,7 +125,7 @@ class ListFilesTool(BaseTool):
         path = path.resolve()
 
         if not str(path).startswith(str(self._sandbox_dir)):
-            return f"Error: 只能列出自身沙箱目录"
+            return "Error: 只能列出自身沙箱目录"
         if not path.exists():
             return f"Error: 目录不存在: {path}"
 

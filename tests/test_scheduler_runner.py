@@ -1,11 +1,16 @@
 """scheduler/runner.py 单元测试"""
-import sys, os, asyncio, pytest
-from datetime import datetime, timedelta
+import asyncio
+import os
+import sys
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-from scheduler.runner import ScheduledTaskRunner
 from scheduler.cron import cron_match
+from scheduler.runner import ScheduledTaskRunner
 
 
 class DummyStore:
@@ -88,7 +93,7 @@ async def test_tick_fires_matching_task():
     orch = DummyOrchestrator()
     runner = ScheduledTaskRunner(store, orch)
 
-    now = datetime.now().replace(second=0, microsecond=0)
+    datetime.now().replace(second=0, microsecond=0)
     await runner._tick()
 
     # Give fire coroutine time to run

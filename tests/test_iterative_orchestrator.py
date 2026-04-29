@@ -1,13 +1,13 @@
 # tests/test_iterative_orchestrator.py
-import sys, os, asyncio, json, pytest
-from pathlib import Path
-from dataclasses import dataclass
-from unittest.mock import AsyncMock, MagicMock, patch
+import asyncio
+import json
+import os
+import sys
+from unittest.mock import AsyncMock, MagicMock
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-from agents.mail_bus import MailBus
-from agents.sandbox import SandboxManager
-from coordinator.iterative_orchestrator import IterativeOrchestrator, IterationResult
+from coordinator.iterative_orchestrator import IterationResult, IterativeOrchestrator
 
 
 def make_mock_provider(score=0.9, improvements=None):
@@ -25,7 +25,7 @@ def make_mock_provider(score=0.9, improvements=None):
 
 def make_mock_planner(task_id="task_abc"):
     """创建模拟 TaskPlanner"""
-    from agents.worker_pool import Task, SubTask
+    from agents.worker_pool import SubTask, Task
     sub = SubTask(id="sub_001", description="编写代码")
     task = Task(id=task_id, description="测试任务", sub_tasks=[sub])
 
@@ -39,7 +39,6 @@ def make_mock_worker_pool(result="任务完成"):
     pool = MagicMock()
 
     async def fake_execute_parallel(tasks, context=None, on_progress=None, per_task_contexts=None):
-        from agents.worker_pool import SubTask
         return [(t, result, None) for t in tasks]
 
     pool.execute_parallel = fake_execute_parallel

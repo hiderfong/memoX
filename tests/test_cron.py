@@ -1,9 +1,11 @@
 """scheduler/cron.py 单元测试"""
-import sys, os
+import os
+import sys
 from datetime import datetime
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-from scheduler.cron import validate_cron, cron_match, next_run_after
+from scheduler.cron import cron_match, next_run_after, validate_cron
 
 
 class TestValidateCron:

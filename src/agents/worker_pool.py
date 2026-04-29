@@ -1,23 +1,23 @@
 """Worker Agent 池 - 多 Agent 并行执行"""
 
 import asyncio
+import contextlib
 import json
-import uuid
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
-from typing import Any, Callable
+from typing import Any
 
 from loguru import logger
 
 from storage import get_store
+
 from .base_agent import (
     AnthropicProvider,
-    BaseTool,
+    LLMProvider,
     MiniMaxProvider,
     ToolRegistry,
-    LLMProvider,
-    LLMResponse,
     create_provider,
 )
 
@@ -74,13 +74,13 @@ class WorkerConfig:
     skills: list[str] = field(default_factory=list)
     icon: str = ""
     display_name: str = ""
-    
+
     @classmethod
     def from_template(cls, name: str, template: dict, api_keys: dict[str, str]) -> "WorkerConfig":
         """从模板创建配置"""
         provider = template.get("provider", "anthropic")
         api_key = api_keys.get(provider, "")
-        
+
         return cls(
             name=name,
             provider_type=provider,
@@ -95,23 +95,24 @@ class WorkerConfig:
 
 class WorkerAgent:
     """Worker Agent"""
-    
+
     def __init__(self, config: WorkerConfig, tools: ToolRegistry | None = None, provider: LLMProvider | None = None):
         self.config = config
         self.id = config.name
-        
+
         # 使用传入的 Provider 或创建新的
         self.provider: LLMProvider = provider or create_provider(
             config.provider_type,
             config.api_key,
         )
-        
+
         # 创建工具注册表
         self.tools = tools or ToolRegistry()
 
         # Register per-worker LoadSkillTool if this worker has skills configured.
         if config.skills:
             from pathlib import Path
+
             from config import get_config
             from skills.tool import LoadSkillTool
 
@@ -143,7 +144,7 @@ class WorkerAgent:
     def is_busy(self) -> bool:
         """是否繁忙"""
         return self._running
-    
+
     async def execute_task(
         self,
         task: SubTask,
@@ -153,13 +154,13 @@ class WorkerAgent:
         """执行子任务"""
         self._running = True
         self._current_task_id = task.id
-        
+
         logger.info(f"Worker {self.id} starting task {task.id}: {task.description[:50]}...")
-        
+
         try:
             # 构建系统提示
             system_prompt = self._build_system_prompt()
-            
+
             # 构建用户消息
             user_content = task.description
             if context:
@@ -171,30 +172,30 @@ class WorkerAgent:
 
 任务：
 {task.description}"""
-            
+
             messages = [
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content},
             ]
-            
+
             # 执行 Agent 循环
             result = await self._run_agent_loop(messages, on_progress)
-            
+
             self._running = False
             self._current_task_id = None
-            
+
             logger.info(f"Worker {self.id} completed task {task.id}")
             return result, None
-            
+
         except Exception as e:
             error_msg = f"Error: {type(e).__name__}: {str(e)}"
             logger.error(f"Worker {self.id} failed task {task.id}: {e}")
-            
+
             self._running = False
             self._current_task_id = None
-            
+
             return "", error_msg
-    
+
     async def _run_agent_loop(
         self,
         messages: list[dict],
@@ -212,7 +213,7 @@ class WorkerAgent:
         else:
             tool_defs = self.tools.get_definitions()
 
-        for iteration in range(max_iterations):
+        for _iteration in range(max_iterations):
             # 调用 LLM（传入工具定义）
             chat_kwargs: dict = {
                 "temperature": self.config.temperature,
@@ -312,7 +313,7 @@ class WorkerAgent:
             return "Task completed but no content generated."
 
         return "Task reached maximum iterations without completion."
-    
+
     def _build_system_prompt(self) -> str:
         """构建系统提示"""
         tool_defs = "\n".join([
@@ -323,6 +324,7 @@ class WorkerAgent:
         skills_info = ""
         if self.config.skills:
             from pathlib import Path
+
             from config import get_config
             from skills.loader import list_skills
 
@@ -366,30 +368,30 @@ class WorkerAgent:
 
 class WorkerPool:
     """Worker Agent 池"""
-    
+
     def __init__(self, max_workers: int = 5):
         self.max_workers = max_workers
         self._workers: dict[str, WorkerAgent] = {}
         self._available: asyncio.Queue[str] = asyncio.Queue()
         self._running_tasks: dict[str, asyncio.Task] = {}
-        
+
         # 任务队列
         self._task_queue: asyncio.Queue[tuple[SubTask, str | None, Callable]] = asyncio.Queue()
-        
+
         # 主任务存储
         self._tasks: dict[str, Task] = {}
-    
+
     def register_worker(self, worker: WorkerAgent) -> None:
         """注册 Worker"""
         self._workers[worker.id] = worker
         logger.info(f"Registered worker: {worker.id}")
-    
+
     def unregister_worker(self, worker_id: str) -> None:
         """注销 Worker"""
         if worker_id in self._workers:
             del self._workers[worker_id]
             logger.info(f"Unregistered worker: {worker_id}")
-    
+
     def list_workers(self) -> list[dict]:
         """列出所有 Worker"""
         return [
@@ -413,7 +415,7 @@ class WorkerPool:
             }
             for w in self._workers.values()
         ]
-    
+
     def get_available_worker(self) -> WorkerAgent | None:
         """获取空闲的 Worker"""
         for worker in self._workers.values():
@@ -435,7 +437,7 @@ class WorkerPool:
 
         # 2. 按描述关键词匹配打分：Worker 名称命中 +2，每个关键词命中 +1
         desc_lower = (subtask.description or "").lower()
-        best_worker: "WorkerAgent | None" = None
+        best_worker: WorkerAgent | None = None
         best_score = 0
         for worker in self._workers.values():
             if worker.is_busy:
@@ -504,7 +506,7 @@ class WorkerPool:
         task.assigned_agent = worker.id
         logger.info(f"Dispatching task {task.id} to worker {worker.id}")
         return await worker.execute_task(task, context, on_progress)
-    
+
     async def execute_parallel(
         self,
         tasks: list[SubTask],
@@ -537,17 +539,15 @@ class WorkerPool:
                 output.append((tasks[i], result_str, error))
 
         return output
-    
+
     async def shutdown(self) -> None:
         """关闭所有 Worker"""
         # 取消正在运行的任务
-        for task_id, task in list(self._running_tasks.items()):
+        for _task_id, task in list(self._running_tasks.items()):
             task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await task
-            except asyncio.CancelledError:
-                pass
-        
+
         self._workers.clear()
         logger.info("Worker pool shutdown")
 

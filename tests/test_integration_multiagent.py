@@ -1,12 +1,15 @@
 # tests/test_integration_multiagent.py
-import sys, os, asyncio, json, pytest
-from pathlib import Path
+import asyncio
+import json
+import os
+import sys
 from unittest.mock import AsyncMock, MagicMock
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from agents.mail_bus import MailBus
 from agents.sandbox import SandboxManager
-from tools.mail import SendMailTool, ReadMailTool
+from tools.mail import ReadMailTool, SendMailTool
 
 
 def test_mailbus_communication(tmp_path):
@@ -45,8 +48,8 @@ def test_mailbus_communication(tmp_path):
 
 def test_file_collaboration(tmp_path):
     """Worker A 写文件到沙箱，_merge() 后 shared/ 中存在该文件"""
+    from agents.worker_pool import Task
     from coordinator.iterative_orchestrator import IterativeOrchestrator
-    from agents.worker_pool import Task, SubTask
     from tools.filesystem import WriteFileTool
 
     sandbox_mgr = SandboxManager(tmp_path)
@@ -87,8 +90,8 @@ def test_file_collaboration(tmp_path):
 
 def test_dependency_injection(tmp_path):
     """sub_b 依赖 sub_a，sub_a 的结果自动注入 sub_b 的 context["dependency_results"]"""
+    from agents.worker_pool import SubTask, Task
     from coordinator.iterative_orchestrator import IterativeOrchestrator
-    from agents.worker_pool import Task, SubTask
 
     sub_a = SubTask(id="sub_a", description="任务A")
     sub_b = SubTask(id="sub_b", description="任务B", dependencies=["sub_a"])
@@ -131,8 +134,8 @@ def test_dependency_injection(tmp_path):
 
 def test_merge_collects_all_outputs(tmp_path):
     """两个 Agent 各写不同文件，_merge() 后 shared/ 包含全部文件"""
-    from coordinator.iterative_orchestrator import IterativeOrchestrator
     from agents.worker_pool import Task
+    from coordinator.iterative_orchestrator import IterativeOrchestrator
     from tools.filesystem import WriteFileTool
 
     sandbox_mgr = SandboxManager(tmp_path)
@@ -169,8 +172,8 @@ def test_merge_collects_all_outputs(tmp_path):
 
 def test_refinement_hint_injected(tmp_path):
     """第一轮 score=0.5，第二轮开始前 Worker 的 refinement_hint 包含改进指令"""
+    from agents.worker_pool import SubTask, Task, WorkerAgent, WorkerConfig, WorkerPool
     from coordinator.iterative_orchestrator import IterativeOrchestrator
-    from agents.worker_pool import Task, SubTask, WorkerAgent, WorkerConfig, WorkerPool
 
     call_count = 0
 
@@ -241,9 +244,9 @@ def test_refinement_hint_injected(tmp_path):
 
 def test_worker_tools_bound_per_iteration(tmp_path):
     """_prepare_workers() 为每个 Worker 绑定全部 6 个工具"""
-    from coordinator.iterative_orchestrator import IterativeOrchestrator
-    from agents.worker_pool import Task, SubTask, WorkerAgent, WorkerConfig, WorkerPool
     from agents.mail_bus import MailBus
+    from agents.worker_pool import SubTask, Task, WorkerAgent, WorkerConfig, WorkerPool
+    from coordinator.iterative_orchestrator import IterativeOrchestrator
 
     config = WorkerConfig(name="worker_tools", provider_type="openai", api_key="fake", model="fake")
     worker = WorkerAgent(config=config, provider=MagicMock())

@@ -12,8 +12,13 @@ E2E 协作测试 - 使用真实 MiniMax LLM
 场景 3：三节点依赖链
   3 个子任务 A→B→C 串行，验证 context 在三节点间正确传递
 """
-import sys, os, asyncio, pytest
+import asyncio
+import os
+import sys
 from pathlib import Path
+
+import pytest
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'src'))
 
 MINIMAX_API_KEY = os.environ.get("MINIMAX_API_KEY", "")
@@ -48,8 +53,8 @@ def make_worker_pool(provider):
 
 
 def make_orchestrator(tmp_path, provider, pool, max_iterations=3, quality_threshold=0.6):
-    from coordinator.task_planner import TaskPlanner
     from coordinator.iterative_orchestrator import IterativeOrchestrator
+    from coordinator.task_planner import TaskPlanner
 
     planner = TaskPlanner(provider=provider, worker_pool=pool, model=MODEL, temperature=0.3)
     return IterativeOrchestrator(
@@ -110,7 +115,7 @@ def test_calculator_collaboration(tmp_path):
         )
     )
 
-    print(f"\n=== E2E 结果 ===")
+    print("\n=== E2E 结果 ===")
     print(f"task_id: {result.task_id}")
     print(f"final_score: {result.final_score}")
     print(f"iterations: {len(result.iterations)}")
@@ -192,7 +197,7 @@ def test_iterative_refinement(tmp_path):
         )
     )
 
-    print(f"\n=== E2E 场景2 结果 ===")
+    print("\n=== E2E 场景2 结果 ===")
     print(f"task_id: {result.task_id}")
     print(f"final_score: {result.final_score}")
     print(f"iterations: {len(result.iterations)}")
@@ -220,7 +225,7 @@ def test_iterative_refinement(tmp_path):
 
     # shared/ 下应有 .py 文件
     py_files = list(shared.rglob("*.py")) if shared.exists() else []
-    assert len(py_files) >= 1, f"shared/ 下应有 .py 文件"
+    assert len(py_files) >= 1, "shared/ 下应有 .py 文件"
 
 
 def test_three_node_dependency_chain(tmp_path):
@@ -282,7 +287,7 @@ def test_three_node_dependency_chain(tmp_path):
         )
     )
 
-    print(f"\n=== E2E 场景3 结果 ===")
+    print("\n=== E2E 场景3 结果 ===")
     print(f"task_id: {result.task_id}")
     print(f"final_score: {result.final_score}")
     print(f"iterations: {len(result.iterations)}")

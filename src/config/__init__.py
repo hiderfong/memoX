@@ -31,11 +31,11 @@ class ProviderConfig:
     api_key: str = ""
     base_url: str = ""
     headers: dict = None  # Custom headers (e.g., User-Agent for Kimi Coding)
-    
+
     def __post_init__(self):
         if self.headers is None:
             self.headers = {}
-    
+
     def resolve_api_key(self) -> str:
         """解析环境变量"""
         key = self.api_key
@@ -166,31 +166,31 @@ class Config:
     image_generation: ImageGenerationConfig = field(default_factory=ImageGenerationConfig)
     video_generation: VideoGenerationConfig = field(default_factory=VideoGenerationConfig)
     image_to_video: ImageToVideoConfig = field(default_factory=ImageToVideoConfig)
-    
+
     @classmethod
     def from_yaml(cls, path: str | Path) -> "Config":
         """从 YAML 文件加载配置"""
-        with open(path, "r", encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             data = yaml.safe_load(f)
         return cls._from_dict(data)
-    
+
     @classmethod
     def _from_dict(cls, data: dict[str, Any]) -> "Config":
         """从字典创建配置"""
         app = AppConfig(**data.get("app", {}))
         server = ServerConfig(**data.get("server", {}))
         coordinator = CoordinatorConfig(**data.get("coordinator", {}))
-        
+
         providers = {
             name: ProviderConfig(**config)
             for name, config in data.get("providers", {}).items()
         }
-        
+
         worker_templates = {
             name: WorkerTemplate(**config)
             for name, config in data.get("worker_templates", {}).items()
         }
-        
+
         knowledge_base = KnowledgeBaseConfig(**data.get("knowledge_base", {}))
 
         auth_data = data.get("auth", {})

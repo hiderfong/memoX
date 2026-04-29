@@ -1,10 +1,10 @@
 """知识库分组管理"""
 
-from dataclasses import dataclass, asdict
-from datetime import datetime
-from pathlib import Path
 import json
 import uuid
+from dataclasses import asdict, dataclass
+from datetime import datetime
+from pathlib import Path
 
 UNGROUPED_ID = "ungrouped"
 

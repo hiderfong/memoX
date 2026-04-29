@@ -1,5 +1,7 @@
 """SQLite 持久化存储测试"""
-import sys, os, pytest
+import os
+import sys
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from storage.persistence import PersistenceStore

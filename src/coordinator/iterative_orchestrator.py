@@ -4,7 +4,7 @@
 import asyncio
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -13,11 +13,11 @@ from loguru import logger
 from agents.base_agent import LLMProvider, ToolRegistry
 from agents.mail_bus import MailBus
 from agents.sandbox import SandboxManager
-from agents.worker_pool import Task, SubTask, TaskStatus, WorkerPool
+from agents.worker_pool import Task, TaskStatus, WorkerPool
 from coordinator.task_planner import TaskPlanner
-from tools.filesystem import ReadFileTool, WriteFileTool, ListFilesTool
+from tools.filesystem import ListFilesTool, ReadFileTool, WriteFileTool
+from tools.mail import ReadMailTool, SendMailTool
 from tools.shell import ShellTool
-from tools.mail import SendMailTool, ReadMailTool
 
 MAX_ITERATIONS = 50
 QUALITY_THRESHOLD = 0.8
@@ -206,7 +206,7 @@ class IterativeOrchestrator:
                             logger.info(f"[Orchestrator] 收到用户反馈: {user_feedback[:100]}")
                             continue
                     except asyncio.TimeoutError:
-                        logger.info(f"[Orchestrator] 用户反馈等待超时，使用 LLM 改进建议继续")
+                        logger.info("[Orchestrator] 用户反馈等待超时，使用 LLM 改进建议继续")
                 finally:
                     self._pending_feedback.pop(task.id, None)
 
@@ -296,6 +296,7 @@ class IterativeOrchestrator:
             # load_skill 不受 config.tools 白名单影响 — 它由 config.skills 单独控制
             if worker.config.skills:
                 from pathlib import Path
+
                 from config import get_config
                 from skills.tool import LoadSkillTool
                 skills_dir = Path(get_config().knowledge_base.skills_dir)

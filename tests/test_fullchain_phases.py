@@ -18,15 +18,20 @@
     8. Human-in-the-Loop POST /api/tasks/{id}/feedback
     9. 多模态文档支持 (ImageParser)
 """
-import sys, os, asyncio, json, tempfile, shutil, pytest
+import asyncio
+import os
+import shutil
+import sys
+import tempfile
 from pathlib import Path
-from unittest.mock import patch, AsyncMock, MagicMock, PropertyMock
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 # 确保 src 在 path 中
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 from fastapi.testclient import TestClient
-
 
 # ── 测试固件 ──────────────────────────────────────────────
 
@@ -53,16 +58,16 @@ def test_dirs():
 def client(test_dirs):
     """创建 FastAPI TestClient，覆盖 startup 后手动初始化全局状态"""
     import web.api as api_module
-    from knowledge.vector_store import SentenceTransformerEmbedding, ChromaVectorStore
-    from knowledge.rag_engine import RAGEngine
+    from agents.base_agent import ToolRegistry
+    from agents.worker_pool import WorkerAgent, WorkerConfig, init_worker_pool
+    from auth import init_auth
+    from coordinator.iterative_orchestrator import IterativeOrchestrator
+    from coordinator.task_planner import TaskPlanner
     from knowledge.document_parser import DocumentParser
     from knowledge.group_store import GroupStore
-    from agents.worker_pool import WorkerPool, WorkerAgent, WorkerConfig, init_worker_pool
-    from agents.base_agent import ToolRegistry
-    from coordinator.task_planner import TaskPlanner
-    from coordinator.iterative_orchestrator import IterativeOrchestrator
+    from knowledge.rag_engine import RAGEngine
+    from knowledge.vector_store import ChromaVectorStore, SentenceTransformerEmbedding
     from storage import init_store
-    from auth import init_auth
 
     # 保存原始 startup，替换为空函数以阻止自动初始化
     original_startup = api_module.startup
@@ -134,7 +139,8 @@ def client(test_dirs):
     group_store = GroupStore(path=test_dirs["groups"])
 
     # 设置全局变量
-    from dataclasses import dataclass, field as dc_field
+    from dataclasses import dataclass
+    from dataclasses import field as dc_field
 
     @dataclass
     class FakeKBConfig:
@@ -325,8 +331,8 @@ class TestPhase2:
 
     def test_02_worker_smart_dispatch(self):
         """Phase 2.4 — Worker 智能调度：按 name 匹配"""
-        from agents.worker_pool import WorkerPool, WorkerAgent, WorkerConfig, SubTask
         from agents.base_agent import ToolRegistry
+        from agents.worker_pool import SubTask, WorkerAgent, WorkerConfig, WorkerPool
 
         pool = WorkerPool(max_workers=3)
         mock_provider = MagicMock()
@@ -496,8 +502,9 @@ class TestPhase3:
 
     def test_07_image_parser_qwen_vl(self):
         """Phase 3.9 — ImageParser Qwen VL 主路径"""
-        from knowledge.document_parser import ImageParser
         import base64
+
+        from knowledge.document_parser import ImageParser
 
         parser = ImageParser(dashscope_api_key="fake-key")
 

@@ -1,23 +1,22 @@
 """任务规划器 - Coordinator 核心"""
 
-import asyncio
 import json
 import re
 import uuid
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Any, Callable
+from typing import Any
 
 from loguru import logger
 
-from agents.base_agent import LLMProvider, create_provider
+from agents.base_agent import LLMProvider
 from agents.worker_pool import (
-    Task,
     SubTask,
+    Task,
     TaskStatus,
     WorkerPool,
-    WorkerConfig,
 )
 
 
@@ -42,7 +41,7 @@ class OptimizationSuggestion:
 
 class TaskPlanner:
     """任务规划器 - 负责任务分解和协调"""
-    
+
     def __init__(
         self,
         provider: LLMProvider,
@@ -54,11 +53,11 @@ class TaskPlanner:
         self.worker_pool = worker_pool
         self.model = model
         self.temperature = temperature
-        
+
         # 任务存储
         self._tasks: dict[str, Task] = {}
         self._task_results: dict[str, dict[str, Any]] = {}
-    
+
     async def plan_task(
         self,
         task_description: str,
@@ -86,7 +85,7 @@ class TaskPlanner:
     ]
 }}
 """
-        
+
         messages = [
             {"role": "system", "content": """你是一个任务规划专家。请分析用户任务并拆分为可执行的子任务。
 
@@ -97,7 +96,7 @@ class TaskPlanner:
 4. 简单任务不需要拆分"""},
             {"role": "user", "content": analysis_prompt},
         ]
-        
+
         try:
             response = await self.provider.chat(
                 messages=messages,
@@ -105,20 +104,20 @@ class TaskPlanner:
                 temperature=0.3,  # 低温度以获得更一致的输出
                 max_tokens=2000,
             )
-            
+
             # 解析响应
             content = response.content or "{}"
-            
+
             # 提取 JSON
             json_match = re.search(r'\{[\s\S]*\}', content)
             if json_match:
                 data = json.loads(json_match.group())
             else:
                 data = json.loads(content)
-            
+
             complexity_str = data.get("complexity", "simple")
             complexity = TaskComplexity(complexity_str.lower())
-            
+
             # 创建子任务（先分配 ID，再解析依赖）
             raw_sub_tasks = data.get("sub_tasks", [])
             # 预先分配 ID，用于后续依赖映射
@@ -169,7 +168,7 @@ class TaskPlanner:
                     dependencies=resolved_deps,
                 )
                 sub_tasks.append(sub_task)
-            
+
             # 创建主任务
             task = Task(
                 id=f"task_{uuid.uuid4().hex[:8]}",
@@ -179,12 +178,12 @@ class TaskPlanner:
                     description=task_description,
                 )],
             )
-            
+
             self._tasks[task.id] = task
             logger.info(f"Planned task {task.id}: {len(sub_tasks)} sub-tasks, complexity={complexity.value}")
-            
+
             return task, complexity
-            
+
         except Exception as e:
             logger.error(f"Failed to plan task: {e}")
             # 回退到简单任务
@@ -198,7 +197,7 @@ class TaskPlanner:
             )
             self._tasks[task.id] = task
             return task, TaskComplexity.SIMPLE
-    
+
     async def execute_task(
         self,
         task: Task,
@@ -208,14 +207,14 @@ class TaskPlanner:
         """执行任务"""
         task.status = TaskStatus.RUNNING
         task.started_at = datetime.now().isoformat()
-        
+
         total_subtasks = len(task.sub_tasks)
         completed = 0
-        
+
         def update_progress(subtask_id: str, message: str, progress: float):
             if on_progress:
                 on_progress(subtask_id, message, progress)
-        
+
         try:
             # 按依赖关系排序并执行
             if len(task.sub_tasks) == 1:
@@ -223,62 +222,62 @@ class TaskPlanner:
                 sub_task = task.sub_tasks[0]
                 sub_task.status = TaskStatus.RUNNING
                 sub_task.started_at = datetime.now().isoformat()
-                
+
                 result, error = await self.worker_pool.execute_task(
                     sub_task,
                     context,
                     lambda msg: update_progress(sub_task.id, msg, 0.5),
                 )
-                
+
                 sub_task.status = TaskStatus.FAILED if error else TaskStatus.COMPLETED
                 sub_task.result = result
                 sub_task.error = error
                 sub_task.completed_at = datetime.now().isoformat()
-                
+
                 if error:
                     task.error = error
                 else:
                     task.result = result
-                
+
                 completed = 1
                 update_progress(sub_task.id, "完成", 1.0)
-                
+
             else:
                 # 多子任务 - 按依赖分组执行
                 # 首先执行没有依赖的任务
                 ready_tasks = [st for st in task.sub_tasks if not st.dependencies]
                 remaining = [st for st in task.sub_tasks if st.dependencies]
-                
+
                 all_results: dict[str, str] = {}
-                
+
                 while ready_tasks or remaining:
                     if ready_tasks:
                         # 并行执行就绪的任务
                         for st in ready_tasks:
                             st.status = TaskStatus.RUNNING
                             st.started_at = datetime.now().isoformat()
-                        
+
                         results = await self.worker_pool.execute_parallel(
                             ready_tasks,
                             context,
                             lambda tid, msg: update_progress(tid, msg, 0.5),
                         )
-                        
+
                         for sub_task, result, error in results:
                             sub_task.status = TaskStatus.FAILED if error else TaskStatus.COMPLETED
                             sub_task.result = result
                             sub_task.error = error
                             sub_task.completed_at = datetime.now().isoformat()
-                            
+
                             if result:
                                 all_results[sub_task.id] = result
-                            
+
                             completed += 1
                             progress = completed / total_subtasks
                             update_progress(sub_task.id, "完成", progress)
-                        
+
                         ready_tasks = []
-                        
+
                         # 更新依赖任务的就绪状态
                         still_remaining = []
                         for st in remaining:
@@ -292,32 +291,32 @@ class TaskPlanner:
                     else:
                         # 不应该发生，但如果发生就打破循环
                         break
-                
+
                 # 汇总结果
                 if all_results:
                     task.result = self._aggregate_results(all_results)
-            
+
             task.status = TaskStatus.COMPLETED if not task.error else TaskStatus.FAILED
             task.completed_at = datetime.now().isoformat()
-            
+
             return task.result or task.error or "任务完成"
-            
+
         except Exception as e:
             task.status = TaskStatus.FAILED
             task.error = str(e)
             task.completed_at = datetime.now().isoformat()
             logger.error(f"Task {task.id} failed: {e}")
             return f"任务执行失败: {str(e)}"
-    
+
     def _aggregate_results(self, results: dict[str, str]) -> str:
         """聚合多个子任务的结果"""
         parts = ["## 执行结果汇总\n"]
-        
+
         for task_id, result in results.items():
             parts.append(f"\n### {task_id}\n{result}\n")
-        
+
         return "\n".join(parts)
-    
+
     async def generate_optimization_suggestions(
         self,
         task: Task,
@@ -351,12 +350,12 @@ class TaskPlanner:
 
 如果没有明显优化空间，返回空数组 []。
 """
-        
+
         messages = [
             {"role": "system", "content": "你是代码优化专家。请分析任务结果并提供具体、可操作的优化建议。"},
             {"role": "user", "content": prompt},
         ]
-        
+
         try:
             response = await self.provider.chat(
                 messages=messages,
@@ -364,16 +363,16 @@ class TaskPlanner:
                 temperature=0.3,
                 max_tokens=2000,
             )
-            
+
             content = response.content or "[]"
-            
+
             # 提取 JSON
             json_match = re.search(r'\[[\s\S]*\]', content)
             if json_match:
                 suggestions_data = json.loads(json_match.group())
             else:
                 suggestions_data = json.loads(content)
-            
+
             return [
                 OptimizationSuggestion(
                     type=s.get("type", "alternative"),
@@ -385,15 +384,15 @@ class TaskPlanner:
                 )
                 for s in suggestions_data
             ]
-            
+
         except Exception as e:
             logger.error(f"Failed to generate optimization suggestions: {e}")
             return []
-    
+
     def get_task(self, task_id: str) -> Task | None:
         """获取任务"""
         return self._tasks.get(task_id)
-    
+
     def list_tasks(self) -> list[dict]:
         """列出所有任务"""
         return [

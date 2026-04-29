@@ -4,10 +4,9 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any, AsyncGenerator
 
-from .document_parser import DocumentParser, Document, TextChunk
-from .vector_store import ChromaVectorStore, get_vector_store, EmbeddingFunction
+from .document_parser import DocumentParser
+from .vector_store import ChromaVectorStore, EmbeddingFunction, get_vector_store
 
 
 @dataclass
@@ -29,7 +28,7 @@ class SearchResult:
     content: str
     score: float
     metadata: dict = field(default_factory=dict)
-    
+
     def to_context_string(self, max_length: int = 1000) -> str:
         """转换为上下文字符串"""
         content = self.content
@@ -38,7 +37,7 @@ class SearchResult:
         return f"[来源: {self.metadata.get('filename', 'unknown')}]\n{content}"
 
 
-@dataclass  
+@dataclass
 class ChatMessage:
     """聊天消息"""
     role: str  # "user" | "assistant" | "system"
@@ -60,7 +59,7 @@ class ChatSession:
 
 class RAGEngine:
     """RAG 引擎"""
-    
+
     def __init__(
         self,
         vector_store: ChromaVectorStore | None = None,
@@ -79,11 +78,11 @@ class RAGEngine:
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.top_k = top_k
-        
+
         # 内存存储会话（生产环境应使用数据库）
         self._sessions: dict[str, ChatSession] = {}
         self._documents: dict[str, DocumentInfo] = {}
-    
+
     async def add_document(
         self,
         file_path: Path,
@@ -99,7 +98,7 @@ class RAGEngine:
         print(f"[RAG] Document ID: {doc_id}")
 
         # 解析并分块
-        print(f"[RAG] Parsing document...")
+        print("[RAG] Parsing document...")
         document, chunks = await self.document_parser.parse_and_chunk(
             file_path, doc_id, self.chunk_size, self.chunk_overlap
         )
@@ -116,11 +115,11 @@ class RAGEngine:
             chunk.metadata["file_size"] = file_size
             chunk.metadata["chunk_count"] = len(chunks)
             chunk.metadata["group_id"] = group_id
-        
+
         # 存储到向量库（分批处理，避免一次性处理过多）
         BATCH_SIZE = 100  # 每批最多处理 100 个 chunks
         total_chunks = len(chunks)
-        
+
         if total_chunks > BATCH_SIZE:
             print(f"[RAG] Processing {total_chunks} chunks in batches of {BATCH_SIZE}...")
             for i in range(0, total_chunks, BATCH_SIZE):
@@ -130,9 +129,9 @@ class RAGEngine:
         else:
             print(f"[RAG] Adding {total_chunks} chunks to vector store...")
             await self.vector_store.add_chunks(chunks, collection_name)
-        
-        print(f"[RAG] Successfully added all chunks")
-        
+
+        print("[RAG] Successfully added all chunks")
+
         # 记录文档信息（内存缓存，同时 ChromaDB 已持久化）
         doc_info = DocumentInfo(
             id=doc_id,
@@ -144,17 +143,17 @@ class RAGEngine:
             group_id=group_id,
         )
         self._documents[doc_id] = doc_info
-        
+
         print(f"[RAG] Document processing complete: {doc_info}")
         return doc_info
-    
+
     async def delete_document(self, doc_id: str, collection_name: str = "documents") -> bool:
         """从知识库删除文档"""
         count = await self.vector_store.delete_by_document_id(doc_id, collection_name)
         if doc_id in self._documents:
             del self._documents[doc_id]
         return count > 0
-    
+
     @staticmethod
     def _strip_uuid_prefix(filename: str) -> str:
         """去掉早期上传时添加的 UUID hex 前缀（格式: 32位hex_原始文件名）"""
@@ -191,7 +190,7 @@ class RAGEngine:
                     group_id=d.get("group_id", "ungrouped"),
                 ))
         return result
-    
+
     async def search(
         self,
         query: str,
@@ -252,7 +251,7 @@ class RAGEngine:
             )
             for r in results
         ]
-    
+
     def build_rag_prompt(
         self,
         query: str,
@@ -264,9 +263,9 @@ class RAGEngine:
         context_parts = ["已知信息："]
         for i, result in enumerate(search_results, 1):
             context_parts.append(f"\n【文档 {i}】({result.metadata.get('filename', 'unknown')}):\n{result.content}")
-        
+
         context = "\n".join(context_parts)
-        
+
         # 系统提示
         default_system = """你是一个知识库问答助手。请根据提供的上下文信息回答用户的问题。
 
@@ -276,17 +275,17 @@ class RAGEngine:
 3. 引用相关文档来源
 4. 回答要准确、简洁、有条理
 """
-        
+
         messages = [
             {"role": "system", "content": system_prompt or default_system},
             {"role": "system", "content": context},
             {"role": "user", "content": query},
         ]
-        
+
         return messages
-    
+
     # ==================== 会话管理 ====================
-    
+
     def create_session(self, title: str = "", document_ids: list[str] | None = None) -> ChatSession:
         """创建聊天会话"""
         session_id = str(uuid.uuid4())[:8]
@@ -297,26 +296,26 @@ class RAGEngine:
         )
         self._sessions[session_id] = session
         return session
-    
+
     def get_session(self, session_id: str) -> ChatSession | None:
         """获取会话"""
         return self._sessions.get(session_id)
-    
+
     def add_message(self, session_id: str, role: str, content: str) -> ChatMessage | None:
         """添加消息"""
         session = self._sessions.get(session_id)
         if not session:
             return None
-        
+
         message = ChatMessage(role=role, content=content)
         session.messages.append(message)
         session.updated_at = datetime.now().isoformat()
         return message
-    
+
     def get_sessions(self) -> list[ChatSession]:
         """获取所有会话"""
         return list(self._sessions.values())
-    
+
     def delete_session(self, session_id: str) -> bool:
         """删除会话"""
         if session_id in self._sessions:

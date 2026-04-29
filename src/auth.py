@@ -6,7 +6,7 @@ import hashlib
 import hmac
 import secrets
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 
 @dataclass

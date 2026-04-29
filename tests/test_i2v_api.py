@@ -1,5 +1,6 @@
-import pytest
 from unittest.mock import AsyncMock, patch
+
+import pytest
 from fastapi.testclient import TestClient
 
 from src.web.api import app
@@ -8,8 +9,9 @@ from src.web.api import app
 @pytest.fixture
 def anon_client(monkeypatch):
     # 跳过认证：patch get_auth_manager 使其返回总是通过验证的 mock
-    from src.web import api as api_mod
     from unittest.mock import MagicMock
+
+    from src.web import api as api_mod
     monkeypatch.setattr(api_mod, "_config", None)
     fake_auth = MagicMock()
     fake_auth.validate_token = MagicMock(return_value={"username": "test", "role": "admin"})
