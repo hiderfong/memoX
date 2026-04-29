@@ -89,12 +89,12 @@ class PersistenceStore:
     # ==================== 会话 ====================
 
     def save_session(self, session_id: str, title: str = "") -> None:
-        """创建或更新会话"""
+        """创建或更新会话。冲突时只刷新 updated_at，避免覆盖用户已设置的标题。"""
         now = datetime.now().isoformat()
         self._conn.execute(
             """INSERT INTO chat_sessions (id, title, created_at, updated_at)
                VALUES (?, ?, ?, ?)
-               ON CONFLICT(id) DO UPDATE SET title=excluded.title, updated_at=excluded.updated_at""",
+               ON CONFLICT(id) DO UPDATE SET updated_at=excluded.updated_at""",
             (session_id, title, now, now),
         )
         self._conn.commit()
@@ -115,10 +115,10 @@ class PersistenceStore:
         self._conn.commit()
 
     def update_session_title(self, session_id: str, title: str) -> None:
-        """更新会话标题"""
+        """自动更新会话标题：仅当当前标题为空时生效，避免覆盖用户手动重命名。"""
         now = datetime.now().isoformat()
         self._conn.execute(
-            "UPDATE chat_sessions SET title=?, updated_at=? WHERE id=?",
+            "UPDATE chat_sessions SET title=?, updated_at=? WHERE id=? AND (title IS NULL OR title='')",
             (title, now, session_id),
         )
         self._conn.commit()

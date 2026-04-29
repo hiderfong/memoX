@@ -124,7 +124,7 @@ If `ssl/cert.pem` and `ssl/key.pem` exist, the server starts in HTTPS mode autom
 
 ### State persistence
 
+- SQLite at `data/memox.db` — chat sessions, messages, task history, scheduled tasks, worker token usage
 - ChromaDB at `data/chroma/` — vector embeddings + document chunk metadata (survives restarts)
 - `data/groups.json` — group definitions
 - `data/uploads/` — raw uploaded files (filename prefixed with UUID hex)
-- Chat sessions and task history are **in-memory only** (lost on restart)

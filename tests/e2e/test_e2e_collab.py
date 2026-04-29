@@ -16,7 +16,9 @@ import sys, os, asyncio, pytest
 from pathlib import Path
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'src'))
 
-MINIMAX_API_KEY = "${MINIMAX_API_KEY}"
+MINIMAX_API_KEY = os.environ.get("MINIMAX_API_KEY", "")
+if not MINIMAX_API_KEY:
+    pytest.skip("MINIMAX_API_KEY environment variable not set", allow_module_level=True)
 MODEL = "MiniMax-M2.7-highspeed"
 BASE_URL = "https://api.minimaxi.com/anthropic/v1"
 

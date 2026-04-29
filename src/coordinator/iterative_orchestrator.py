@@ -366,7 +366,7 @@ class IterativeOrchestrator:
                     dest.parent.mkdir(parents=True, exist_ok=True)
                     dest.write_text(content, encoding="utf-8")
                 except Exception:
-                    pass
+                    logger.warning(f"[IterativeOrchestrator] 读取或写入共享文件失败: {rel}")
 
         if file_contents:
             parts = [f"=== {path} ===\n{content[:500]}" for path, content in file_contents.items()]

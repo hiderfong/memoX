@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from loguru import logger
 
 from .document_parser import TextChunk
 
@@ -40,9 +41,9 @@ class SentenceTransformerEmbedding(EmbeddingFunction):
         if self._model is None:
             try:
                 from sentence_transformers import SentenceTransformer
-                print(f"[SentenceTransformer] Loading model: {self.model_name}")
+                logger.info(f"[SentenceTransformer] Loading model: {self.model_name}")
                 self._model = SentenceTransformer(self.model_name)
-                print(f"[SentenceTransformer] Model loaded successfully")
+                logger.info(f"[SentenceTransformer] Model loaded successfully")
             except ImportError:
                 raise ImportError("请安装 sentence-transformers: pip install sentence-transformers")
     

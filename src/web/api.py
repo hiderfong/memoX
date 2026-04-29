@@ -9,6 +9,8 @@ import re as _re
 from pathlib import Path
 from typing import Any
 
+from loguru import logger
+
 # 添加 src 目录到路径
 _src_dir = Path(__file__).parent.parent
 if str(_src_dir) not in sys.path:
@@ -231,10 +233,9 @@ async def startup():
             for u in _config.auth.users
         ])
         _PUBLIC_PATHS.update(_config.auth.public_paths)
-        print(f"   - 认证已启用，{len(_config.auth.users)} 个用户")
+        logger.info(f"   - 认证已启用，{len(_config.auth.users)} 个用户")
     
     # CORS 已在创建 app 时配置
-    pass
     
     # 根据配置创建 Embedding Function
     kb_config = _config.knowledge_base
@@ -248,7 +249,7 @@ async def startup():
                 api_key=dashscope_config.resolve_api_key(),
                 model=kb_config.embedding_model or "text-embedding-v3"
             )
-            print(f"   - 使用 DashScope Embedding: {kb_config.embedding_model}")
+            logger.info(f"   - 使用 DashScope Embedding: {kb_config.embedding_model}")
         else:
             raise ValueError("DashScope API key not configured")
     elif embedding_provider == "openai":
@@ -259,7 +260,7 @@ async def startup():
                 api_key=openai_config.resolve_api_key(),
                 model=kb_config.embedding_model or "text-embedding-3-small"
             )
-            print(f"   - 使用 OpenAI Embedding: {kb_config.embedding_model}")
+            logger.info(f"   - 使用 OpenAI Embedding: {kb_config.embedding_model}")
         else:
             raise ValueError("OpenAI API key not configured")
     else:
@@ -267,7 +268,7 @@ async def startup():
         embedding_function = SentenceTransformerEmbedding(
             model_name=kb_config.embedding_model or "sentence-transformers/all-MiniLM-L6-v2"
         )
-        print(f"   - 使用本地 Embedding: {kb_config.embedding_model}")
+        logger.info(f"   - 使用本地 Embedding: {kb_config.embedding_model}")
     
     # DashScope config for image OCR
     dashscope_config = _config.providers.get("dashscope")
@@ -286,13 +287,13 @@ async def startup():
     )
     
     # 预热嵌入模型（避免首次请求时延迟）
-    print("   - 预热嵌入模型...")
+    logger.info("   - 预热嵌入模型...")
     await _rag_engine.vector_store.embedding_function.embed(["预热模型"])
 
     # 初始化持久化存储（需要在 Worker 创建之前，以便 Worker 从 DB 恢复 token 用量）
     db_path = Path(_config.knowledge_base.persist_directory).parent / "memox.db"
     init_store(db_path)
-    print(f"   - 持久化存储: {db_path}")
+    logger.info(f"   - 持久化存储: {db_path}")
 
     # 确保技能目录存在
     Path(_config.knowledge_base.skills_dir).mkdir(parents=True, exist_ok=True)
@@ -363,7 +364,7 @@ async def startup():
     # 历史文档迁移：为无 group_id 的 chunk 补写 "ungrouped"
     migrated = _rag_engine.vector_store.migrate_add_group_id()
     if migrated > 0:
-        print(f"   - 迁移 {migrated} 个历史 chunk，补写 group_id=ungrouped")
+        logger.info(f"   - 迁移 {migrated} 个历史 chunk，补写 group_id=ungrouped")
 
     # 启动定时任务运行器（与 orchestrator、store 解耦）
     if _orchestrator:
@@ -404,8 +405,8 @@ async def startup():
             default_duration=i2v_cfg.default_duration,
         )
 
-    print(f"✅ MemoX 启动完成")
-    print(f"   - RAG 引擎: {len(_rag_engine.list_documents())} 个文档")
+    logger.info(f"✅ MemoX 启动完成")
+    logger.info(f"   - RAG 引擎: {len(_rag_engine.list_documents())} 个文档")
 
 
 # ==================== 认证 API ====================
@@ -491,7 +492,7 @@ async def upload_document(
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"文件保存失败: {str(e)}")
     
-    print(f"[UPLOAD] File saved: {file_path}, size: {len(content)} bytes")
+    logger.info(f"[UPLOAD] File saved: {file_path}, size: {len(content)} bytes")
     
     # 添加到知识库（带整体超时）
     try:
@@ -500,7 +501,7 @@ async def upload_document(
             _rag_engine.add_document(file_path, group_id=group_id, original_filename=file.filename),
             timeout=300.0
         )
-        print(f"[UPLOAD] Document added: {doc_info.id}")
+        logger.info(f"[UPLOAD] Document added: {doc_info.id}")
         return DocumentResponse(
             id=doc_info.id,
             filename=doc_info.filename,
@@ -511,34 +512,34 @@ async def upload_document(
             group_id=doc_info.group_id,
         )
     except asyncio.TimeoutError:
-        print(f"[UPLOAD ERROR] 文档处理超时")
+        logger.error(f"[UPLOAD ERROR] 文档处理超时")
         # 清理文件
         try:
             file_path.unlink(missing_ok=True)
-        except:
+        except Exception:
             pass
         raise HTTPException(status_code=504, detail="文档处理超时，请尝试上传更小的文件或简化文档格式")
     except TimeoutError as e:
-        print(f"[UPLOAD ERROR] {e}")
+        logger.error(f"[UPLOAD ERROR] {e}")
         try:
             file_path.unlink(missing_ok=True)
-        except:
+        except Exception:
             pass
         raise HTTPException(status_code=504, detail=str(e))
     except ValueError as e:
-        print(f"[UPLOAD ERROR] {e}")
+        logger.error(f"[UPLOAD ERROR] {e}")
         try:
             file_path.unlink(missing_ok=True)
-        except:
+        except Exception:
             pass
         raise HTTPException(status_code=413, detail=str(e))
     except Exception as e:
-        print(f"[UPLOAD ERROR] {type(e).__name__}: {e}")
+        logger.exception(f"[UPLOAD ERROR] {type(e).__name__}: {e}")
         traceback.print_exc()
         # 清理文件
         try:
             file_path.unlink(missing_ok=True)
-        except:
+        except Exception:
             pass
         raise HTTPException(status_code=500, detail=f"文档处理失败: {type(e).__name__}: {str(e)}")
 
@@ -726,6 +727,51 @@ async def search_documents(q: str, group_ids: str | None = None) -> dict:
 # ==================== RAG 问答 API ====================
 
 
+_HISTORY_TURN_LIMIT = 20  # 最多注入的历史消息数（10 轮对话）
+
+
+def _load_chat_history(session_id: str) -> list[dict]:
+    """从持久化层加载历史消息（不含当前轮次），转换为 LLM messages 格式。
+
+    - 仅取最近 _HISTORY_TURN_LIMIT 条
+    - 去除图像/视频 markdown 与 [[IMAGE:...]] / [[VIDEO:...]] / [[I2V:...]] 标记，降低 token 消耗
+    """
+    store = get_store()
+    if not store:
+        return []
+    try:
+        rows = store.get_session_messages(session_id)
+    except Exception:
+        return []
+    if not rows:
+        return []
+    rows = rows[-_HISTORY_TURN_LIMIT:]
+    cleaned: list[dict] = []
+    for r in rows:
+        role = r.get("role")
+        if role not in ("user", "assistant"):
+            continue
+        content = r.get("content") or ""
+        content = _re.sub(r"\[\[(IMAGE|VIDEO|I2V):\s*.+?\]\]", "", content, flags=_re.DOTALL)
+        content = _re.sub(r"!\[[^\]]*\]\(https?://[^\s)]+\)", "", content)
+        content = _re.sub(r"\[video:[^\]]*\]\(https?://[^\s)]+\)", "", content)
+        content = _re.sub(r"\n{3,}", "\n\n", content).strip()
+        if not content:
+            continue
+        cleaned.append({"role": role, "content": content})
+    return cleaned
+
+
+def _inject_history(messages: list[dict], session_id: str) -> list[dict]:
+    """在最后一条 user 消息前插入历史对话。"""
+    history = _load_chat_history(session_id)
+    if not history:
+        return messages
+    if not messages or messages[-1].get("role") != "user":
+        return messages + history
+    return messages[:-1] + history + messages[-1:]
+
+
 def _resolve_chat_llm(worker_id: str | None) -> tuple:
     """根据 worker_id 解析 LLM 配置，返回 (provider, model, temperature, max_tokens, resolved_worker_id)。
     不传 worker_id 时使用 coordinator 配置。"""
@@ -808,6 +854,9 @@ async def chat(request: ChatRequest) -> dict:
             {"role": "system", "content": "你是一个智能助手。" + media_instruction},
             {"role": "user", "content": request.message},
         ]
+
+    # 注入历史对话（从持久化层读取，刷新/重启后仍可延续上下文）
+    messages = _inject_history(messages, session_id)
 
     # 调用 LLM（根据 worker_id 选择模型配置）
     provider, model, temperature, max_tokens, resolved_worker_id = _resolve_chat_llm(request.worker_id)
@@ -1174,7 +1223,10 @@ async def chat_stream(request: ChatRequest):
                 {"role": "system", "content": "你是一个智能助手。" + media_instruction},
                 {"role": "user", "content": request.message},
             ]
-        
+
+        # 注入历史对话（从持久化层读取，刷新/重启后仍可延续上下文）
+        messages = _inject_history(messages, session_id)
+
         # 流式调用 LLM（根据 worker_id 选择模型配置）
         try:
             provider, model, temperature, max_tokens, resolved_worker_id = _resolve_chat_llm(request.worker_id)
