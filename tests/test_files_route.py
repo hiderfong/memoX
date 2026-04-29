@@ -6,11 +6,16 @@ from src.web.api import app
 
 
 def _bypass_auth(monkeypatch):
-    """Patch auth middleware to always allow (mirror test_i2v_api.py)."""
-    from src.web import api as api_mod
+    """Patch auth middleware to always allow (updated for _get_auth_from_request)."""
+    from src.auth import _get_auth_from_request
+    from src.web.api import app
+
     mgr = MagicMock()
-    mgr.validate_token.return_value = {"username": "t", "role": "admin"}
-    monkeypatch.setattr(api_mod, "get_auth_manager", lambda: mgr)
+    mgr.validate_token.return_value = {
+        "username": "t", "role": "admin", "display_name": "Test",
+    }
+    app.state._auth_manager = mgr
+    app.dependency_overrides[_get_auth_from_request] = lambda request: mgr
 
 
 def test_files_route_serves_existing_file(tmp_path, monkeypatch):

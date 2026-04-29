@@ -16,6 +16,8 @@ _src_dir = Path(__file__).parent.parent
 if str(_src_dir) not in sys.path:
     sys.path.insert(0, str(_src_dir))
 
+from typing import Annotated  # noqa: E402, I001
+
 from fastapi import (  # noqa: E402
     FastAPI,
     File,
@@ -33,7 +35,7 @@ from pydantic import BaseModel  # noqa: E402
 
 from agents.base_agent import ToolRegistry, create_provider  # noqa: E402
 from agents.worker_pool import WorkerAgent, WorkerConfig, get_worker_pool, init_worker_pool  # noqa: E402
-from auth import get_auth_manager, init_auth  # noqa: E402
+from auth import AuthUser, _get_auth_from_request, get_auth_manager, init_auth, require_role  # noqa: E402
 from config import Config, load_config  # noqa: E402
 from coordinator.iterative_orchestrator import IterativeOrchestrator  # noqa: E402
 from coordinator.task_planner import TaskPlanner, init_task_planner  # noqa: E402
@@ -51,6 +53,30 @@ from knowledge.vector_store import (  # noqa: E402
     SentenceTransformerEmbedding,
 )
 from storage import get_store, init_store  # noqa: E402
+
+
+def _audit_log(
+    request: Request,
+    user: AuthUser,
+    action: str,
+    resource: str,
+    resource_id: str,
+) -> None:
+    """记录审计日志（失败不阻塞业务）"""
+    try:
+        store = get_store()
+        if store:
+            store.log_audit_event(
+                action=action,
+                resource=resource,
+                resource_id=resource_id,
+                username=user.username,
+                user_role=user.role,
+                ip_address=request.client.host if request.client else "",
+            )
+    except Exception:
+        pass
+
 
 # ==================== 配置 ====================
 
@@ -152,7 +178,7 @@ async def auth_middleware(request: Request, call_next):
         auth_header = request.headers.get("Authorization", "")
         token = auth_header.removeprefix("Bearer ").strip()
 
-    auth = get_auth_manager()
+    auth = _get_auth_from_request(request)
     if not auth.validate_token(token):
         return JSONResponse(
             {"detail": "未登录或 Token 已过期，请重新登录"},
@@ -229,15 +255,18 @@ async def startup():
             if isinstance(v, str) and v.startswith("${") and v.endswith("}"):
                 return os.getenv(v[2:-1], "")
             return v
-        init_auth([
-            {
-                "username": u.username,
-                "password": _resolve(u.password),
-                "role": u.role,
-                "display_name": u.display_name,
-            }
-            for u in _config.auth.users
-        ])
+        init_auth(
+            [
+                {
+                    "username": u.username,
+                    "password": _resolve(u.password),
+                    "role": u.role,
+                    "display_name": u.display_name,
+                }
+                for u in _config.auth.users
+            ],
+            app_state=app.state,
+        )
         _PUBLIC_PATHS.update(_config.auth.public_paths)
         logger.info(f"   - 认证已启用，{len(_config.auth.users)} 个用户")
 
@@ -441,7 +470,7 @@ async def login(request: LoginRequest) -> dict:
 async def logout(request: Request) -> dict:
     """用户登出，吊销 Token（需携带有效 Token）"""
     token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
-    auth = get_auth_manager()
+    auth = _get_auth_from_request(request)
     if not token or not auth.validate_token(token):
         raise HTTPException(status_code=401, detail="未登录或 Token 已过期")
     auth.logout(token)
@@ -452,7 +481,7 @@ async def logout(request: Request) -> dict:
 async def me(request: Request) -> dict:
     """获取当前登录用户信息"""
     token = request.headers.get("Authorization", "").removeprefix("Bearer ").strip()
-    user_info = get_auth_manager().get_user_info(token)
+    user_info = _get_auth_from_request(request).get_user_info(token)
     if not user_info:
         raise HTTPException(status_code=401, detail="未登录")
     return user_info
@@ -597,11 +626,16 @@ async def import_url(request: URLRequest) -> DocumentResponse:
 
 
 @app.delete("/api/documents/{doc_id}")
-async def delete_document(doc_id: str) -> dict:
-    """删除文档"""
+async def delete_document(
+    doc_id: str,
+    request: Request,
+    user: Annotated[AuthUser, require_role("admin")],
+) -> dict:
+    """删除文档（仅管理员）"""
     success = await _rag_engine.delete_document(doc_id)
     if not success:
         raise HTTPException(status_code=404, detail="Document not found")
+    _audit_log(request, user, "delete", "document", doc_id)
     return {"success": True, "message": "Document deleted"}
 
 
@@ -646,14 +680,19 @@ async def update_group(group_id: str, request: GroupUpdate) -> dict:
 
 
 @app.delete("/api/groups/{group_id}")
-async def delete_group(group_id: str) -> dict:
-    """删除分组，其下文档自动归回未分组"""
+async def delete_group(
+    group_id: str,
+    request: Request,
+    user: Annotated[AuthUser, require_role("admin")],
+) -> dict:
+    """删除分组，其下文档自动归回未分组（仅管理员）"""
     try:
         docs = _rag_engine.list_documents()
         for doc in docs:
             if doc.group_id == group_id:
                 _rag_engine.move_document_group(doc.id, UNGROUPED_ID)
         _group_store.delete_group(group_id)
+        _audit_log(request, user, "delete", "group", group_id)
         return {"success": True}
     except (KeyError, ValueError) as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -1746,12 +1785,17 @@ async def update_scheduled_task_api(task_id: str, request: ScheduledTaskUpdate) 
 
 
 @app.delete("/api/scheduled-tasks/{task_id}")
-async def delete_scheduled_task_api(task_id: str) -> dict:
+async def delete_scheduled_task_api(
+    task_id: str,
+    request: Request,
+    user: Annotated[AuthUser, require_role("admin")],
+) -> dict:
     store = get_store()
     if not store:
         raise HTTPException(status_code=500, detail="Storage not initialized")
     if not store.delete_scheduled_task(task_id):
         raise HTTPException(status_code=404, detail="Scheduled task not found")
+    _audit_log(request, user, "delete", "scheduled_task", task_id)
     return {"success": True}
 
 
@@ -1805,8 +1849,12 @@ class WorkerConfigUpdate(BaseModel):
 
 
 @app.put("/api/workers/{worker_id}/config")
-async def update_worker_config(worker_id: str, body: WorkerConfigUpdate) -> dict:
-    """更新 Worker 配置并持久化到 config.yaml"""
+async def update_worker_config(
+    worker_id: str,
+    body: WorkerConfigUpdate,
+    _: Annotated[AuthUser, require_role("admin")],
+) -> dict:
+    """更新 Worker 配置并持久化到 config.yaml（仅管理员）"""
 
     worker_pool = get_worker_pool()
     if not worker_pool or worker_id not in worker_pool._workers:
@@ -1904,8 +1952,11 @@ class WorkerCreateRequest(BaseModel):
 
 
 @app.post("/api/workers")
-async def create_worker(body: WorkerCreateRequest) -> dict:
-    """新增 Worker 并持久化到 config.yaml"""
+async def create_worker(
+    body: WorkerCreateRequest,
+    _: Annotated[AuthUser, require_role("admin")],
+) -> dict:
+    """新增 Worker 并持久化到 config.yaml（仅管理员）"""
     import re as _re
 
     worker_pool = get_worker_pool()
@@ -1986,8 +2037,12 @@ async def create_worker(body: WorkerCreateRequest) -> dict:
 
 
 @app.delete("/api/workers/{worker_id}")
-async def delete_worker(worker_id: str) -> dict:
-    """删除 Worker 并从 config.yaml 移除"""
+async def delete_worker(
+    worker_id: str,
+    request: Request,
+    user: Annotated[AuthUser, require_role("admin")],
+) -> dict:
+    """删除 Worker 并从 config.yaml 移除（仅管理员）"""
     import re as _re
 
     worker_pool = get_worker_pool()
@@ -2020,6 +2075,7 @@ async def delete_worker(worker_id: str) -> dict:
     if new_text != text:
         config_path.write_text(new_text, encoding="utf-8")
 
+    _audit_log(request, user, "delete", "worker", worker_id)
     return {"success": True, "message": f"Worker '{worker_id}' 已删除"}
 
 
@@ -2154,14 +2210,19 @@ async def install_skill(body: SkillInstallRequest):
 
 
 @app.delete("/api/skills/{name}")
-async def uninstall_skill(name: str) -> dict:
-    """卸载已安装 skill。"""
+async def uninstall_skill(
+    name: str,
+    request: Request,
+    user: Annotated[AuthUser, require_role("admin")],
+) -> dict:
+    """卸载已安装 skill（仅管理员）。"""
     from skills.installer import remove_skill as _remove
     skills_dir = Path(_config.knowledge_base.skills_dir)
     try:
         _remove(skills_dir, name)
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
+    _audit_log(request, user, "uninstall", "skill", name)
     return {"success": True, "name": name}
 
 

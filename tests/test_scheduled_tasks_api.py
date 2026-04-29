@@ -9,11 +9,26 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 
 def _bypass_auth(monkeypatch):
-    """Patch auth middleware to always allow."""
-    from src.web import api as api_mod
-    mgr = MagicMock()
-    mgr.validate_token.return_value = {"username": "t", "role": "admin"}
-    monkeypatch.setattr(api_mod, "get_auth_manager", lambda: mgr)
+    """Override auth for tests via app.state + dependency_overrides.
+
+    Both the middleware (_get_auth_from_request(request)) and FastAPI route
+    dependencies (Depends(_get_auth_from_request)) will use the mock AuthManager.
+    """
+    from src.auth import AuthUser, _get_auth_from_request
+    from src.web.api import app
+
+    mock_mgr = MagicMock()
+    mock_mgr.validate_token.return_value = {
+        "username": "t", "role": "admin", "display_name": "Test",
+    }
+
+    # Middleware path: _get_auth_from_request(request) checks request.app.state._auth_manager
+    app.state._auth_manager = mock_mgr
+
+    # Route path: FastAPI dependency_overrides
+    app.dependency_overrides[_get_auth_from_request] = lambda request: mock_mgr
+
+    return app
 
 
 @pytest.fixture

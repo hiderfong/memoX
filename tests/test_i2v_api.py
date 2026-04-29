@@ -8,14 +8,21 @@ from src.web.api import app
 
 @pytest.fixture
 def anon_client(monkeypatch):
-    # 跳过认证：patch get_auth_manager 使其返回总是通过验证的 mock
+    """Skip auth by setting up fake state and dependency override."""
     from unittest.mock import MagicMock
 
     from src.web import api as api_mod
+
     monkeypatch.setattr(api_mod, "_config", None)
     fake_auth = MagicMock()
-    fake_auth.validate_token = MagicMock(return_value={"username": "test", "role": "admin"})
-    monkeypatch.setattr(api_mod, "get_auth_manager", lambda: fake_auth)
+    fake_auth.validate_token = MagicMock(return_value={
+        "username": "test", "role": "admin", "display_name": "Test",
+    })
+    # Middleware path: _get_auth_from_request reads app.state._auth_manager
+    app.state._auth_manager = fake_auth
+    # Route path: dependency override for _get_auth_from_request
+    from src.auth import _get_auth_from_request
+    app.dependency_overrides[_get_auth_from_request] = lambda request: fake_auth
     return TestClient(app)
 
 

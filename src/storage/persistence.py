@@ -77,6 +77,20 @@ class PersistenceStore:
                 next_run_at TEXT DEFAULT ''
             );
             CREATE INDEX IF NOT EXISTS idx_sched_enabled ON scheduled_tasks(enabled);
+
+            CREATE TABLE IF NOT EXISTS audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                username TEXT NOT NULL DEFAULT '',
+                user_role TEXT NOT NULL DEFAULT '',
+                action TEXT NOT NULL,
+                resource TEXT NOT NULL,
+                resource_id TEXT NOT NULL DEFAULT '',
+                details TEXT DEFAULT '{}',
+                ip_address TEXT NOT NULL DEFAULT ''
+            );
+            CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp DESC);
+            CREATE INDEX IF NOT EXISTS idx_audit_resource ON audit_log(resource, resource_id);
         """)
         # 旧库迁移：为 chat_sessions 补齐 archived 列
         cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(chat_sessions)").fetchall()}
@@ -415,6 +429,56 @@ class PersistenceStore:
         """重置 Worker 的 token 用量"""
         self._conn.execute("DELETE FROM worker_token_usage WHERE worker_id = ?", (worker_id,))
         self._conn.commit()
+
+    # ── 审计日志 ──────────────────────────────────────────────
+
+    def log_audit_event(
+        self,
+        action: str,
+        resource: str,
+        resource_id: str = "",
+        username: str = "",
+        user_role: str = "",
+        details: dict | None = None,
+        ip_address: str = "",
+    ) -> None:
+        """记录一条审计日志"""
+        now = datetime.now().isoformat()
+        self._conn.execute(
+            """INSERT INTO audit_log
+               (timestamp, username, user_role, action, resource, resource_id, details, ip_address)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (now, username, user_role, action, resource, resource_id,
+             json.dumps(details or {}, ensure_ascii=False), ip_address),
+        )
+        self._conn.commit()
+
+    def list_audit_events(
+        self,
+        resource: str | None = None,
+        action: str | None = None,
+        username: str | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        """查询审计日志（倒序）"""
+        conditions = []
+        params: list = []
+        if resource:
+            conditions.append("resource = ?")
+            params.append(resource)
+        if action:
+            conditions.append("action = ?")
+            params.append(action)
+        if username:
+            conditions.append("username = ?")
+            params.append(username)
+        where = "WHERE " + " AND ".join(conditions) if conditions else ""
+        rows = self._conn.execute(
+            f"""SELECT * FROM audit_log {where}
+                ORDER BY timestamp DESC LIMIT ?""",
+            [*params, limit],
+        ).fetchall()
+        return [dict(r) for r in rows]
 
 
 # ==================== 全局实例 ====================
