@@ -5,7 +5,9 @@ from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-from skills.loader import Skill, list_skills
+import pytest  # noqa: E402
+
+from skills.loader import Skill, list_skills, load_skill  # noqa: E402
 
 
 def _make_skill(root: Path, name: str, description: str, body: str) -> Path:
@@ -40,11 +42,6 @@ def test_list_skills_empty_dir(tmp_path):
 def test_list_skills_missing_dir(tmp_path):
     missing = tmp_path / "does-not-exist"
     assert list_skills(missing) == []
-
-
-import pytest
-
-from skills.loader import load_skill
 
 
 def test_load_skill_returns_body(tmp_path):

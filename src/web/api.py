@@ -16,32 +16,41 @@ _src_dir = Path(__file__).parent.parent
 if str(_src_dir) not in sys.path:
     sys.path.insert(0, str(_src_dir))
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from fastapi import (  # noqa: E402
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Request,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse  # noqa: E402
+from fastapi.staticfiles import StaticFiles  # noqa: E402
+from pydantic import BaseModel  # noqa: E402
 
-from agents.base_agent import ToolRegistry, create_provider
-from agents.worker_pool import WorkerAgent, WorkerConfig, get_worker_pool, init_worker_pool
-from auth import get_auth_manager, init_auth
-from config import Config, load_config
-from coordinator.iterative_orchestrator import IterativeOrchestrator
-from coordinator.task_planner import TaskPlanner, init_task_planner
-from knowledge import (
+from agents.base_agent import ToolRegistry, create_provider  # noqa: E402
+from agents.worker_pool import WorkerAgent, WorkerConfig, get_worker_pool, init_worker_pool  # noqa: E402
+from auth import get_auth_manager, init_auth  # noqa: E402
+from config import Config, load_config  # noqa: E402
+from coordinator.iterative_orchestrator import IterativeOrchestrator  # noqa: E402
+from coordinator.task_planner import TaskPlanner, init_task_planner  # noqa: E402
+from knowledge import (  # noqa: E402
     DocumentInfo,
     RAGEngine,
     SearchResult,
     init_rag_engine,
 )
-from knowledge.document_parser import WebPageParser
-from knowledge.group_store import UNGROUPED_ID, GroupStore
-from knowledge.vector_store import (
+from knowledge.document_parser import WebPageParser  # noqa: E402
+from knowledge.group_store import UNGROUPED_ID, GroupStore  # noqa: E402
+from knowledge.vector_store import (  # noqa: E402
     DashScopeEmbedding,
     OpenAIEmbedding,
     SentenceTransformerEmbedding,
 )
-from storage import get_store, init_store
+from storage import get_store, init_store  # noqa: E402
 
 # ==================== 配置 ====================
 
@@ -508,7 +517,7 @@ async def upload_document(
             size=doc_info.size,
             group_id=doc_info.group_id,
         )
-    except asyncio.TimeoutError:
+    except asyncio.TimeoutError as e:
         logger.error("[UPLOAD ERROR] 文档处理超时")
         # 清理文件
         with contextlib.suppress(Exception):
@@ -549,7 +558,7 @@ async def import_url(request: URLRequest) -> DocumentResponse:
             parser.fetch_url(url, doc_id),
             timeout=35.0,
         )
-    except asyncio.TimeoutError:
+    except asyncio.TimeoutError as e:
         raise HTTPException(status_code=504, detail="网页抓取超时") from e
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"网页抓取失败: {type(e).__name__}: {str(e)}") from e
@@ -630,7 +639,7 @@ async def update_group(group_id: str, request: GroupUpdate) -> dict:
     try:
         group = _group_store.update_group(group_id, request.name, request.color)
         return {"id": group.id, "name": group.name, "color": group.color, "created_at": group.created_at}
-    except KeyError:
+    except KeyError as e:
         raise HTTPException(status_code=404, detail="Group not found") from e
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
@@ -864,10 +873,10 @@ async def chat(request: ChatRequest) -> dict:
             if status == 401:
                 raise HTTPException(status_code=502, detail="LLM API Key 无效或已过期") from e
             elif status == 429:
-                raise HTTPException(status_code=429, detail="LLM API 请求频率超限，请稍后重试")
+                raise HTTPException(status_code=429, detail="LLM API 请求频率超限，请稍后重试") from e
             else:
-                raise HTTPException(status_code=502, detail=f"LLM 服务返回错误 {status}")
-        raise HTTPException(status_code=502, detail=f"LLM 调用失败: {type(e).__name__}: {str(e)}")
+                raise HTTPException(status_code=502, detail=f"LLM 服务返回错误 {status}") from e
+        raise HTTPException(status_code=502, detail=f"LLM 调用失败: {type(e).__name__}: {str(e)}") from e
 
     raw_answer = response.content or "抱歉，我无法回答这个问题。"
 
@@ -1413,7 +1422,7 @@ async def serve_upload(name: str, request: Request):
     path = (UPLOADS_DIR / name).resolve()
     try:
         path.relative_to(UPLOADS_DIR.resolve())
-    except ValueError:
+    except ValueError as e:
         raise HTTPException(status_code=400, detail="非法路径") from e
     if not path.is_file():
         raise HTTPException(status_code=404, detail="文件不存在")
@@ -1439,7 +1448,7 @@ async def create_task(request: TaskRequest) -> dict:
             result = await asyncio.wait_for(coro, timeout=float(timeout))
         else:
             result = await coro
-    except asyncio.TimeoutError:
+    except asyncio.TimeoutError as e:
         raise HTTPException(status_code=504, detail=f"任务执行超时（{timeout}秒）") from e
 
     suggestions = []

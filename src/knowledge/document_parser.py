@@ -1,6 +1,7 @@
 """文档解析器 - 支持 PDF、Markdown、TXT、DOCX"""
 
 import asyncio
+import importlib.util
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -615,10 +616,7 @@ class PPTXParser(BaseParser):
     PARSE_TIMEOUT = 30
 
     async def parse(self, file_path: Path, doc_id: str) -> Document:
-        try:
-            from pptx import Presentation
-            from pptx.util import Pt
-        except ImportError:
+        if importlib.util.find_spec("pptx") is None:
             raise ImportError("请安装 python-pptx: pip install python-pptx") from None
 
         file_size = file_path.stat().st_size

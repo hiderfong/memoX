@@ -9,8 +9,8 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-from skills.installer import install_from_github
-from skills.loader import list_skills
+from skills.installer import install_from_github, remove_skill, update_skill  # noqa: E402
+from skills.loader import list_skills  # noqa: E402
 
 
 def _init_remote_repo(repo_dir: Path, skill_name: str = "code-review") -> str:
@@ -121,9 +121,6 @@ def test_install_from_github_missing_skill_md(tmp_path):
     skills_dir = tmp_path / "skills"
     with pytest.raises(FileNotFoundError, match="no SKILL.md"):
         install_from_github(f"file://{remote}", skills_dir)
-
-
-from skills.installer import remove_skill, update_skill
 
 
 def test_remove_skill_happy_path(tmp_path):

@@ -10,13 +10,12 @@ import tempfile
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
 
-ProgressCallback = Optional[Callable[[str, str], None]]
+ProgressCallback = Callable[[str, str], None] | None  # noqa: E402
 
-from loguru import logger
+from loguru import logger  # noqa: E402
 
-from .loader import Skill, _load_one, _parse_skill_md
+from .loader import Skill, _load_one, _parse_skill_md  # noqa: E402
 
 _GITHUB_URL_RE = re.compile(
     r"^(?:https?://)?(?:www\.)?github\.com/(?P<owner>[^/]+)/(?P<repo>[^/]+?)(?:\.git)?"

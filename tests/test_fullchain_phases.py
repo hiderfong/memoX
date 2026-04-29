@@ -543,19 +543,19 @@ class TestPhase3:
         from knowledge.document_parser import ImageParser
 
         parser = ImageParser(dashscope_api_key="")  # 无 key，直接走 pytesseract
-        with patch.object(parser, "_ocr_pytesseract", return_value="Local OCR"):
-            with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
-                # 写入最小 JPEG
-                import base64
-                png_data = base64.b64decode(
-                    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
-                )
-                f.write(png_data)
-                f.flush()
-                doc = asyncio.run(
-                    parser.parse(Path(f.name), "img_fb")
-                )
-                os.unlink(f.name)
+        with patch.object(parser, "_ocr_pytesseract", return_value="Local OCR"), \
+             tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as f:
+            # 写入最小 JPEG
+            import base64
+            png_data = base64.b64decode(
+                "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg=="
+            )
+            f.write(png_data)
+            f.flush()
+            doc = asyncio.run(
+                parser.parse(Path(f.name), "img_fb")
+            )
+            os.unlink(f.name)
 
         assert "Local OCR" in doc.content
         assert doc.metadata["ocr_method"] == "pytesseract"

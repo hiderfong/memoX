@@ -31,4 +31,6 @@ __all__ = [
     "get_rag_engine",
     "init_rag_engine",
     "get_vector_store",
+    "ChromaVectorStore",
+    "SimpleVectorStore",
 ]

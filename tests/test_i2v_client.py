@@ -74,9 +74,11 @@ async def test_missing_api_key_raises():
 @pytest.mark.asyncio
 async def test_negative_prompt_passed_in_input():
     client = DashScopeImageToVideoClient(api_key="sk-test", poll_interval=0.01)
-    submit_resp = MagicMock(); submit_resp.raise_for_status = MagicMock()
+    submit_resp = MagicMock()
+    submit_resp.raise_for_status = MagicMock()
     submit_resp.json.return_value = {"output": {"task_id": "t1"}}
-    poll_resp = MagicMock(); poll_resp.raise_for_status = MagicMock()
+    poll_resp = MagicMock()
+    poll_resp.raise_for_status = MagicMock()
     poll_resp.json.return_value = {"output": {"task_status": "SUCCEEDED", "video_url": "https://cdn/x.mp4"}}
 
     with patch("httpx.AsyncClient") as mock_cls:
