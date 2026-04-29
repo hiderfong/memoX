@@ -8,6 +8,7 @@ from pathlib import Path
 from .bm25_indexer import BM25Indexer, get_bm25_indexer
 from .document_parser import DocumentParser
 from .hybrid_retriever import HybridRetriever
+from .knowledge_graph import KnowledgeGraph, get_knowledge_graph
 from .vector_store import ChromaVectorStore, EmbeddingFunction, get_vector_store
 
 
@@ -24,6 +25,30 @@ class DocumentInfo:
 
 
 @dataclass
+class Citation:
+    """结构化引用来源信息（P4-3）
+
+    描述检索结果中的具体来源，支持前端渲染可点击引用链接。
+    """
+    ref_id: str          # 引用编号，如 "ref-1"
+    doc_id: str          # 文档唯一 ID
+    filename: str         # 原始文件名
+    chunk_index: int     # 在文档中的块索引
+    content_preview: str # 内容预览（前100字）
+    score: float         # 检索得分
+
+    def to_dict(self) -> dict:
+        return {
+            "ref_id": self.ref_id,
+            "doc_id": self.doc_id,
+            "filename": self.filename,
+            "chunk_index": self.chunk_index,
+            "content_preview": self.content_preview,
+            "score": self.score,
+        }
+
+
+@dataclass
 class SearchResult:
     """搜索结果"""
     id: str
@@ -31,12 +56,41 @@ class SearchResult:
     score: float
     metadata: dict = field(default_factory=dict)
 
-    def to_context_string(self, max_length: int = 1000) -> str:
-        """转换为上下文字符串"""
+    @property
+    def citation(self) -> Citation | None:
+        """从 metadata 中提取结构化引用信息"""
+        filename = self.metadata.get("filename", "unknown")
+        doc_id = self.metadata.get("doc_id", "")
+        chunk_index = self.metadata.get("chunk_index", 0)
+        preview = self.content[:100] + ("..." if len(self.content) > 100 else "")
+
+        # 从 id 中提取 ref 编号（格式: docid_chunk_N）
+        chunk_id = self.id
+        ref_num = ""
+        if "_chunk_" in chunk_id:
+            try:
+                ref_num = chunk_id.rsplit("_chunk_", 1)[-1]
+            except Exception:
+                ref_num = str(chunk_index)
+        else:
+            ref_num = str(chunk_index)
+
+        return Citation(
+            ref_id=f"ref-{ref_num}",
+            doc_id=doc_id,
+            filename=filename,
+            chunk_index=chunk_index,
+            content_preview=preview,
+            score=self.score,
+        )
+
+    def to_context_string(self, max_length: int = 1000, ref_id: str = "") -> str:
+        """转换为上下文字符串，包含引用标记"""
         content = self.content
         if len(content) > max_length:
             content = content[:max_length] + "..."
-        return f"[来源: {self.metadata.get('filename', 'unknown')}]\n{content}"
+        ref_tag = f"[{ref_id}]" if ref_id else ""
+        return f"[来源: {self.metadata.get('filename', 'unknown')}]{ref_tag}\n{content}"
 
 
 @dataclass
@@ -73,6 +127,9 @@ class RAGEngine:
         dashscope_base_url: str = "",
         hybrid_search_enabled: bool = True,
         bm25_persist_path: str = "./data/bm25_index.pkl",
+        chunk_strategy: str = "size",
+        enable_graph: bool = False,
+        graph_persist_path: str = "./data/knowledge_graph.gml",
     ):
         self.vector_store = vector_store or get_vector_store()
         self.document_parser = document_parser or DocumentParser(
@@ -83,6 +140,8 @@ class RAGEngine:
         self.chunk_overlap = chunk_overlap
         self.top_k = top_k
         self.hybrid_search_enabled = hybrid_search_enabled
+        self.chunk_strategy = chunk_strategy
+        self.enable_graph = enable_graph
 
         # 混合检索初始化
         if self.hybrid_search_enabled:
@@ -93,6 +152,15 @@ class RAGEngine:
             )
         else:
             self._hybrid_retriever = None
+
+        # 知识图谱初始化（实验性）
+        if self.enable_graph:
+            self._knowledge_graph = get_knowledge_graph(
+                persist_path=graph_persist_path,
+                enabled=True,
+            )
+        else:
+            self._knowledge_graph = None
 
         # 内存存储会话（生产环境应使用数据库）
         self._sessions: dict[str, ChatSession] = {}
@@ -114,8 +182,13 @@ class RAGEngine:
 
         # 解析并分块
         print("[RAG] Parsing document...")
+        embedding_fn = None
+        if self.chunk_strategy == "semantic" and hasattr(self.vector_store, "embedding_fn"):
+            embedding_fn = self.vector_store.embedding_fn
         document, chunks = await self.document_parser.parse_and_chunk(
-            file_path, doc_id, self.chunk_size, self.chunk_overlap
+            file_path, doc_id, self.chunk_size, self.chunk_overlap,
+            chunk_strategy=self.chunk_strategy,
+            embedding_fn=embedding_fn,
         )
         print(f"[RAG] Parsed into {len(chunks)} chunks")
 
@@ -183,11 +256,22 @@ class RAGEngine:
             ]
             self._hybrid_retriever.bm25_indexer.add_chunks(entries)
 
+        # 知识图谱（启用时同步写入三元组）
+        if self._knowledge_graph is not None:
+            for c in chunks:
+                from .knowledge_graph import _extract_triples_rule_based, Triple
+                triples = _extract_triples_rule_based(c.content, c.id)
+                for t in triples:
+                    self._knowledge_graph.add_triple(t)
+            self._knowledge_graph.save()
+
     async def delete_document(self, doc_id: str, collection_name: str = "documents") -> bool:
         """从知识库删除文档"""
         count = await self.vector_store.delete_by_document_id(doc_id, collection_name)
         if self._hybrid_retriever is not None:
             self._hybrid_retriever.bm25_indexer.delete_by_doc_id(doc_id)
+        if self._knowledge_graph is not None:
+            self._knowledge_graph.remove_by_chunk_id(doc_id)
         if doc_id in self._documents:
             del self._documents[doc_id]
         return count > 0
@@ -307,28 +391,109 @@ class RAGEngine:
             for r in results
         ]
 
+    async def search_with_graph(
+        self,
+        query: str,
+        collection_name: str = "documents",
+        top_k: int | None = None,
+        doc_ids: list[str] | None = None,
+        group_ids: list[str] | None = None,
+    ) -> dict:
+        """检索 + 知识图谱融合结果。
+
+        返回结构：
+        {
+            "search_results": [...SearchResult],   # 向量/混合检索结果
+            "graph_result": GraphSearchResult | None,  # 知识图谱匹配结果
+            "graph_boosted_ids": [...],             # 被图谱增强的 chunk id（来自高连接度实体）
+        }
+
+        当 enable_graph=False 时退化为纯 search() 结果。
+        """
+        # 1. 基础检索
+        search_results = await self.search(
+            query=query,
+            collection_name=collection_name,
+            top_k=top_k,
+            doc_ids=doc_ids,
+            group_ids=group_ids,
+        )
+
+        result: dict = {
+            "search_results": search_results,
+            "graph_result": None,
+            "graph_boosted_ids": [],
+        }
+
+        if self._knowledge_graph is None:
+            return result
+
+        # 2. 图谱模糊搜索（用 query 中最长词/短语作实体匹配）
+        graph_search_result = self._knowledge_graph.search(query, top_k=3)
+        if graph_search_result is None:
+            return result
+
+        result["graph_result"] = graph_search_result
+
+        # 3. 图谱连接度增强：来自高度连接实体的 chunk 提升 score
+        connected_entities = set(graph_search_result.connected_entities + [graph_search_result.entity])
+        boosted_ids: list[str] = []
+        for sr in search_results:
+            # 检查 chunk 内容是否包含高连接度实体
+            content_lower = sr.content.lower()
+            for ent in connected_entities:
+                if ent.lower() in content_lower:
+                    # Boost score by 20%
+                    sr.score = min(sr.score * 1.2, 1.0)
+                    boosted_ids.append(sr.id)
+                    break
+
+        result["graph_boosted_ids"] = boosted_ids
+        return result
+
     def build_rag_prompt(
         self,
         query: str,
         search_results: list[SearchResult],
         system_prompt: str | None = None,
     ) -> list[dict[str, str]]:
-        """构建 RAG 提示"""
-        # 上下文
+        """构建 RAG 提示
+
+        每个上下文来源前会标注 [ref-N] 编号，并指示 LLM 在回答时引用对应编号。
+        """
+        # 构建带编号的上下文
         context_parts = ["已知信息："]
+        citations: list[Citation] = []
         for i, result in enumerate(search_results, 1):
-            context_parts.append(f"\n【文档 {i}】({result.metadata.get('filename', 'unknown')}):\n{result.content}")
+            citation = result.citation
+            ref_id = f"ref-{i}"
+            if citation:
+                # 统一 ref_id 为 1-based 顺序编号
+                citation = Citation(
+                    ref_id=ref_id,
+                    doc_id=citation.doc_id,
+                    filename=citation.filename,
+                    chunk_index=citation.chunk_index,
+                    content_preview=citation.content_preview,
+                    score=citation.score,
+                )
+                citations.append(citation)
+            context_parts.append(
+                f"\n【文档 {i}】({result.metadata.get('filename', 'unknown')}) [ref-{i}]:\n{result.content}"
+            )
 
         context = "\n".join(context_parts)
 
-        # 系统提示
+        # 系统提示（含引用规则）
         default_system = """你是一个知识库问答助手。请根据提供的上下文信息回答用户的问题。
 
 要求：
 1. 优先使用上下文中的信息回答
 2. 如果上下文信息不足以回答，请明确说明
-3. 引用相关文档来源
-4. 回答要准确、简洁、有条理
+3. **引用规则**：当使用某个来源的信息时，必须在对应句子后用 [ref-N] 标注来源编号（N 为【文档 N】后的编号）
+4. 引用格式示例：巴黎是法国的首都 [ref-1]
+5. 回答要准确、简洁、有条理
+6. 多个来源时分别标注，如：根据 [ref-1] 和 [ref-3]
 """
 
         messages = [
@@ -338,6 +503,23 @@ class RAGEngine:
         ]
 
         return messages
+
+    @staticmethod
+    def extract_citations_from_text(text: str) -> list[str]:
+        """从 LLM 回复文本中解析出所有引用的 [ref-N] 编号
+
+        返回如 ["ref-1", "ref-3"] 的列表（去重按出现顺序排列）
+        """
+        import re
+        found = re.findall(r"\[ref-(\d+)\]", text)
+        seen: set[str] = set()
+        result: list[str] = []
+        for num in found:
+            key = f"ref-{num}"
+            if key not in seen:
+                seen.add(key)
+                result.append(key)
+        return result
 
     # ==================== 会话管理 ====================
 
@@ -419,6 +601,9 @@ def init_rag_engine(
     dashscope_base_url: str = "",
     hybrid_search_enabled: bool = True,
     bm25_persist_path: str = "./data/bm25_index.pkl",
+    chunk_strategy: str = "size",
+    enable_graph: bool = False,
+    graph_persist_path: str = "./data/knowledge_graph.gml",
 ) -> RAGEngine:
     """初始化 RAG 引擎"""
     global _rag_engine
@@ -432,5 +617,8 @@ def init_rag_engine(
         dashscope_base_url=dashscope_base_url,
         hybrid_search_enabled=hybrid_search_enabled,
         bm25_persist_path=bm25_persist_path,
+        chunk_strategy=chunk_strategy,
+        enable_graph=enable_graph,
+        graph_persist_path=graph_persist_path,
     )
     return _rag_engine

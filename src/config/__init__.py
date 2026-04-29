@@ -87,6 +87,11 @@ class KnowledgeBaseConfig:
         "bm25_persist_path": "./data/bm25_index.pkl",
         "rrf_k": 60,
     })
+    # 知识图谱配置（实验性）
+    enable_graph: bool = False
+    graph_persist_path: str = "./data/knowledge_graph.gml"
+    graph_llm_provider: str = "dashscope"
+    graph_llm_api_key: str = ""
 
 
 @dataclass

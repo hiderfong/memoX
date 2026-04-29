@@ -241,7 +241,7 @@ class IterativeOrchestrator:
         if not self._rag_engine:
             return
         try:
-            results = await self._rag_engine.search(
+            results = await self._rag_engine.search_with_graph(
                 description,
                 group_ids=active_group_ids,
                 top_k=3,

@@ -47,6 +47,8 @@ dependencies = [
     "sentence-transformers>=2.2.0",
     # 全文检索（混合搜索）
     "rank-bm25>=0.2",
+    # 知识图谱（实验性）
+    "networkx>=3.0",
     # 可选: APScheduler (定时任务)
     "apscheduler>=3.10.0",
     # 限流

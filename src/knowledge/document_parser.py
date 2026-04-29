@@ -895,12 +895,42 @@ class DocumentParser:
         file_path: Path,
         doc_id: str,
         chunk_size: int = 500,
-        overlap: int = 50
+        overlap: int = 50,
+        chunk_strategy: str = "size",
+        embedding_fn=None,
     ) -> tuple[Document, list[TextChunk]]:
-        """解析并分块"""
+        """解析并分块
+
+        参数：
+            chunk_strategy: 分块策略
+                - "size": 固定 token 数切分（原有逻辑，快速但破坏语义完整性）
+                - "semantic": 基于句子 embedding 的语义分块（保护段落主题）
+            embedding_fn: embedding 函数（当 chunk_strategy="semantic" 时必须提供）
+                          接受 list[str]，返回 list[list[float]]
+        """
         parser = self.get_parser(file_path.name)
         document = await parser.parse(file_path, doc_id)
-        chunks = await parser.chunk(document, chunk_size, overlap)
+
+        if chunk_strategy == "semantic" and embedding_fn is not None:
+            # 语义分块路径
+            from .semantic_chunker import SemanticChunker, semantic_chunks_to_text_chunks
+
+            chunker = SemanticChunker(
+                embedding_fn=embedding_fn,
+                chunk_size=chunk_size,
+                chunk_overlap=overlap,
+            )
+            semantic_chunks = await chunker.chunk(document.content)
+            chunks = semantic_chunks_to_text_chunks(
+                semantic_chunks, doc_id, document.metadata
+            )
+        else:
+            # 固定长度分块路径（原有逻辑）
+            chunks = await parser.chunk(document, chunk_size, overlap)
+            # 标注为固定长度策略
+            for c in chunks:
+                c.metadata["chunk_strategy"] = "size"
+
         return document, chunks
 
     @property

@@ -130,6 +130,13 @@ knowledge_base:
     enabled: true
     bm25_persist_path: "./data/bm25_index.pkl"
     rrf_k: 60  # RRF 融合参数，越大越均衡
+    chunk_strategy: "size"  # 分块策略: "size"=固定长度, "semantic"=语义分块
+  # 知识图谱（实验性，LLM 抽取三元组 + NetworkX 图查询）
+  enable_graph: false  # true=启用知识图谱，false=禁用
+  graph_persist_path: "./data/knowledge_graph.gml"
+  # LLM 抽取三元组的配置（enable_graph=true 时生效）
+  graph_llm_provider: "dashscope"  # 用于三元组抽取的 LLM
+  graph_llm_api_key: "${DASHSCOPE_API_KEY}"
 
 # MCP 配置
 mcp:

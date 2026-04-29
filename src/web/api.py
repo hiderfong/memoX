@@ -328,16 +328,19 @@ async def startup():
 
     # 初始化 RAG 引擎
     hybrid_cfg = kb_config.hybrid_search
-    _rag_engine = init_rag_engine(
+    init_rag_engine(
         persist_directory=kb_config.persist_directory,
         embedding_function=embedding_function,
         chunk_size=kb_config.chunk_size,
         chunk_overlap=kb_config.chunk_overlap,
-        top_k=kb_config.top_k,
+        top_k=hybrid_cfg.get("top_k", 5) if hybrid_cfg else 5,
         dashscope_api_key=dashscope_api_key,
         dashscope_base_url=dashscope_base_url,
-        hybrid_search_enabled=hybrid_cfg.get("enabled", True),
-        bm25_persist_path=hybrid_cfg.get("bm25_persist_path", "./data/bm25_index.pkl"),
+        hybrid_search_enabled=hybrid_cfg.get("enabled", True) if hybrid_cfg else True,
+        bm25_persist_path=hybrid_cfg.get("bm25_persist_path", "./data/bm25_index.pkl") if hybrid_cfg else "./data/bm25_index.pkl",
+        chunk_strategy=hybrid_cfg.get("chunk_strategy", "size") if hybrid_cfg else "size",
+        enable_graph=kb_config.enable_graph,
+        graph_persist_path=kb_config.graph_persist_path,
     )
 
     # 预热嵌入模型（避免首次请求时延迟）
@@ -1012,6 +1015,22 @@ async def chat(request: Request, chat_req: ChatRequest) -> dict:
             title = chat_req.message[:30].strip()
             store.update_session_title(session_id, title)
 
+    # 构建结构化引用（P4-3）
+    # 从 LLM 回答中解析出引用的 [ref-N] 编号
+    cited_ref_ids = _rag_engine.extract_citations_from_text(answer)
+    citations: list[dict] = []
+    for ref_id in cited_ref_ids:
+        # ref_id 格式: "ref-N" → N 为 1-based 索引
+        try:
+            idx = int(ref_id.split("-")[1]) - 1
+            if 0 <= idx < len(search_results):
+                r = search_results[idx]
+                citation = r.citation
+                if citation:
+                    citations.append(citation.to_dict())
+        except (ValueError, IndexError):
+            pass
+
     return {
         "session_id": session_id,
         "answer": answer,
@@ -1019,11 +1038,14 @@ async def chat(request: Request, chat_req: ChatRequest) -> dict:
         "images": image_results,
         "videos": video_results,
         "i2v": i2v_results,
+        "citations": citations,  # P4-3: 结构化引用来源（前端可渲染可点击链接）
         "sources": [
             {
                 "content": r.content[:200] + "..." if len(r.content) > 200 else r.content,
                 "score": r.score,
                 "filename": r.metadata.get("filename", "unknown"),
+                "doc_id": r.metadata.get("doc_id", ""),
+                "chunk_index": r.metadata.get("chunk_index", 0),
             }
             for r in search_results
         ],
@@ -1256,8 +1278,12 @@ async def chat_stream(request: Request, chat_req: ChatRequest):
         if _use_rag:
             search_results = await _rag_engine.search(_message, group_ids=_active_group_ids)
 
-            # 先发送检索结果
-            yield f"data: {json.dumps({'type': 'sources', 'data': [{'filename': r.metadata.get('filename', 'unknown'), 'score': r.score} for r in search_results]})}\n\n"
+            # 先发送检索结果（包含完整元数据，P4-3 引用支持）
+            yield f"data: {json.dumps({'type': 'sources', 'data': [
+                {'filename': r.metadata.get('filename', 'unknown'), 'score': r.score,
+                 'doc_id': r.metadata.get('doc_id', ''), 'chunk_index': r.metadata.get('chunk_index', 0)}
+                for r in search_results
+            ]})}\n\n"
 
         # 构建提示
         from imaging import get_image_client, get_video_client
@@ -1388,7 +1414,21 @@ async def chat_stream(request: Request, chat_req: ChatRequest):
                     title = _message[:30].strip()
                     store.update_session_title(_session_id, title)
 
-            yield f"data: {json.dumps({'type': 'done', 'session_id': _session_id, 'worker_id': resolved_worker_id})}\n\n"
+            # P4-3: 从回答中解析引用的 [ref-N] 并构建结构化 citations
+            cited_ref_ids = _rag_engine.extract_citations_from_text(answer)
+            citations: list[dict] = []
+            for ref_id in cited_ref_ids:
+                try:
+                    idx = int(ref_id.split("-")[1]) - 1
+                    if 0 <= idx < len(search_results):
+                        r = search_results[idx]
+                        citation = r.citation
+                        if citation:
+                            citations.append(citation.to_dict())
+                except (ValueError, IndexError):
+                    pass
+
+            yield f"data: {json.dumps({'type': 'done', 'session_id': _session_id, 'worker_id': resolved_worker_id, 'citations': citations})}\n\n"
 
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"

@@ -34,6 +34,7 @@ data/memox.db-journal
 data/groups.json
 data/skills/
 data/bm25_index.pkl
+data/knowledge_graph.gml
 
 # ---- Secrets & TLS ----
 ssl/
