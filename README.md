@@ -1,6 +1,6 @@
 # MemoX
 
-> 基于 Claude Code 架构 + nanobot 框架 + NotebookLM 理念的多 Agent 智能助手
+> 一个多智能体协作知识管理平台，支持会话管理、文档解析、RAG 检索、定时任务调度和多 Worker 并行协作。
 
 ## 核心特性
 
