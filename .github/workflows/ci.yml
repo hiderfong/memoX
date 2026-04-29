@@ -25,6 +25,9 @@ jobs:
       - name: Check format
         run: uv run ruff format --check src/ tests/
 
+      - name: Check alembic migration status
+        run: uv run alembic current && uv run alembic history --verbose
+
   typecheck:
     name: Type Check
     runs-on: ubuntu-latest

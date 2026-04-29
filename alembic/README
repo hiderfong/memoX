@@ -1,0 +1,63 @@
+# Alembic Database Migrations
+
+## 工作流程
+
+```bash
+# 创建新迁移（自动检测 model 变化）
+uv run alembic revision --autogenerate -m "add new column"
+
+# 手动创建空迁移
+uv run alembic revision -m "manual migration"
+
+# 查看迁移历史
+uv run alembic history --verbose
+
+# 升级到最新
+uv run alembic upgrade head
+
+# 升级 1 个版本
+uv run alembic upgrade +1
+
+# 回滚 1 个版本
+uv run alembic downgrade -1
+
+# 检查当前 HEAD
+uv run alembic current
+```
+
+## 重要说明
+
+MemoX 目前使用 raw sqlite3（`persistence.py`），而非 SQLAlchemy ORM。
+Alembic 在这里的作用是**版本化未来的 schema 变更**，而不是管理现有表。
+
+现有表由 `persistence.py` 自己初始化（`_init_tables()` + 内联 ALTER TABLE），
+数据库在首次启动时自动创建，无需运行 alembic upgrade 来初始化。
+
+但从现在开始，**所有 schema 变更必须通过 alembic migration**：
+
+```python
+# 例如：在 scheduled_tasks 添加一个 enabled_until 字段
+# 1. 创建迁移
+uv run alembic revision -m "add enabled_until to scheduled_tasks"
+
+# 2. 编辑 alembic/versions/xxx_add_enabled_until.py，填入 upgrade/downgrade
+# 3. 运行
+uv run alembic upgrade head
+```
+
+## 初始状态
+
+- 当前 HEAD = 0001_initial_schema（对应 memoX v0.1.0 的所有现有表）
+- 数据库中已有表结构由 alembic 迁移历史记录管理（0001 已应用）
+
+## 数据库 URL
+
+使用 `data/memox.db`，在 `alembic.ini` 中配置：
+```ini
+sqlalchemy.url = sqlite:///data/memox.db
+```
+
+或通过环境变量覆盖：
+```bash
+export DATABASE_URL="sqlite:///data/memox.db"
+```
