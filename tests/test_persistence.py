@@ -109,3 +109,90 @@ def test_update_session_title(tmp_path):
     sessions = store.list_sessions()
     assert sessions[0]["title"] == "新标题"
     store.close()
+
+
+# ==================== 定时任务 ====================
+
+
+def test_scheduled_task_crud(tmp_path):
+    """创建、读取、更新、删除定时任务"""
+    store = PersistenceStore(tmp_path / "test.db")
+
+    # create
+    store.create_scheduled_task(
+        task_id="task_1",
+        description="每日报告",
+        cron="0 9 * * *",
+        active_group_ids=["g1", "g2"],
+        source_session_id="sess_abc",
+        next_run_at="2024-07-16T09:00",
+        enabled=True,
+    )
+
+    # get
+    t = store.get_scheduled_task("task_1")
+    assert t is not None
+    assert t["description"] == "每日报告"
+    assert t["cron"] == "0 9 * * *"
+    assert t["enabled"] == 1
+    assert "g1" in t["active_group_ids"]
+
+    # list
+    all_tasks = store.list_scheduled_tasks()
+    assert len(all_tasks) == 1
+
+    # update
+    store.update_scheduled_task(
+        task_id="task_1",
+        description="每周报告",
+        cron="0 10 * * 1",
+    )
+    t2 = store.get_scheduled_task("task_1")
+    assert t2["description"] == "每周报告"
+    assert t2["cron"] == "0 10 * * 1"
+
+    # delete
+    store.delete_scheduled_task("task_1")
+    assert store.get_scheduled_task("task_1") is None
+
+    store.close()
+
+
+def test_scheduled_task_list_enabled_only(tmp_path):
+    """list_scheduled_tasks(enabled_only=True) 只返回启用的任务"""
+    store = PersistenceStore(tmp_path / "test.db")
+
+    store.create_scheduled_task("t1", "启用的", "*/5 * * * *", enabled=True)
+    store.create_scheduled_task("t2", "禁用的", "* * * * *", enabled=False)
+
+    assert len(store.list_scheduled_tasks()) == 2
+    assert len(store.list_scheduled_tasks(enabled_only=True)) == 1
+    assert store.list_scheduled_tasks(enabled_only=True)[0]["description"] == "启用的"
+
+    store.close()
+
+
+def test_scheduled_task_mark_run_and_next(tmp_path):
+    """mark_scheduled_task_run 和 set_scheduled_task_next_run"""
+    store = PersistenceStore(tmp_path / "test.db")
+
+    store.create_scheduled_task("t_r", "run test", "* * * * *", enabled=True)
+    store.mark_scheduled_task_run("t_r", "2024-07-15T10:05")
+    store.set_scheduled_task_next_run("t_r", "2024-07-15T10:06")
+
+    t = store.get_scheduled_task("t_r")
+    assert t["last_run_at"] == "2024-07-15T10:05"
+    assert t["next_run_at"] == "2024-07-15T10:06"
+
+    store.close()
+
+
+def test_scheduled_task_not_found(tmp_path):
+    """get/update/delete 不存在的任务"""
+    store = PersistenceStore(tmp_path / "test.db")
+
+    assert store.get_scheduled_task("nonexistent") is None
+    assert store.delete_scheduled_task("nonexistent") is False
+    assert store.update_scheduled_task("nonexistent", description="x") is False
+
+    store.close()

@@ -47,3 +47,20 @@ def test_get_agent_sandbox_idempotent(tmp_path):
     sandbox1 = mgr.get_agent_sandbox("task_abc", "worker")
     sandbox2 = mgr.get_agent_sandbox("task_abc", "worker")
     assert sandbox1 == sandbox2
+
+
+def test_create_task_workspace_idempotent(tmp_path):
+    """重复创建同一任务工作区不应报错"""
+    mgr = SandboxManager(base_workspace=tmp_path)
+    ws1 = mgr.create_task_workspace("task_x")
+    ws2 = mgr.create_task_workspace("task_x")  # idempotent
+    assert ws1 == ws2
+    assert (tmp_path / "task_x" / "coordinator").exists()
+    assert (tmp_path / "task_x" / "shared").exists()
+
+
+def test_cleanup_nonexistent(tmp_path):
+    """清理不存在的工作区应为静默操作"""
+    mgr = SandboxManager(base_workspace=tmp_path)
+    mgr.cleanup("nonexistent_task")  # 不应抛出
+

@@ -176,3 +176,98 @@ def test_cron_match_validates_basic():
     assert cron_match("0 10 * * *", dt) is True
     assert cron_match("0 11 * * *", dt) is False
     assert cron_match("*/5 * * * *", dt) is True  # 10:00 is divisible by 5
+
+
+@pytest.mark.asyncio
+async def test_start_idempotent():
+    """连续调用 start() 不应创建多个任务"""
+    store = DummyStore()
+    orch = DummyOrchestrator()
+    runner = ScheduledTaskRunner(store, orch)
+
+    runner.start()
+    await asyncio.sleep(0.05)
+    task1 = runner._task
+
+    runner.start()  # 重复调用
+    await asyncio.sleep(0.05)
+    task2 = runner._task
+
+    assert task1 is task2  # 同一个 task，未创建新的
+
+    runner.stop()
+    await asyncio.sleep(0.05)
+
+
+@pytest.mark.asyncio
+async def test_tick_skips_empty_cron():
+    """cron 为空字符串的任务应被跳过"""
+    store = DummyStore([{
+        "id": "task_empty_cron",
+        "description": "no cron",
+        "cron": "",
+        "enabled": 1,
+        "last_run_at": "",
+        "active_group_ids": "[]",
+    }])
+    orch = DummyOrchestrator()
+    runner = ScheduledTaskRunner(store, orch)
+
+    await runner._tick()
+    await asyncio.sleep(0.1)
+
+    assert len(orch.calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_fire_with_invalid_active_group_ids():
+    """active_group_ids 为损坏 JSON 时不应崩溃"""
+    store = DummyStore()
+    orch = DummyOrchestrator()
+    runner = ScheduledTaskRunner(store, orch)
+
+    t = {
+        "id": "task_bad_json",
+        "description": "bad group ids",
+        "cron": "* * * * *",
+        "enabled": 1,
+        "last_run_at": "",
+        "active_group_ids": "not valid json {",
+    }
+    # 不应抛出异常
+    await runner._fire(t, datetime.now())
+    await asyncio.sleep(0.1)
+
+    assert len(orch.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_tick_exception_caught_by_loop():
+    """_tick 抛异常时 _loop 应捕获并继续运行"""
+    store = DummyStore()
+    orch = DummyOrchestrator()
+    runner = ScheduledTaskRunner(store, orch)
+
+    # 注入异常：list_scheduled_tasks 抛出
+    store.list_scheduled_tasks = MagicMock(side_effect=RuntimeError("store error"))
+
+    runner.start()
+    await asyncio.sleep(0.2)  # 等待至少一次 tick
+
+    runner.stop()
+    await asyncio.sleep(0.1)
+
+    # runner 存活且未崩溃（_loop 捕获了异常）
+    assert runner._task is not None
+
+
+def test_init_runner_and_get_runner():
+    """init_runner/get_runner 全局单例"""
+    from scheduler.runner import get_runner, init_runner
+
+    store = DummyStore()
+    orch = DummyOrchestrator()
+    r = init_runner(store, orch)
+
+    assert get_runner() is r
+    assert get_runner() is not None
