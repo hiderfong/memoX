@@ -327,6 +327,7 @@ async def startup():
     dashscope_base_url = (dashscope_config.base_url if dashscope_config else "").replace("/api/v1", "/compatible-mode/v1")
 
     # 初始化 RAG 引擎
+    hybrid_cfg = kb_config.hybrid_search
     _rag_engine = init_rag_engine(
         persist_directory=kb_config.persist_directory,
         embedding_function=embedding_function,
@@ -335,6 +336,8 @@ async def startup():
         top_k=kb_config.top_k,
         dashscope_api_key=dashscope_api_key,
         dashscope_base_url=dashscope_base_url,
+        hybrid_search_enabled=hybrid_cfg.get("enabled", True),
+        bm25_persist_path=hybrid_cfg.get("bm25_persist_path", "./data/bm25_index.pkl"),
     )
 
     # 预热嵌入模型（避免首次请求时延迟）

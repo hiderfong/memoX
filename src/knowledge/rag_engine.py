@@ -5,7 +5,9 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
+from .bm25_indexer import BM25Indexer, get_bm25_indexer
 from .document_parser import DocumentParser
+from .hybrid_retriever import HybridRetriever
 from .vector_store import ChromaVectorStore, EmbeddingFunction, get_vector_store
 
 
@@ -69,6 +71,8 @@ class RAGEngine:
         top_k: int = 5,
         dashscope_api_key: str = "",
         dashscope_base_url: str = "",
+        hybrid_search_enabled: bool = True,
+        bm25_persist_path: str = "./data/bm25_index.pkl",
     ):
         self.vector_store = vector_store or get_vector_store()
         self.document_parser = document_parser or DocumentParser(
@@ -78,6 +82,17 @@ class RAGEngine:
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.top_k = top_k
+        self.hybrid_search_enabled = hybrid_search_enabled
+
+        # 混合检索初始化
+        if self.hybrid_search_enabled:
+            bm25_indexer = get_bm25_indexer(bm25_persist_path)
+            self._hybrid_retriever: HybridRetriever | None = HybridRetriever(
+                vector_store=self.vector_store,
+                bm25_indexer=bm25_indexer,
+            )
+        else:
+            self._hybrid_retriever = None
 
         # 内存存储会话（生产环境应使用数据库）
         self._sessions: dict[str, ChatSession] = {}
@@ -116,19 +131,9 @@ class RAGEngine:
             chunk.metadata["chunk_count"] = len(chunks)
             chunk.metadata["group_id"] = group_id
 
-        # 存储到向量库（分批处理，避免一次性处理过多）
-        BATCH_SIZE = 100  # 每批最多处理 100 个 chunks
-        total_chunks = len(chunks)
-
-        if total_chunks > BATCH_SIZE:
-            print(f"[RAG] Processing {total_chunks} chunks in batches of {BATCH_SIZE}...")
-            for i in range(0, total_chunks, BATCH_SIZE):
-                batch = chunks[i:i + BATCH_SIZE]
-                print(f"[RAG] Processing batch {i//BATCH_SIZE + 1}/{(total_chunks-1)//BATCH_SIZE + 1} ({len(batch)} chunks)")
-                await self.vector_store.add_chunks(batch, collection_name)
-        else:
-            print(f"[RAG] Adding {total_chunks} chunks to vector store...")
-            await self.vector_store.add_chunks(chunks, collection_name)
+        # 同步写入向量库 + BM25 索引
+        print(f"[RAG] Adding {len(chunks)} chunks to vector store and BM25 index...")
+        await self._index_document_chunks(chunks, collection_name)
 
         print("[RAG] Successfully added all chunks")
 
@@ -147,9 +152,42 @@ class RAGEngine:
         print(f"[RAG] Document processing complete: {doc_info}")
         return doc_info
 
+    async def _index_document_chunks(
+        self,
+        chunks: list,
+        collection_name: str,
+    ) -> None:
+        """将解析好的 chunks 同步写入向量库和 BM25 索引"""
+        # 向量库（ChromaDB）
+        BATCH_SIZE = 100
+        total_chunks = len(chunks)
+        if total_chunks > BATCH_SIZE:
+            for i in range(0, total_chunks, BATCH_SIZE):
+                batch = chunks[i:i + BATCH_SIZE]
+                await self.vector_store.add_chunks(batch, collection_name)
+        else:
+            await self.vector_store.add_chunks(chunks, collection_name)
+
+        # BM25 索引（混合检索时同步）
+        if self._hybrid_retriever is not None:
+            from .bm25_indexer import ChunkEntry
+
+            entries = [
+                ChunkEntry(
+                    chunk_id=c.id,
+                    doc_id=c.metadata.get("doc_id", ""),
+                    content=c.content,
+                    metadata=c.metadata,
+                )
+                for c in chunks
+            ]
+            self._hybrid_retriever.bm25_indexer.add_chunks(entries)
+
     async def delete_document(self, doc_id: str, collection_name: str = "documents") -> bool:
         """从知识库删除文档"""
         count = await self.vector_store.delete_by_document_id(doc_id, collection_name)
+        if self._hybrid_retriever is not None:
+            self._hybrid_retriever.bm25_indexer.delete_by_doc_id(doc_id)
         if doc_id in self._documents:
             del self._documents[doc_id]
         return count > 0
@@ -201,18 +239,17 @@ class RAGEngine:
     ) -> list[SearchResult]:
         """检索相关文档片段
 
-        始终把"当前真实存在的文档 id"作为 Chroma 的 where 过滤条件之一，
-        避免已删除文档残留的 chunk 被召回并作为参考来源下发给前端。
+        当 hybrid_search_enabled=True 时使用 BM25+向量混合检索（RRF 融合），
+        否则退化为纯向量检索。
         """
         k = top_k or self.top_k
 
-        # 当前仍存在于向量库中的文档 id —— 作为硬约束兜底
+        # 构建 ChromaDB 元数据过滤条件（用于向量检索）
         try:
             valid_doc_ids = {d["doc_id"] for d in self.vector_store.list_documents(collection_name)}
         except Exception:
-            valid_doc_ids = None  # 读取失败则退化为不加此约束
+            valid_doc_ids = None
 
-        # 根据调用方传入的 doc_ids / group_ids 求交集，组合成 $and 过滤条件
         conditions: list[dict] = []
         if doc_ids:
             effective = list(set(doc_ids) & valid_doc_ids) if valid_doc_ids is not None else list(doc_ids)
@@ -227,6 +264,7 @@ class RAGEngine:
         if group_ids is not None:
             conditions.append({"group_id": {"$in": group_ids}})
 
+        filter_metadata: dict | None
         if not conditions:
             filter_metadata = None
         elif len(conditions) == 1:
@@ -234,14 +272,31 @@ class RAGEngine:
         else:
             filter_metadata = {"$and": conditions}
 
-        results = await self.vector_store.search(
-            query, k, collection_name, filter_metadata
-        )
+        if self._hybrid_retriever is not None:
+            # 混合检索路径：BM25 + 向量 + RRF 融合
+            hybrid_results = await self._hybrid_retriever.search(
+                query=query,
+                collection_name=collection_name,
+                top_k=k,
+                filter_metadata=filter_metadata,
+            )
+            # 过滤低分结果
+            MIN_SCORE = 0.01
+            return [
+                SearchResult(
+                    id=r.chunk_id,
+                    content=r.content,
+                    score=r.score,
+                    metadata=r.metadata,
+                )
+                for r in hybrid_results
+                if r.score >= MIN_SCORE
+            ]
 
-        # 过滤掉低相关度结果：score = 1 - cosine_distance，低于阈值视为无关
+        # 纯向量检索路径（hybrid_search_enabled=False）
+        results = await self.vector_store.search(query, k, collection_name, filter_metadata)
         MIN_SCORE = 0.2
         results = [r for r in results if (r.get("score") or 0) >= MIN_SCORE]
-
         return [
             SearchResult(
                 id=r["id"],
@@ -362,6 +417,8 @@ def init_rag_engine(
     top_k: int = 5,
     dashscope_api_key: str = "",
     dashscope_base_url: str = "",
+    hybrid_search_enabled: bool = True,
+    bm25_persist_path: str = "./data/bm25_index.pkl",
 ) -> RAGEngine:
     """初始化 RAG 引擎"""
     global _rag_engine
@@ -373,5 +430,7 @@ def init_rag_engine(
         top_k=top_k,
         dashscope_api_key=dashscope_api_key,
         dashscope_base_url=dashscope_base_url,
+        hybrid_search_enabled=hybrid_search_enabled,
+        bm25_persist_path=bm25_persist_path,
     )
     return _rag_engine

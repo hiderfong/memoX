@@ -33,6 +33,7 @@ data/memox.db
 data/memox.db-journal
 data/groups.json
 data/skills/
+data/bm25_index.pkl
 
 # ---- Secrets & TLS ----
 ssl/

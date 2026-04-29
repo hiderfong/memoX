@@ -45,6 +45,8 @@ dependencies = [
     # 向量存储与嵌入
     "chromadb>=0.4.0",
     "sentence-transformers>=2.2.0",
+    # 全文检索（混合搜索）
+    "rank-bm25>=0.2",
     # 可选: APScheduler (定时任务)
     "apscheduler>=3.10.0",
     # 限流

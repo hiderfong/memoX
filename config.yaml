@@ -125,6 +125,11 @@ knowledge_base:
   chunk_size: 500
   chunk_overlap: 50
   top_k: 5
+  # 混合搜索（BM25 + 向量 RRF 融合）
+  hybrid_search:
+    enabled: true
+    bm25_persist_path: "./data/bm25_index.pkl"
+    rrf_k: 60  # RRF 融合参数，越大越均衡
 
 # MCP 配置
 mcp:

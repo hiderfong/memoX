@@ -81,6 +81,12 @@ class KnowledgeBaseConfig:
     chunk_size: int = 500
     chunk_overlap: int = 50
     top_k: int = 5
+    # 混合搜索配置（BM25 + 向量 RRF 融合）
+    hybrid_search: dict = field(default_factory=lambda: {
+        "enabled": True,
+        "bm25_persist_path": "./data/bm25_index.pkl",
+        "rrf_k": 60,
+    })
 
 
 @dataclass
