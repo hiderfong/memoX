@@ -47,6 +47,8 @@ dependencies = [
     "sentence-transformers>=2.2.0",
     # 可选: APScheduler (定时任务)
     "apscheduler>=3.10.0",
+    # 限流
+    "slowapi>=0.1.9",
 ]
 
 [project.optional-dependencies]

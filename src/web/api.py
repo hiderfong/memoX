@@ -32,6 +32,9 @@ from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
+from slowapi import Limiter  # noqa: E402
+from slowapi.errors import RateLimitExceeded as RLError  # noqa: E402
+from slowapi.util import get_remote_address  # noqa: E402
 
 from agents.base_agent import ToolRegistry, create_provider  # noqa: E402
 from agents.worker_pool import WorkerAgent, WorkerConfig, get_worker_pool, init_worker_pool  # noqa: E402
@@ -96,6 +99,19 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "Accept"],
 )
+
+# ── Rate Limiter ────────────────────────────────────────────────
+limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
+app.state.limiter = limiter
+
+
+@app.exception_handler(RLError)
+async def rate_limit_handler(request, exc):
+    return JSONResponse(
+        status_code=429,
+        content={"detail": f"Rate limit exceeded: {exc.detail}"},
+    )
+
 
 UPLOADS_DIR = Path("data/uploads")
 
@@ -452,10 +468,11 @@ class LoginRequest(BaseModel):
 
 
 @app.post("/api/auth/login")
-async def login(request: LoginRequest) -> dict:
+@limiter.limit("10/minute")
+async def login(request: Request, login_req: LoginRequest) -> dict:
     """用户登录，返回 Bearer Token"""
     auth = get_auth_manager()
-    token = auth.login(request.username, request.password)
+    token = auth.login(login_req.username, login_req.password)
     if not token:
         raise HTTPException(status_code=401, detail="用户名或密码错误")
     user_info = auth.get_user_info(token)
@@ -846,9 +863,10 @@ def _resolve_chat_llm(worker_id: str | None) -> tuple:
 
 
 @app.post("/api/chat")
-async def chat(request: ChatRequest) -> dict:
+@limiter.limit("20/minute")
+async def chat(request: Request, chat_req: ChatRequest) -> dict:
     """聊天问答（非流式）"""
-    session_id = request.session_id or str(uuid.uuid4())[:8]
+    session_id = chat_req.session_id or str(uuid.uuid4())[:8]
 
     # 获取或创建会话
     session = _rag_engine.get_session(session_id)
@@ -856,12 +874,12 @@ async def chat(request: ChatRequest) -> dict:
         session = _rag_engine.create_session()
 
     # 添加用户消息
-    _rag_engine.add_message(session_id, "user", request.message)
+    _rag_engine.add_message(session_id, "user", chat_req.message)
 
     # RAG 检索
     search_results: list[SearchResult] = []
-    if request.use_rag:
-        search_results = await _rag_engine.search(request.message, group_ids=request.active_group_ids)
+    if chat_req.use_rag:
+        search_results = await _rag_engine.search(chat_req.message, group_ids=chat_req.active_group_ids)
 
     # 构建提示
     from imaging import get_image_client, get_video_client
@@ -883,20 +901,20 @@ async def chat(request: ChatRequest) -> dict:
             "不要在标记外贴链接，不要解释这是占位符。若用户未要求视频，则不要输出此标记。"
         )
     if search_results:
-        messages = _rag_engine.build_rag_prompt(request.message, search_results)
+        messages = _rag_engine.build_rag_prompt(chat_req.message, search_results)
         if media_instruction:
             messages[0]["content"] = (messages[0]["content"] or "") + media_instruction
     else:
         messages = [
             {"role": "system", "content": "你是一个智能助手。" + media_instruction},
-            {"role": "user", "content": request.message},
+            {"role": "user", "content": chat_req.message},
         ]
 
     # 注入历史对话（从持久化层读取，刷新/重启后仍可延续上下文）
     messages = _inject_history(messages, session_id)
 
     # 调用 LLM（根据 worker_id 选择模型配置）
-    provider, model, temperature, max_tokens, resolved_worker_id = _resolve_chat_llm(request.worker_id)
+    provider, model, temperature, max_tokens, resolved_worker_id = _resolve_chat_llm(chat_req.worker_id)
 
     try:
         response = await provider.chat(
@@ -983,12 +1001,12 @@ async def chat(request: ChatRequest) -> dict:
     # 持久化消息
     store = get_store()
     if store:
-        store.save_message(session_id, "user", request.message)
+        store.save_message(session_id, "user", chat_req.message)
         store.save_message(session_id, "assistant", answer)
         # 自动生成会话标题（取用户第一条消息前 30 字）
         existing = store.get_session_messages(session_id)
         if len(existing) <= 2:  # 第一轮对话
-            title = request.message[:30].strip()
+            title = chat_req.message[:30].strip()
             store.update_session_title(session_id, title)
 
     return {
@@ -1211,23 +1229,29 @@ async def summarize_session_as_task(session_id: str, request: SummarizeTaskReque
 
 
 @app.post("/api/chat/stream")
-async def chat_stream(request: ChatRequest):
+@limiter.limit("20/minute")
+async def chat_stream(request: Request, chat_req: ChatRequest):
     """流式聊天问答"""
-    session_id = request.session_id or str(uuid.uuid4())[:8]
+    # 提取值避免嵌套函数闭包歧义
+    _session_id = chat_req.session_id or str(uuid.uuid4())[:8]
+    _message = chat_req.message
+    _use_rag = chat_req.use_rag
+    _active_group_ids = chat_req.active_group_ids
+    _worker_id = chat_req.worker_id
 
     async def generate():
         # 获取或创建会话
-        session = _rag_engine.get_session(session_id)
+        session = _rag_engine.get_session(_session_id)
         if not session:
             session = _rag_engine.create_session()
 
         # 添加用户消息
-        _rag_engine.add_message(session_id, "user", request.message)
+        _rag_engine.add_message(_session_id, "user", _message)
 
         # RAG 检索
         search_results: list[SearchResult] = []
-        if request.use_rag:
-            search_results = await _rag_engine.search(request.message, group_ids=request.active_group_ids)
+        if _use_rag:
+            search_results = await _rag_engine.search(_message, group_ids=_active_group_ids)
 
             # 先发送检索结果
             yield f"data: {json.dumps({'type': 'sources', 'data': [{'filename': r.metadata.get('filename', 'unknown'), 'score': r.score} for r in search_results]})}\n\n"
@@ -1252,21 +1276,21 @@ async def chat_stream(request: ChatRequest):
                 "不要在标记外贴链接，不要解释这是占位符。若用户未要求视频，则不要输出此标记。"
             )
         if search_results:
-            messages = _rag_engine.build_rag_prompt(request.message, search_results)
+            messages = _rag_engine.build_rag_prompt(_message, search_results)
             if media_instruction:
                 messages[0]["content"] = (messages[0]["content"] or "") + media_instruction
         else:
             messages = [
                 {"role": "system", "content": "你是一个智能助手。" + media_instruction},
-                {"role": "user", "content": request.message},
+                {"role": "user", "content": _message},
             ]
 
         # 注入历史对话（从持久化层读取，刷新/重启后仍可延续上下文）
-        messages = _inject_history(messages, session_id)
+        messages = _inject_history(messages, _session_id)
 
         # 流式调用 LLM（根据 worker_id 选择模型配置）
         try:
-            provider, model, temperature, max_tokens, resolved_worker_id = _resolve_chat_llm(request.worker_id)
+            provider, model, temperature, max_tokens, resolved_worker_id = _resolve_chat_llm(_worker_id)
         except HTTPException as exc:
             yield f"data: {json.dumps({'type': 'error', 'message': exc.detail})}\n\n"
             return
@@ -1348,20 +1372,20 @@ async def chat_stream(request: ChatRequest):
                 md_tail += [f"[video:{pt}]({u})" for u, pt, _ in i2v_results]
             if md_tail:
                 answer = display_text + "\n\n" + "\n".join(md_tail)
-            _rag_engine.add_message(session_id, "assistant", answer)
+            _rag_engine.add_message(_session_id, "assistant", answer)
 
             # 持久化消息
             store = get_store()
             if store:
-                store.save_message(session_id, "user", request.message)
-                store.save_message(session_id, "assistant", answer)
+                store.save_message(_session_id, "user", _message)
+                store.save_message(_session_id, "assistant", answer)
                 # 自动生成会话标题
-                existing = store.get_session_messages(session_id)
+                existing = store.get_session_messages(_session_id)
                 if len(existing) <= 2:
-                    title = request.message[:30].strip()
-                    store.update_session_title(session_id, title)
+                    title = _message[:30].strip()
+                    store.update_session_title(_session_id, title)
 
-            yield f"data: {json.dumps({'type': 'done', 'session_id': session_id, 'worker_id': resolved_worker_id})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'session_id': _session_id, 'worker_id': resolved_worker_id})}\n\n"
 
         except Exception as e:
             yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
