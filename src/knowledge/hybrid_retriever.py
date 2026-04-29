@@ -239,3 +239,33 @@ class HybridRetriever:
 
         # 2. 从 BM25 删除
         self.bm25_indexer.delete_by_doc_id(doc_id)
+
+    async def rebuild_from_vector_store(self, collection_name: str = "documents") -> int:
+        """从 ChromaDB 全量重建 BM25 索引（用于首次启用混合搜索时初始化）
+
+        返回重建的 chunk 总数。
+        """
+        from .bm25_indexer import ChunkEntry
+
+        # 从 ChromaDB 读取所有 chunk
+        collection = self.vector_store.get_or_create_collection(collection_name)
+        results = collection.get(include=["documents", "metadatas"])
+
+        if not results["ids"]:
+            return 0
+
+        entries: list[ChunkEntry] = []
+        for chunk_id, content, meta in zip(
+            results["ids"], results["documents"], results["metadatas"], strict=False
+        ):
+            if not content or not chunk_id:
+                continue
+            entries.append(ChunkEntry(
+                chunk_id=chunk_id,
+                doc_id=(meta or {}).get("doc_id", ""),
+                content=content,
+                metadata=meta or {},
+            ))
+
+        self.bm25_indexer.rebuild_from_entries(entries)
+        return len(entries)

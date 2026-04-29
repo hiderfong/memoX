@@ -161,6 +161,18 @@ class BM25Indexer:
         """当前索引中的 chunk 总数"""
         return len(self._corpus)
 
+    def rebuild_from_entries(self, entries: list[ChunkEntry]) -> None:
+        """全量重建索引（用于从 ChromaDB 已有数据初始化 BM25）"""
+        with self._lock:
+            self._corpus.clear()
+            self._tokenized.clear()
+            for e in entries:
+                self._corpus[e.chunk_id] = e
+                self._tokenized[e.chunk_id] = _tokenize(e.content)
+            self._rebuild_bm25()
+            self.version += 1
+            self._save()
+
 
 # ── 全局单例实例 ────────────────────────────────────────────────────────────
 
