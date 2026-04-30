@@ -53,6 +53,8 @@ dependencies = [
     "apscheduler>=3.10.0",
     # 限流
     "slowapi>=0.1.9",
+    # Web UI (Streamlit 管理界面)
+    "streamlit>=1.30",
 ]
 
 [project.optional-dependencies]
