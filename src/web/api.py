@@ -40,6 +40,7 @@ from agents.base_agent import ToolRegistry, create_provider  # noqa: E402
 from agents.worker_pool import WorkerAgent, WorkerConfig, get_worker_pool, init_worker_pool  # noqa: E402
 from auth import AuthUser, _get_auth_from_request, get_auth_manager, init_auth, require_role  # noqa: E402
 from config import Config, load_config  # noqa: E402
+from memory import MemoryManager, MemoryRecall, PreferenceLearner  # noqa: E402
 from coordinator.iterative_orchestrator import IterativeOrchestrator  # noqa: E402
 from coordinator.task_planner import TaskPlanner, init_task_planner  # noqa: E402
 from knowledge import (  # noqa: E402
@@ -119,6 +120,9 @@ _config: Config | None = None
 _rag_engine: RAGEngine | None = None
 _task_planner: TaskPlanner | None = None
 _orchestrator: IterativeOrchestrator | None = None
+_memory_manager: MemoryManager | None = None
+_memory_recall: MemoryRecall | None = None
+_preference_learner: PreferenceLearner | None = None
 _group_store: GroupStore | None = None
 _task_results: dict[str, dict] = {}  # task_id -> full result dict (for later retrieval)
 _ws_connections: set[WebSocket] = set()
@@ -328,7 +332,7 @@ async def startup():
 
     # 初始化 RAG 引擎
     hybrid_cfg = kb_config.hybrid_search
-    init_rag_engine(
+    _rag_engine = init_rag_engine(
         persist_directory=kb_config.persist_directory,
         embedding_function=embedding_function,
         chunk_size=kb_config.chunk_size,
@@ -461,6 +465,30 @@ async def startup():
             default_resolution=i2v_cfg.default_resolution,
             default_duration=i2v_cfg.default_duration,
         )
+
+    # 初始化记忆管理器
+    if _config and _config.memory.enabled:
+        store = get_store()
+        if store:
+            global _memory_manager
+            _memory_manager = MemoryManager(
+                store=store,
+                max_turns=_config.memory.max_turns_before_compress,
+                summary_max_chars=_config.memory.summary_max_chars,
+                recent_messages_to_keep=_config.memory.recent_messages_to_keep,
+                llm_provider=None,  # 摘要使用 coordinator 的 LLM，在 compress 时单独创建
+            )
+            logger.info(f"   - 记忆管理器: 启用, max_turns={_config.memory.max_turns_before_compress}")
+
+    # 初始化跨会话记忆召回
+    store = get_store()
+    if store:
+        global _memory_recall
+        _memory_recall = MemoryRecall(store)
+        global _preference_learner
+        _preference_learner = PreferenceLearner(store)
+        logger.info("   - 跨会话记忆召回: 启用")
+        logger.info("   - 用户偏好学习: 启用")
 
     logger.info("✅ MemoX 启动完成")
     logger.info(f"   - RAG 引擎: {len(_rag_engine.list_documents())} 个文档")
@@ -823,13 +851,55 @@ def _load_chat_history(session_id: str) -> list[dict]:
 
 
 def _inject_history(messages: list[dict], session_id: str) -> list[dict]:
-    """在最后一条 user 消息前插入历史对话。"""
+    """在最后一条 user 消息前插入历史对话（支持摘要压缩）。
+
+    如果 MemoryManager 已对该会话做过压缩，则注入摘要 + 未归档消息；
+    否则仅注入最近 _HISTORY_TURN_LIMIT 条原始消息。
+    同时注入用户已学习的偏好。
+    """
+    # 优先使用 MemoryManager 获取压缩后上下文
+    if _memory_manager:
+        summary, history = _memory_manager.get_context(session_id)
+        if history or summary:
+            # 将消息按 role 分组注入
+            if summary:
+                # 在系统消息（如有）后插入摘要提示
+                summary_msg = {
+                    "role": "system",
+                    "content": f"【会话记忆摘要】{summary}\n（以上为历史对话摘要，以下为最近对话）",
+                }
+                # 找到 system 消息之后、user 消息之前的位置
+                inject_idx = 1  # 默认插在 system 之后
+                for i, m in enumerate(messages[:-1]):
+                    if m.get("role") == "system":
+                        inject_idx = i + 1
+                messages = messages[:inject_idx] + [summary_msg] + messages[inject_idx:]
+            # 在最后一条 user 消息前注入历史
+            if not messages or messages[-1].get("role") != "user":
+                messages = messages + history
+            else:
+                messages = messages[:-1] + history + messages[-1:]
+            # 注入用户偏好（在最后）
+            if _preference_learner:
+                pref_text = _preference_learner.get_and_format(limit=8)
+                if pref_text:
+                    messages = messages + [{"role": "system", "content": pref_text}]
+            return messages
+
+    # 回退：原始行为
     history = _load_chat_history(session_id)
     if not history:
         return messages
     if not messages or messages[-1].get("role") != "user":
-        return messages + history
-    return messages[:-1] + history + messages[-1:]
+        messages = messages + history
+    else:
+        messages = messages[:-1] + history + messages[-1:]
+    # 偏好注入（fallback 路径也注入）
+    if _preference_learner:
+        pref_text = _preference_learner.get_and_format(limit=8)
+        if pref_text:
+            messages = messages + [{"role": "system", "content": pref_text}]
+    return messages
 
 
 def _resolve_chat_llm(worker_id: str | None) -> tuple:
@@ -1014,6 +1084,9 @@ async def chat(request: Request, chat_req: ChatRequest) -> dict:
         if len(existing) <= 2:  # 第一轮对话
             title = chat_req.message[:30].strip()
             store.update_session_title(session_id, title)
+        # 记忆压缩检查（超过 max_turns 后触发摘要）
+        if _memory_manager and _orchestrator:
+            _memory_manager.compress_if_needed(session_id, _orchestrator._provider)
 
     # 构建结构化引用（P4-3）
     # 从 LLM 回答中解析出引用的 [ref-N] 编号
@@ -1121,6 +1194,228 @@ async def get_session_messages(session_id: str) -> list[dict]:
         if messages:
             return messages
     raise HTTPException(status_code=404, detail="Session not found")
+
+
+# ==================== 记忆管理 API ====================
+
+
+class MemorySummaryRequest(BaseModel):
+    session_id: str
+    summary: str
+    force: bool = False  # 强制重新压缩
+
+
+class MemoryConfigRequest(BaseModel):
+    enabled: bool | None = None
+    max_turns_before_compress: int | None = None
+    summary_max_chars: int | None = None
+
+
+@app.post("/api/chat/sessions/{session_id}/compress")
+async def compress_session(session_id: str, force: bool = False) -> dict:
+    """手动触发会话记忆压缩（摘要）"""
+    if not _memory_manager:
+        raise HTTPException(status_code=503, detail="记忆管理器未启用")
+    provider = _orchestrator._provider if _orchestrator else None
+    if not provider:
+        raise HTTPException(status_code=503, detail="LLM provider 未就绪")
+    try:
+        new_summary, archived_count = _memory_manager.compress_if_needed(session_id, provider, force=force)
+        return {
+            "success": True,
+            "session_id": session_id,
+            "summary": new_summary,
+            "archived_messages": archived_count,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"压缩失败: {e}") from e
+
+
+@app.get("/api/chat/sessions/{session_id}/memory")
+async def get_session_memory(session_id: str) -> dict:
+    """获取会话记忆状态（摘要 + 未归档消息数）"""
+    if not _memory_manager:
+        raise HTTPException(status_code=503, detail="记忆管理器未启用")
+    summary, history = _memory_manager.get_context(session_id)
+    return {
+        "session_id": session_id,
+        "summary": summary,
+        "uncompressed_count": len(history),
+        "is_compressed": summary is not None,
+    }
+
+
+@app.post("/api/chat/sessions/{session_id}/memory")
+async def update_session_memory_summary(session_id: str, req: MemorySummaryRequest) -> dict:
+    """手动更新会话摘要（用户编辑记忆）"""
+    if not _memory_manager:
+        raise HTTPException(status_code=503, detail="记忆管理器未启用")
+    store = get_store()
+    if not store:
+        raise HTTPException(status_code=500, detail="存储未初始化")
+    store.save_session_summary(session_id, req.summary)
+    return {"success": True, "session_id": session_id}
+
+
+@app.get("/api/memory/config")
+async def get_memory_config() -> dict:
+    """获取记忆管理器全局配置"""
+    if not _config:
+        raise HTTPException(status_code=500, detail="配置未初始化")
+    mc = _config.memory
+    return {
+        "enabled": mc.enabled,
+        "max_turns_before_compress": mc.max_turns_before_compress,
+        "summary_max_chars": mc.summary_max_chars,
+        "recent_messages_to_keep": mc.recent_messages_to_keep,
+    }
+
+
+@app.patch("/api/memory/config")
+async def update_memory_config(req: MemoryConfigRequest) -> dict:
+    """更新记忆管理器运行时配置（仅影响当前进程，重启后恢复）"""
+    if not _memory_manager or not _config:
+        raise HTTPException(status_code=503, detail="记忆管理器未启用")
+    if req.enabled is not None:
+        _config.memory.enabled = req.enabled
+    if req.max_turns_before_compress is not None:
+        _config.memory.max_turns_before_compress = req.max_turns_before_compress
+        _memory_manager._max_turns = req.max_turns_before_compress
+    if req.summary_max_chars is not None:
+        _config.memory.summary_max_chars = req.summary_max_chars
+        _memory_manager._summary_max_chars = req.summary_max_chars
+    return {"success": True}
+
+
+@app.delete("/api/chat/sessions/{session_id}/memory")
+async def clear_session_memory(session_id: str) -> dict:
+    """清除会话记忆（删除摘要，重置为未压缩状态）"""
+    if not _memory_manager:
+        raise HTTPException(status_code=503, detail="记忆管理器未启用")
+    store = get_store()
+    if not store:
+        raise HTTPException(status_code=500, detail="存储未初始化")
+    store.save_session_summary(session_id, "")
+    store.clear_archived_messages(session_id)
+    return {"success": True, "session_id": session_id}
+
+
+# ==================== 跨会话记忆 API ====================
+
+
+class CreateMemoryRequest(BaseModel):
+    content: str
+    category: str = "general"
+    importance: int = 3
+    user_id: str | None = None
+    session_id: str | None = None
+
+
+class UpdateMemoryRequest(BaseModel):
+    content: str | None = None
+    category: str | None = None
+    importance: int | None = None
+    metadata: dict | None = None
+
+
+@app.get("/api/memories")
+async def list_memories(
+    category: str | None = None,
+    user_id: str | None = None,
+    limit: int = 50,
+) -> dict:
+    """列出所有记忆（支持按分类/用户过滤）"""
+    if not _memory_recall:
+        raise HTTPException(status_code=503, detail="记忆召回未启用")
+    memories = _memory_recall.get_all(user_id=user_id, category=category, limit=limit)
+    return {"memories": memories, "total": len(memories)}
+
+
+@app.get("/api/memories/search")
+async def search_memories(
+    q: str,
+    user_id: str | None = None,
+    limit: int = 5,
+) -> dict:
+    """根据关键词检索相关记忆"""
+    if not _memory_recall:
+        raise HTTPException(status_code=503, detail="记忆召回未启用")
+    if len(q) < 2:
+        raise HTTPException(status_code=400, detail="查询关键词至少需要2个字符")
+    memories = _memory_recall.recall(query=q, user_id=user_id, limit=limit)
+    return {"memories": memories, "query": q, "count": len(memories)}
+
+
+@app.post("/api/memories")
+async def create_memory(req: CreateMemoryRequest) -> dict:
+    """手动创建一条记忆"""
+    if not _memory_recall:
+        raise HTTPException(status_code=503, detail="记忆召回未启用")
+    if not req.content.strip():
+        raise HTTPException(status_code=400, detail="记忆内容不能为空")
+    memory_id = _memory_recall.save_memory(
+        content=req.content,
+        user_id=req.user_id,
+        category=req.category,
+        importance=req.importance,
+        session_id=req.session_id,
+    )
+    return {"success": True, "id": memory_id}
+
+
+@app.get("/api/memories/{memory_id}")
+async def get_memory(memory_id: str) -> dict:
+    """获取单条记忆详情"""
+    if not _memory_recall:
+        raise HTTPException(status_code=503, detail="记忆召回未启用")
+    memory = _memory_recall.get_memory(memory_id)
+    if not memory:
+        raise HTTPException(status_code=404, detail="记忆不存在")
+    return memory
+
+
+@app.patch("/api/memories/{memory_id}")
+async def update_memory(memory_id: str, req: UpdateMemoryRequest) -> dict:
+    """更新记忆内容/分类/重要性"""
+    if not _memory_recall:
+        raise HTTPException(status_code=503, detail="记忆召回未启用")
+    updates = {k: v for k, v in req.model_dump().items() if v is not None}
+    if not updates:
+        raise HTTPException(status_code=400, detail="没有需要更新的字段")
+    success = _memory_recall.update_memory(memory_id, updates)
+    if not success:
+        raise HTTPException(status_code=404, detail="记忆不存在")
+    return {"success": True}
+
+
+@app.delete("/api/memories/{memory_id}")
+async def delete_memory(memory_id: str) -> dict:
+    """删除一条记忆"""
+    if not _memory_recall:
+        raise HTTPException(status_code=503, detail="记忆召回未启用")
+    if not _memory_recall.delete_memory(memory_id):
+        raise HTTPException(status_code=404, detail="记忆不存在")
+    return {"success": True, "id": memory_id}
+
+
+@app.post("/api/chat/sessions/{session_id}/extract-memories")
+async def extract_memories_from_session(session_id: str) -> dict:
+    """从会话历史中自动提取记忆（手动触发）"""
+    if not _memory_recall:
+        raise HTTPException(status_code=503, detail="记忆召回未启用")
+    store = get_store()
+    if not store:
+        raise HTTPException(status_code=500, detail="存储未初始化")
+    messages = store.get_session_messages(session_id)
+    if not messages:
+        raise HTTPException(status_code=404, detail="会话不存在或无消息")
+    provider = _orchestrator._provider if _orchestrator else None
+    count = _memory_recall.save_from_conversation(
+        messages=messages,
+        session_id=session_id,
+        llm_provider=provider,
+    )
+    return {"success": True, "session_id": session_id, "extracted_count": count}
 
 
 @app.delete("/api/chat/sessions/{session_id}")
@@ -1413,6 +1708,9 @@ async def chat_stream(request: Request, chat_req: ChatRequest):
                 if len(existing) <= 2:
                     title = _message[:30].strip()
                     store.update_session_title(_session_id, title)
+                # 记忆压缩检查
+                if _memory_manager and _orchestrator:
+                    _memory_manager.compress_if_needed(_session_id, _orchestrator._provider)
 
             # P4-3: 从回答中解析引用的 [ref-N] 并构建结构化 citations
             cited_ref_ids = _rag_engine.extract_citations_from_text(answer)

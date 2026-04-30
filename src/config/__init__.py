@@ -165,6 +165,15 @@ class ImageToVideoConfig:
 
 
 @dataclass
+class MemoryConfig:
+    """记忆管理配置"""
+    enabled: bool = True
+    max_turns_before_compress: int = 10  # 超过 N 轮对话时触发摘要压缩
+    summary_max_chars: int = 500  # 摘要最大字符数
+    recent_messages_to_keep: int = 4  # 摘要后保留最近 N 条消息不归档
+
+
+@dataclass
 class Config:
     """全局配置"""
     app: AppConfig
@@ -173,6 +182,7 @@ class Config:
     providers: dict[str, ProviderConfig]
     worker_templates: dict[str, WorkerTemplate]
     knowledge_base: KnowledgeBaseConfig
+    memory: MemoryConfig = field(default_factory=MemoryConfig)
     auth: AuthConfig = field(default_factory=AuthConfig)
     image_generation: ImageGenerationConfig = field(default_factory=ImageGenerationConfig)
     video_generation: VideoGenerationConfig = field(default_factory=VideoGenerationConfig)
@@ -216,6 +226,8 @@ class Config:
             users=auth_users,
         )
 
+        memory = MemoryConfig(**data.get("memory", {}))
+
         image_generation = ImageGenerationConfig(**data.get("image_generation", {}))
         video_generation = VideoGenerationConfig(**data.get("video_generation", {}))
         image_to_video = ImageToVideoConfig(**data.get("image_to_video", {}))
@@ -227,6 +239,7 @@ class Config:
             providers=providers,
             worker_templates=worker_templates,
             knowledge_base=knowledge_base,
+            memory=memory,
             auth=auth,
             image_generation=image_generation,
             video_generation=video_generation,

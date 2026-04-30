@@ -26,7 +26,8 @@ class PersistenceStore:
                 title TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
-                archived INTEGER NOT NULL DEFAULT 0
+                archived INTEGER NOT NULL DEFAULT 0,
+                summary TEXT DEFAULT ''
             );
 
             CREATE TABLE IF NOT EXISTS chat_messages (
@@ -91,11 +92,94 @@ class PersistenceStore:
             );
             CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp DESC);
             CREATE INDEX IF NOT EXISTS idx_audit_resource ON audit_log(resource, resource_id);
+
+            CREATE TABLE IF NOT EXISTS memories (
+                id TEXT PRIMARY KEY,
+                user_id TEXT,
+                content TEXT NOT NULL,
+                category TEXT NOT NULL DEFAULT 'general',
+                importance INTEGER NOT NULL DEFAULT 3,
+                source_session_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_accessed_at TEXT NOT NULL,
+                metadata TEXT DEFAULT '{}'
+            );
+            CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id);
+            CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(category);
+            CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at DESC);
         """)
         # 旧库迁移：为 chat_sessions 补齐 archived 列
         cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(chat_sessions)").fetchall()}
         if "archived" not in cols:
             self._conn.execute("ALTER TABLE chat_sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
+        if "summary" not in cols:
+            self._conn.execute("ALTER TABLE chat_sessions ADD COLUMN summary TEXT DEFAULT ''")
+        # 旧库迁移：创建 memories 表（如不存在）
+        tables = {r["name"] for r in self._conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
+        if "memories" not in tables:
+            self._conn.execute("""
+                CREATE TABLE memories (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT,
+                    content TEXT NOT NULL,
+                    category TEXT NOT NULL DEFAULT 'general',
+                    importance INTEGER NOT NULL DEFAULT 3,
+                    source_session_id TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    last_accessed_at TEXT NOT NULL,
+                    metadata TEXT DEFAULT '{}'
+                )
+            """)
+            self._conn.execute("CREATE INDEX idx_memories_user ON memories(user_id)")
+            self._conn.execute("CREATE INDEX idx_memories_category ON memories(category)")
+            self._conn.execute("CREATE INDEX idx_memories_created ON memories(created_at DESC)")
+        self._conn.commit()
+
+    def save_session_summary(self, session_id: str, summary: str) -> None:
+        """保存会话摘要（记忆压缩）。如果会话不存在，先创建它。"""
+        existing = self._conn.execute(
+            "SELECT id FROM chat_sessions WHERE id=?", (session_id,)
+        ).fetchone()
+        if existing:
+            self._conn.execute(
+                "UPDATE chat_sessions SET summary=? WHERE id=?",
+                (summary, session_id),
+            )
+        else:
+            # 会话不存在（只有消息没有会话记录），先创建再更新摘要
+            self._conn.execute(
+                "INSERT INTO chat_sessions (id, title, created_at, updated_at, summary, archived) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (session_id, "", "", "", summary, 0),
+            )
+        self._conn.commit()
+
+    def get_session_summary(self, session_id: str) -> str:
+        """获取会话摘要"""
+        row = self._conn.execute(
+            "SELECT summary FROM chat_sessions WHERE id=?",
+            (session_id,),
+        ).fetchone()
+        return row["summary"] if row else ""
+
+    def archive_messages(self, session_id: str, before_message_id: int) -> None:
+        """将会话中指定消息标记为归档（已包含在摘要中）"""
+        self._conn.execute(
+            "UPDATE chat_messages SET metadata=json_set(metadata, '$.archived', 1) "
+            "WHERE session_id=? AND id <= ?",
+            (session_id, before_message_id),
+        )
+        self._conn.commit()
+
+    def clear_archived_messages(self, session_id: str) -> None:
+        """清除会话的所有归档标记（重置为未归档）"""
+        self._conn.execute(
+            "UPDATE chat_messages SET metadata=json_set(metadata, '$.archived', NULL) "
+            "WHERE session_id=?",
+            (session_id,),
+        )
         self._conn.commit()
 
     # ==================== 会话 ====================
@@ -135,13 +219,18 @@ class PersistenceStore:
         )
         self._conn.commit()
 
-    def get_session_messages(self, session_id: str) -> list[dict]:
-        """获取会话的所有消息"""
+    def get_session_messages(self, session_id: str, include_archived: bool = True) -> list[dict]:
+        """获取会话的所有消息
+
+        Args:
+            session_id: 会话 ID
+            include_archived: 是否包含已归档消息（False 时过滤掉带 $.archived=true 的消息）
+        """
         rows = self._conn.execute(
             "SELECT role, content, created_at, metadata FROM chat_messages WHERE session_id=? ORDER BY id",
             (session_id,),
         ).fetchall()
-        return [
+        messages = [
             {
                 "role": r["role"],
                 "content": r["content"],
@@ -150,6 +239,9 @@ class PersistenceStore:
             }
             for r in rows
         ]
+        if not include_archived:
+            messages = [m for m in messages if not m["metadata"].get("archived", False)]
+        return messages
 
     def list_sessions(self, limit: int = 50, archived: bool | None = False) -> list[dict]:
         """列出最近的会话
@@ -460,25 +552,147 @@ class PersistenceStore:
         username: str | None = None,
         limit: int = 100,
     ) -> list[dict]:
-        """查询审计日志（倒序）"""
-        conditions = []
+        """分页查询审计日志"""
+        query = "SELECT * FROM audit_log WHERE 1=1"
         params: list = []
         if resource:
-            conditions.append("resource = ?")
+            query += " AND resource=?"
             params.append(resource)
         if action:
-            conditions.append("action = ?")
+            query += " AND action=?"
             params.append(action)
         if username:
-            conditions.append("username = ?")
+            query += " AND username=?"
             params.append(username)
-        where = "WHERE " + " AND ".join(conditions) if conditions else ""
-        rows = self._conn.execute(
-            f"""SELECT * FROM audit_log {where}
-                ORDER BY timestamp DESC LIMIT ?""",
-            [*params, limit],
-        ).fetchall()
+        query += " ORDER BY timestamp DESC LIMIT ?"
+        params.append(limit)
+        rows = self._conn.execute(query, params).fetchall()
         return [dict(r) for r in rows]
+
+    # ==================== 跨会话记忆（memories）====================
+
+    @staticmethod
+    def _memory_row_to_dict(row: sqlite3.Row) -> dict:
+        return {
+            "id": row["id"],
+            "user_id": row["user_id"],
+            "content": row["content"],
+            "category": row["category"],
+            "importance": row["importance"],
+            "source_session_id": row["source_session_id"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "last_accessed_at": row["last_accessed_at"],
+            "metadata": json.loads(row["metadata"]) if row["metadata"] else {},
+        }
+
+    def save_memory(
+        self,
+        memory_id: str,
+        content: str,
+        user_id: str | None = None,
+        category: str = "general",
+        importance: int = 3,
+        source_session_id: str | None = None,
+        metadata: dict | None = None,
+    ) -> None:
+        """保存或更新一条跨会话记忆"""
+        now = datetime.now().isoformat()
+        metadata_json = json.dumps(metadata or {}, ensure_ascii=False)
+        self._conn.execute(
+            """INSERT OR REPLACE INTO memories
+               (id, user_id, content, category, importance, source_session_id,
+                created_at, updated_at, last_accessed_at, metadata)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (memory_id, user_id, content, category, importance, source_session_id,
+             now, now, now, metadata_json),
+        )
+        self._conn.commit()
+
+    def get_memory(self, memory_id: str) -> dict | None:
+        """获取单条记忆，同时更新 last_accessed_at"""
+        row = self._conn.execute(
+            "SELECT * FROM memories WHERE id=?", (memory_id,)
+        ).fetchone()
+        if not row:
+            return None
+        self._conn.execute(
+            "UPDATE memories SET last_accessed_at=? WHERE id=?",
+            (datetime.now().isoformat(), memory_id),
+        )
+        self._conn.commit()
+        return self._memory_row_to_dict(row)
+
+    def update_memory(self, memory_id: str, updates: dict) -> bool:
+        """更新记忆字段（content, category, importance, metadata）"""
+        allowed = {"content", "category", "importance", "metadata"}
+        set_clauses, params = [], []
+        for key in allowed:
+            if key in updates:
+                val = json.dumps(updates[key]) if key == "metadata" else updates[key]
+                set_clauses.append(f"{key}=?")
+                params.append(val)
+        if not set_clauses:
+            return False
+        set_clauses.append("updated_at=?")
+        params.append(datetime.now().isoformat())
+        params.append(memory_id)
+        cursor = self._conn.execute(
+            f"UPDATE memories SET {', '.join(set_clauses)} WHERE id=?",
+            params,
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def delete_memory(self, memory_id: str) -> bool:
+        """删除一条记忆"""
+        cursor = self._conn.execute("DELETE FROM memories WHERE id=?", (memory_id,))
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    def search_memories(
+        self,
+        query: str,
+        user_id: str | None = None,
+        category: str | None = None,
+        limit: int = 10,
+    ) -> list[dict]:
+        """基于关键词的模糊记忆搜索（LIKE + relevance sort）"""
+        sql = "SELECT * FROM memories WHERE content LIKE ?"
+        params: list = [f"%{query}%"]
+        if user_id is not None:
+            sql += " AND (user_id IS NULL OR user_id=?)"
+            params.append(user_id)
+        if category:
+            sql += " AND category=?"
+            params.append(category)
+        sql += " ORDER BY importance DESC, last_accessed_at DESC LIMIT ?"
+        params.append(limit)
+        rows = self._conn.execute(sql, params).fetchall()
+        return [self._memory_row_to_dict(r) for r in rows]
+
+    def list_memories(
+        self,
+        user_id: str | None = None,
+        category: str | None = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        """列出记忆，可按用户和分类过滤"""
+        sql = "SELECT * FROM memories WHERE 1=1"
+        params: list = []
+        if user_id is not None:
+            sql += " AND (user_id IS NULL OR user_id=?)"
+            params.append(user_id)
+        if category:
+            sql += " AND category=?"
+            params.append(category)
+        sql += " ORDER BY importance DESC, created_at DESC LIMIT ?"
+        params.append(limit)
+        rows = self._conn.execute(sql, params).fetchall()
+        return [self._memory_row_to_dict(r) for r in rows]
+
+
+# ==================== 全局实例 ====================
 
 
 # ==================== 全局实例 ====================

@@ -132,11 +132,18 @@ knowledge_base:
     rrf_k: 60  # RRF 融合参数，越大越均衡
     chunk_strategy: "size"  # 分块策略: "size"=固定长度, "semantic"=语义分块
   # 知识图谱（实验性，LLM 抽取三元组 + NetworkX 图查询）
-  enable_graph: false  # true=启用知识图谱，false=禁用
+  enable_graph: true  # true=启用知识图谱，false=禁用
   graph_persist_path: "./data/knowledge_graph.gml"
   # LLM 抽取三元组的配置（enable_graph=true 时生效）
   graph_llm_provider: "dashscope"  # 用于三元组抽取的 LLM
   graph_llm_api_key: "${DASHSCOPE_API_KEY}"
+
+# 记忆管理配置
+memory:
+  enabled: true
+  max_turns_before_compress: 10  # 超过 N 轮对话时触发摘要压缩
+  summary_max_chars: 500  # 摘要最大字符数
+  recent_messages_to_keep: 4  # 摘要后保留最近 N 条消息不归档
 
 # MCP 配置
 mcp:
