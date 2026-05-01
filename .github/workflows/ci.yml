@@ -61,8 +61,14 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-extras
 
-      - name: Run tests
-        run: uv run pytest tests/ -q --tb=short
+      - name: Run unit tests
+        run: uv run pytest tests/ -q --tb=short --ignore=tests/e2e
+
+      - name: Run e2e tests
+        if: vars.MINIMAX_API_KEY != ''
+        run: uv run pytest tests/e2e/ -m e2e -v --tb=short
+        env:
+          MINIMAX_API_KEY: ${{ vars.MINIMAX_API_KEY }}
 
       - name: Upload coverage
         if: always()
