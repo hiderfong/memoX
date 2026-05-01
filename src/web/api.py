@@ -19,6 +19,7 @@ if str(_src_dir) not in sys.path:
 from typing import Annotated  # noqa: E402, I001
 
 from fastapi import (  # noqa: E402
+    Depends,
     FastAPI,
     File,
     Form,
@@ -38,7 +39,7 @@ from slowapi.util import get_remote_address  # noqa: E402
 
 from agents.base_agent import ToolRegistry, create_provider  # noqa: E402
 from agents.worker_pool import WorkerAgent, WorkerConfig, get_worker_pool, init_worker_pool  # noqa: E402
-from auth import AuthUser, _get_auth_from_request, get_auth_manager, init_auth, require_role  # noqa: E402
+from auth import AuthUser, _get_auth_from_request, get_auth_manager, get_current_user, init_auth, require_role  # noqa: E402
 from config import Config, load_config  # noqa: E402
 from memory import MemoryManager, MemoryRecall, PreferenceLearner  # noqa: E402
 from coordinator.iterative_orchestrator import IterativeOrchestrator  # noqa: E402
@@ -559,7 +560,9 @@ async def list_documents() -> list[DocumentResponse]:
 
 
 @app.post("/api/documents")
+@limiter.limit("5/minute")
 async def upload_document(
+    request: Request,
     file: UploadFile = File(...),
     group_id: str = Form(default="ungrouped"),
 ) -> DocumentResponse:
@@ -719,8 +722,12 @@ async def create_group(request: GroupCreate) -> dict:
 
 
 @app.put("/api/groups/{group_id}")
-async def update_group(group_id: str, request: GroupUpdate) -> dict:
-    """修改分组名称或颜色"""
+async def update_group(
+    group_id: str,
+    request: GroupUpdate,
+    _: Annotated[AuthUser, require_role("admin")],
+) -> dict:
+    """修改分组名称或颜色（仅管理员）"""
     try:
         group = _group_store.update_group(group_id, request.name, request.color)
         return {"id": group.id, "name": group.name, "color": group.color, "created_at": group.created_at}
@@ -750,8 +757,12 @@ async def delete_group(
 
 
 @app.put("/api/documents/{doc_id}/group")
-async def move_document_group(doc_id: str, request: MoveDocumentGroup) -> dict:
-    """修改文档所属分组"""
+async def move_document_group(
+    doc_id: str,
+    request: MoveDocumentGroup,
+    _: Annotated[AuthUser, require_role("admin")],
+) -> dict:
+    """修改文档所属分组（仅管理员）"""
     if not _group_store.get_group(request.group_id):
         raise HTTPException(status_code=404, detail="Group not found")
     success = _rag_engine.move_document_group(doc_id, request.group_id)
@@ -1288,8 +1299,11 @@ async def update_memory_config(req: MemoryConfigRequest) -> dict:
 
 
 @app.delete("/api/chat/sessions/{session_id}/memory")
-async def clear_session_memory(session_id: str) -> dict:
-    """清除会话记忆（删除摘要，重置为未压缩状态）"""
+async def clear_session_memory(
+    session_id: str,
+    user: Annotated[AuthUser, Depends(get_current_user)],
+) -> dict:
+    """清除会话记忆（删除摘要，重置为未压缩状态，仅登录用户）"""
     if not _memory_manager:
         raise HTTPException(status_code=503, detail="记忆管理器未启用")
     store = get_store()
@@ -1389,8 +1403,11 @@ async def update_memory(memory_id: str, req: UpdateMemoryRequest) -> dict:
 
 
 @app.delete("/api/memories/{memory_id}")
-async def delete_memory(memory_id: str) -> dict:
-    """删除一条记忆"""
+async def delete_memory(
+    memory_id: str,
+    user: Annotated[AuthUser, Depends(get_current_user)],
+) -> dict:
+    """删除一条记忆（仅登录用户）"""
     if not _memory_recall:
         raise HTTPException(status_code=503, detail="记忆召回未启用")
     if not _memory_recall.delete_memory(memory_id):
@@ -1419,8 +1436,11 @@ async def extract_memories_from_session(session_id: str) -> dict:
 
 
 @app.delete("/api/chat/sessions/{session_id}")
-async def delete_chat_session(session_id: str) -> dict:
-    """删除聊天会话"""
+async def delete_chat_session(
+    session_id: str,
+    user: Annotated[AuthUser, Depends(get_current_user)],
+) -> dict:
+    """删除聊天会话（仅登录用户）"""
     store = get_store()
     if not store:
         raise HTTPException(status_code=500, detail="Storage not initialized")
@@ -2320,8 +2340,11 @@ async def get_worker_logs(worker_id: str, limit: int = 50) -> dict:
 
 
 @app.delete("/api/workers/{worker_id}/logs")
-async def clear_worker_logs(worker_id: str) -> dict:
-    """清空指定 Worker 的日志"""
+async def clear_worker_logs(
+    worker_id: str,
+    _: Annotated[AuthUser, require_role("admin")],
+) -> dict:
+    """清空指定 Worker 的日志（仅管理员）"""
     worker_pool = get_worker_pool()
     if not worker_pool or worker_id not in worker_pool._workers:
         raise HTTPException(status_code=404, detail="Worker 不存在")
