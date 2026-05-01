@@ -7,6 +7,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from typing import Literal
 
 from loguru import logger
 
@@ -56,6 +57,7 @@ class IterativeOrchestrator:
         max_iterations: int = MAX_ITERATIONS,
         quality_threshold: float = QUALITY_THRESHOLD,
         broadcast: Any = None,
+        mode: Literal["iterative", "parallel"] = "iterative",
     ):
         self._planner = planner
         self._worker_pool = worker_pool
@@ -71,6 +73,8 @@ class IterativeOrchestrator:
         self._broadcast = broadcast  # async callable(dict) for WebSocket broadcast
         self._pending_feedback: dict[str, asyncio.Event] = {}
         self._feedback_content: dict[str, str] = {}
+        self._mode = mode
+        self._multi_executor: Any = None  # P7-1: lazy init
 
     def cancel_task(self, task_id: str) -> bool:
         """取消正在运行的任务"""
@@ -123,6 +127,8 @@ class IterativeOrchestrator:
             self._running_tasks[task.id] = current_asyncio_task
 
         try:
+            if self._mode == "parallel":
+                return await self._run_parallel(task, description, ctx)
             return await self._run_iterations(task, description, ctx)
         except asyncio.CancelledError:
             logger.warning(f"[Orchestrator] 任务 {task.id} 已被取消")
@@ -304,6 +310,73 @@ class IterativeOrchestrator:
 
             worker.tools = registry
             worker.refinement_hint = refinement_instructions or None
+
+    async def _run_parallel(
+        self,
+        task: Task,
+        description: str,
+        ctx: dict[str, Any],
+    ) -> IterationResult:
+        """P7-1: 并行执行模式（多 Agent + LLM 结果聚合）"""
+        from coordinator.multi_agent_executor import MultiAgentExecutor
+
+        # 创建独立 MailBus
+        self._sandbox_mgr.create_task_workspace(task.id)
+        mail_bus = MailBus(task_id=task.id)
+
+        # 懒加载 MultiAgentExecutor
+        if self._multi_executor is None:
+            self._multi_executor = MultiAgentExecutor(
+                worker_pool=self._worker_pool,
+                provider=self._provider,
+                mail_bus=mail_bus,
+                model=self._model,
+            )
+
+        # 注册任务
+        current = asyncio.current_task()
+        if current:
+            self._running_tasks[task.id] = current
+
+        try:
+            result = await self._multi_executor.execute_parallel(
+                task, description, ctx
+            )
+
+            # 导出通信日志
+            shared_dir = self._sandbox_mgr.get_shared_dir(task.id)
+            try:
+                inter_log = await mail_bus.export_inter_log()
+                (shared_dir / "inter_agent_log.txt").write_text(inter_log, encoding="utf-8")
+            except Exception as e:
+                logger.warning(f"[Orchestrator] Agent 通信日志导出失败: {e}")
+
+            return IterationResult(
+                task_id=task.id,
+                shared_dir=str(shared_dir),
+                final_score=result.final_score,
+                iterations=[
+                    IterationRecord(
+                        iteration=0,
+                        score=result.final_score,
+                        improvements=[f"并行执行 {len(result.subtask_results)} 个子任务"],
+                    )
+                ],
+                result_summary=result.aggregated_content[:2000],
+            )
+        except asyncio.CancelledError:
+            logger.warning(f"[Orchestrator] 任务 {task.id} 已被取消")
+            shared_dir = str(self._sandbox_mgr.get_shared_dir(task.id))
+            return IterationResult(
+                task_id=task.id,
+                shared_dir=shared_dir,
+                final_score=0.0,
+                iterations=[],
+                result_summary="(任务已取消)",
+            )
+        finally:
+            self._running_tasks.pop(task.id, None)
+            self._cancelled.discard(task.id)
 
     async def _execute_with_deps(self, task: Task, base_context: dict) -> None:
         """按依赖顺序执行子任务，将依赖结果注入后续任务的 context"""

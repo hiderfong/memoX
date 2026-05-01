@@ -141,7 +141,8 @@ def test_rag_context_injected(tmp_path):
     rag_result = MagicMock()
     rag_result.content = "相关知识"
     rag_result.metadata = {"filename": "doc.md"}
-    rag.search = AsyncMock(return_value=[rag_result])
+    rag.search = AsyncMock(return_value=[])
+    rag.search_with_graph = AsyncMock(return_value=[rag_result])
 
     orchestrator = IterativeOrchestrator(
         planner=planner,
@@ -154,8 +155,8 @@ def test_rag_context_injected(tmp_path):
 
     asyncio.run(orchestrator.run("任务描述", active_group_ids=["g1"]))
 
-    rag.search.assert_called_once()
-    call_kwargs = rag.search.call_args
+    rag.search_with_graph.assert_called_once()
+    call_kwargs = rag.search_with_graph.call_args
     assert call_kwargs.kwargs.get("group_ids") == ["g1"] or (
         len(call_kwargs.args) > 1 and call_kwargs.args[1] == ["g1"]
     )
