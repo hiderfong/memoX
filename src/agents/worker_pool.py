@@ -131,6 +131,33 @@ class WorkerAgent:
         self.call_count: int = 0
         self._load_token_usage()
 
+        # 最近日志（环形缓冲区，保留最后 MAX_LOGS 条）
+        from collections import deque
+        self._log_buffer: deque[dict] = deque(maxlen=100)
+        self._log_lock = __import__("threading").Lock()
+
+    def add_log(self, level: str, message: str, meta: dict | None = None) -> None:
+        """追加一条日志（线程安全）"""
+        import datetime as dt
+        entry = {
+            "timestamp": dt.datetime.now().isoformat(),
+            "level": level,
+            "message": message,
+            "meta": meta or {},
+        }
+        with self._log_lock:
+            self._log_buffer.append(entry)
+
+    def get_logs(self, limit: int = 50) -> list[dict]:
+        """获取最近 limit 条日志"""
+        with self._log_lock:
+            return list(self._log_buffer)[-limit:]
+
+    def clear_logs(self) -> None:
+        """清空日志缓冲区"""
+        with self._log_lock:
+            self._log_buffer.clear()
+
     def _load_token_usage(self) -> None:
         """从数据库加载历史 token 用量"""
         store = get_store()
@@ -154,6 +181,7 @@ class WorkerAgent:
         """执行子任务"""
         self._running = True
         self._current_task_id = task.id
+        self.add_log("info", f"任务开始: {task.description[:60]}...", {"task_id": task.id})
 
         logger.info(f"Worker {self.id} starting task {task.id}: {task.description[:50]}...")
 
@@ -183,12 +211,14 @@ class WorkerAgent:
 
             self._running = False
             self._current_task_id = None
+            self.add_log("info", f"任务完成", {"task_id": task.id, "result_len": len(result)})
 
             logger.info(f"Worker {self.id} completed task {task.id}")
             return result, None
 
         except Exception as e:
             error_msg = f"Error: {type(e).__name__}: {str(e)}"
+            self.add_log("error", error_msg, {"task_id": task.id})
             logger.error(f"Worker {self.id} failed task {task.id}: {e}")
 
             self._running = False
@@ -238,6 +268,7 @@ class WorkerAgent:
             store = get_store()
             if store:
                 store.increment_worker_token_usage(self.id, inp, out)
+            self.add_log("info", f"LLM 调用完成", {"input_tokens": inp, "output_tokens": out, "call_count": self.call_count})
 
             # 检查是否有工具调用
             if response.has_tool_calls:
@@ -412,6 +443,7 @@ class WorkerPool:
                     "total_tokens": w.total_input_tokens + w.total_output_tokens,
                     "call_count": w.call_count,
                 },
+                "recent_logs": w.get_logs(10),
             }
             for w in self._workers.values()
         ]

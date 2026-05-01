@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, createContext, useContext } from 'react';
-import { Layout, Menu, Typography, Card, Button, Upload, List, Space, Avatar, Input, message, Spin, Tag, Progress, Badge, Drawer, Timeline, Alert, Empty, Tooltip, Form, Divider, Checkbox, Modal, Tabs, Table, Select, Slider, InputNumber, AutoComplete } from 'antd';
-import { UploadOutlined, FileTextOutlined, RobotOutlined, MessageOutlined, TeamOutlined, SettingOutlined, CloudUploadOutlined, DeleteOutlined, SendOutlined, LoadingOutlined, BulbOutlined, ThunderboltOutlined, ClockCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, InboxOutlined, UserOutlined, LockOutlined, LogoutOutlined, SafetyCertificateOutlined, LinkOutlined, FolderOpenOutlined, MailOutlined, LineChartOutlined, FileSearchOutlined, EyeOutlined, SaveOutlined, DownOutlined, UpOutlined, PlusOutlined, EditOutlined } from '@ant-design/icons';
+import { Layout, Menu, Typography, Card, Button, Upload, List, Space, Avatar, Input, message, Spin, Tag, Progress, Badge, Drawer, Timeline, Alert, Empty, Tooltip, Form, Divider, Checkbox, Modal, Tabs, Table, Select, Slider, InputNumber, AutoComplete, Switch } from 'antd';
+import { UploadOutlined, FileTextOutlined, RobotOutlined, MessageOutlined, TeamOutlined, SettingOutlined, CloudUploadOutlined, DeleteOutlined, SendOutlined, LoadingOutlined, BulbOutlined, ThunderboltOutlined, ClockCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, InboxOutlined, UserOutlined, LockOutlined, LogoutOutlined, SafetyCertificateOutlined, LinkOutlined, FolderOpenOutlined, MailOutlined, LineChartOutlined, FileSearchOutlined, EyeOutlined, SaveOutlined, DownOutlined, UpOutlined, PlusOutlined, EditOutlined, DownloadOutlined, BgColorsOutlined, ReloadOutlined } from '@ant-design/icons';
+import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip as RTooltip, Legend, ResponsiveContainer } from 'recharts';
 import { useNavigate, useLocation, Routes, Route, Link, Navigate } from 'react-router-dom';
 import axios from 'axios';
 import dayjs from 'dayjs';
@@ -123,6 +124,10 @@ const api = {
 
   // Workers
   listWorkers: () => axios.get(`${API_BASE}/workers`),
+  getWorkerLogs: (workerId: string, limit?: number) =>
+    axios.get(`${API_BASE}/workers/${workerId}/logs`, { params: limit ? { limit } : {} }),
+  clearWorkerLogs: (workerId: string) =>
+    axios.delete(`${API_BASE}/workers/${workerId}/logs`),
   listProviders: () => axios.get(`${API_BASE}/providers`),
   updateWorkerConfig: (id: string, config: any) => axios.put(`${API_BASE}/workers/${id}/config`, config),
   createWorker: (data: any) => axios.post(`${API_BASE}/workers`, data),
@@ -317,6 +322,7 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
               { key: 'tasks', icon: <RobotOutlined style={{ fontSize: 18 }} />, label: <span style={{ fontSize: 16, fontWeight: 500 }}>任务执行</span> },
               { key: 'scheduled-tasks', icon: <ClockCircleOutlined style={{ fontSize: 18 }} />, label: <span style={{ fontSize: 16, fontWeight: 500 }}>定时任务</span> },
               { key: 'workers', icon: <TeamOutlined style={{ fontSize: 18 }} />, label: <span style={{ fontSize: 16, fontWeight: 500 }}>Agent 监控</span> },
+              { key: 'settings', icon: <SettingOutlined style={{ fontSize: 18 }} />, label: <span style={{ fontSize: 16, fontWeight: 500 }}>设置</span> },
             ]}
           />
         </Sider>
@@ -337,6 +343,8 @@ const DocumentsPage: React.FC = () => {
   const [documents, setDocuments] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadFileName, setUploadFileName] = useState('');
   const [groups, setGroups] = useState<KnowledgeGroup[]>([]);
   const [activeGroupFilter, setActiveGroupFilter] = useState<string>('all');
   const [groupDrawerOpen, setGroupDrawerOpen] = useState(false);
@@ -386,14 +394,29 @@ const DocumentsPage: React.FC = () => {
 
   const handleUpload = async (file: File) => {
     setUploading(true);
+    setUploadFileName(file.name);
+    setUploadProgress(0);
+    // 模拟进度条（后端单 POST 请求不支持实时进度推送）
+    const ticker = setInterval(() => {
+      setUploadProgress(p => Math.min(p + Math.random() * 15, 90));
+    }, 300);
     try {
       await api.uploadDocument(file);
-      message.success(`文档 ${file.name} 上传成功`);
-      await fetchDocuments();  // await 确保列表刷新完成后再解除 uploading 状态
+      setUploadProgress(100);
+      message.success(
+        <span>文档 <b>{file.name}</b> 上传成功</span>
+      );
+      await fetchDocuments();
     } catch (err: any) {
+      clearInterval(ticker);
       message.error(err.response?.data?.detail || '上传失败');
     } finally {
-      setUploading(false);
+      clearInterval(ticker);
+      setTimeout(() => {
+        setUploading(false);
+        setUploadProgress(0);
+        setUploadFileName('');
+      }, 600);
     }
     return false;
   };
@@ -542,19 +565,33 @@ const DocumentsPage: React.FC = () => {
           </Space>
         }
       >
-        <Dragger 
+        <Dragger
           beforeUpload={handleUpload}
           showUploadList={false}
           disabled={uploading}
-          style={{ background: '#fafafa' }}
+          style={{ background: uploading ? '#f5f5f5' : '#fafafa' }}
         >
-          <p className="ant-upload-drag-icon">
-            <InboxOutlined />
-          </p>
-          <p className="ant-upload-text">点击或拖拽上传文档</p>
-          <p className="ant-upload-hint">
-            支持 PDF、Markdown、TXT、DOCX 格式
-          </p>
+          {uploading ? (
+            <div style={{ padding: '24px 0' }}>
+              <Progress
+                percent={Math.round(uploadProgress)}
+                status={uploadProgress >= 100 ? 'success' : 'active'}
+                strokeColor="#1890ff"
+                format={p => <span style={{ color: '#595959' }}>{uploadFileName} · {p}%</span>}
+              />
+              <p style={{ color: '#8c8c8c', marginTop: 8, fontSize: 13 }}>正在上传并解析文档…</p>
+            </div>
+          ) : (
+            <>
+              <p className="ant-upload-drag-icon">
+                <InboxOutlined />
+              </p>
+              <p className="ant-upload-text">点击或拖拽上传文档</p>
+              <p className="ant-upload-hint">
+                支持 PDF、Markdown、TXT、DOCX 格式
+              </p>
+            </>
+          )}
         </Dragger>
       </Card>
 
@@ -842,11 +879,22 @@ interface Message {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  created_at?: string;
   sources?: any[];
+  citations?: Citation[];
   worker_id?: string | null;
   images?: { url?: string; prompt?: string; error?: string }[];
   videos?: { url?: string; prompt?: string; error?: string }[];
   pendingHint?: string;
+}
+
+interface Citation {
+  ref_id: string;
+  doc_id: string;
+  filename: string;
+  chunk_index: number;
+  content_preview: string;
+  score: number;
 }
 
 const ChatPage: React.FC = () => {
@@ -856,6 +904,7 @@ const ChatPage: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [sessionId, setSessionId] = useState<string>('');
   const [sources, setSources] = useState<any[]>([]);
+  const [citations, setCitations] = useState<Citation[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const [groups, setGroups] = useState<KnowledgeGroup[]>([]);
   const [activeGroupIds, setActiveGroupIds] = useState<string[]>([]);
@@ -973,6 +1022,7 @@ const ChatPage: React.FC = () => {
     setSessionId('');
     setMessages([]);
     setSources([]);
+    setCitations([]);
     setActiveGroupIds(groups.map(g => g.id));
   };
 
@@ -1004,6 +1054,7 @@ const ChatPage: React.FC = () => {
       setSessionId(sid);
       setMessages(msgs);
       setSources([]);
+      setCitations([]);
       const stored = loadSessionGroups(sid);
       if (stored) {
         const valid = stored.filter(id => groups.some(g => g.id === id));
@@ -1059,6 +1110,7 @@ const ChatPage: React.FC = () => {
     setInput('');
     setLoading(true);
     setSources([]);
+    setCitations([]);
 
     const updateAssistant = (patch: (m: Message) => Message) => {
       setMessages(prev => prev.map(m => m.id === assistantId ? patch(m) : m));
@@ -1170,6 +1222,10 @@ const ChatPage: React.FC = () => {
               finalSessionId = evt.session_id || finalSessionId;
               if (evt.worker_id) {
                 updateAssistant(m => ({ ...m, worker_id: evt.worker_id, pendingHint: undefined }));
+              }
+              if (evt.citations && evt.citations.length > 0) {
+                updateAssistant(m => ({ ...m, citations: evt.citations }));
+                setCitations(evt.citations || []);
               }
               break;
             case 'error':
@@ -1363,7 +1419,36 @@ const ChatPage: React.FC = () => {
         bodyStyle={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}
       >
         {sessionId && messages.length > 0 && (
-          <div style={{ display: 'flex', justifyContent: 'flex-end', paddingBottom: 8, borderBottom: '1px solid #f0f0f0' }}>
+          <div style={{ display: 'flex', justifyContent: 'flex-end', paddingBottom: 8, borderBottom: '1px solid #f0f0f0', gap: 8 }}>
+            <Tooltip title="导出为 Markdown 文件">
+              <Button
+                icon={<DownloadOutlined />}
+                size="small"
+                disabled={messages.length === 0}
+                onClick={() => {
+                  const lines: string[] = [`# 会话导出\n`, `> 导出时间: ${new Date().toLocaleString()}\n`];
+                  messages.forEach(msg => {
+                    const role = msg.role === 'user' ? '**你**' : '**AI 助手**';
+                    lines.push(`\n---\n\n### ${role}\n\n${msg.content}\n`);
+                    if (msg.citations && msg.citations.length > 0) {
+                      lines.push('\n**引用来源：**\n');
+                      msg.citations.forEach((c: Citation) => {
+                        lines.push(`- [${c.ref_id}] ${c.filename} (#${c.chunk_index}) — ${c.content_preview.slice(0, 80)}...`);
+                      });
+                    }
+                  });
+                  const blob = new Blob([lines.join('')], { type: 'text/markdown' });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = `memox-chat-${Date.now()}.md`;
+                  a.click();
+                  URL.revokeObjectURL(url);
+                }}
+              >
+                导出对话
+              </Button>
+            </Tooltip>
             <Tooltip title="把本次会话汇总为任务描述并跳转到任务执行页">
               <Button
                 icon={<ThunderboltOutlined />}
@@ -1446,20 +1531,46 @@ const ChatPage: React.FC = () => {
                         ))}
                       </div>
                     )}
-                    {msg.sources && msg.sources.length > 0 && (
+                    {msg.citations && msg.citations.length > 0 && (
+                      <div style={{ marginTop: 8 }}>
+                        <Text type="secondary" style={{ fontSize: 12 }}>🔗 引用来源：</Text>
+                        {msg.citations.map((c: Citation, i: number) => (
+                          <Card key={i} size="small" style={{ marginTop: 4, background: '#fafafa' }}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                              <div style={{ flex: 1 }}>
+                                <Space size={4}>
+                                  <Tag color="blue">{c.ref_id}</Tag>
+                                  <Text strong style={{ fontSize: 12 }}>{c.filename}</Text>
+                                  <Tag>#{c.chunk_index}</Tag>
+                                </Space>
+                                <div style={{ fontSize: 11, color: '#666', marginTop: 2 }}>
+                                  {c.content_preview.length > 120
+                                    ? c.content_preview.slice(0, 120) + '...'
+                                    : c.content_preview}
+                                </div>
+                              </div>
+                              <Tag color="green" style={{ marginLeft: 8, flexShrink: 0 }}>
+                                {Math.round(c.score * 100)}%
+                              </Tag>
+                            </div>
+                          </Card>
+                        ))}
+                      </div>
+                    )}
+                    {msg.sources && msg.sources.length > 0 && !msg.citations && (
                       <div style={{ marginTop: 8 }}>
                         <Text type="secondary" style={{ fontSize: 12 }}>📚 参考来源：</Text>
                         {msg.sources.map((s: any, i: number) => (
-                          <Tag key={i} style={{ marginTop: 4 }}>{s.filename} ({Math.round(s.score * 100)}%)</Tag>
+                          <Tag key={i} style={{ marginTop: 4 }}>{s.filename || s.doc_name || '未知'} ({Math.round((s.score || 0) * 100)}%)</Tag>
                         ))}
                       </div>
                     )}
                   </div>
                 </Space>
               </div>
-              );
-            })
-          )}
+            );
+          })
+        )}
           {loading && (() => {
             const loadingWorker = selectedWorkerId ? workers.find(w => w.id === selectedWorkerId) : null;
             return (
@@ -1481,7 +1592,31 @@ const ChatPage: React.FC = () => {
           <div ref={messagesEndRef} />
         </div>
 
-        {sources.length > 0 && (
+        {citations.length > 0 ? (
+          <Alert
+            message={`检索到 ${citations.length} 条引用来源`}
+            description={
+              <List
+                size="small"
+                dataSource={citations}
+                renderItem={(c: Citation) => (
+                  <List.Item style={{ padding: '4px 0' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', alignItems: 'center' }}>
+                      <div>
+                        <Tag color="blue" style={{ marginRight: 4 }}>{c.ref_id}</Tag>
+                        <Text>{c.filename}</Text>
+                        <Tag style={{ marginLeft: 4 }}>#{c.chunk_index}</Tag>
+                      </div>
+                      <Tag color="green">{Math.round(c.score * 100)}%</Tag>
+                    </div>
+                  </List.Item>
+                )}
+              />
+            }
+            type="info"
+            style={{ marginBottom: 16 }}
+          />
+        ) : sources.length > 0 && (
           <Alert
             message="检索到的相关文档"
             description={
@@ -1490,8 +1625,10 @@ const ChatPage: React.FC = () => {
                 dataSource={sources}
                 renderItem={(s: any) => (
                   <List.Item style={{ padding: '4px 0' }}>
-                    <Text>{s.filename}</Text>
-                    <Tag color="green">{Math.round(s.score * 100)}% 匹配</Tag>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%' }}>
+                      <Text>{s.filename || s.doc_name || '未知文档'}</Text>
+                      <Tag color="green">{Math.round((s.score || 0) * 100)}% 匹配</Tag>
+                    </div>
                   </List.Item>
                 )}
               />
@@ -1546,7 +1683,7 @@ const ChatPage: React.FC = () => {
           </div>
         )}
         <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 16 }}>
-          <Space.Compact style={{ width: '100%' }}>
+          <Space style={{ width: '100%', marginBottom: 8 }} wrap>
             <TextArea
               value={input}
               onChange={e => setInput(e.target.value)}
@@ -1554,11 +1691,40 @@ const ChatPage: React.FC = () => {
               placeholder="输入问题，按 Enter 发送..."
               autoSize={{ minRows: 1, maxRows: 4 }}
               disabled={loading}
+              style={{ flex: 1, minWidth: 200 }}
             />
-            <Button type="primary" icon={<SendOutlined />} onClick={handleSend} loading={loading}>
-              发送
-            </Button>
-          </Space.Compact>
+            <Space>
+              {messages.length > 0 && (
+                <Tooltip title="导出对话（Markdown）">
+                  <Button
+                    icon={<DownloadOutlined />}
+                    onClick={() => {
+                      const md = messages.map(m => {
+                        const role = m.role === 'user' ? '**用户**' : '**助手**';
+                        const time = m.created_at ? dayjs(m.created_at).format('MM/DD HH:mm') : '';
+                        let text = `${role} ${time}\n\n${m.content}`;
+                        if (m.citations && m.citations.length > 0) {
+                          text += '\n\n**引用来源：**\n' + m.citations.map((c: any) => `- [${c.filename} #${c.chunk_index}] ${c.content_preview.slice(0, 80)}...`).join('\n');
+                        }
+                        return text;
+                      }).join('\n\n---\n\n');
+                      const blob = new Blob([md], { type: 'text/markdown' });
+                      const url = URL.createObjectURL(blob);
+                      const a = document.createElement('a');
+                      a.href = url;
+                      a.download = `memoX-chat-${dayjs().format('YYYYMMDD-HHmmss')}.md`;
+                      a.click();
+                      URL.revokeObjectURL(url);
+                      message.success('对话已导出为 Markdown');
+                    }}
+                  />
+                </Tooltip>
+              )}
+              <Button type="primary" icon={<SendOutlined />} onClick={handleSend} loading={loading}>
+                发送
+              </Button>
+            </Space>
+          </Space>
         </div>
       </Card>
 
@@ -2363,6 +2529,228 @@ const TasksPage: React.FC = () => {
   );
 };
 
+// ==================== Worker Token 图表 ====================
+
+const CHART_COLORS = ['#1890ff', '#52c41a', '#faad14', '#f5222d', '#722ed1', '#13c2c2'];
+
+const WorkerTokenCharts: React.FC<{ workers: any[] }> = ({ workers }) => {
+  if (workers.length === 0) {
+    return <Empty description="暂无 Worker 数据" style={{ marginTop: 40 }} />;
+  }
+
+  // 总计数据
+  const totalInput = workers.reduce((s: number, w: any) => s + (w.token_usage?.input_tokens || 0), 0);
+  const totalOutput = workers.reduce((s: number, w: any) => s + (w.token_usage?.output_tokens || 0), 0);
+  const totalTokens = totalInput + totalOutput;
+  const totalCalls = workers.reduce((s: number, w: any) => s + (w.token_usage?.call_count || 0), 0);
+
+  // 每个 Worker 的输入/输出分布
+  const barData = workers.map((w: any) => ({
+    name: w.display_name || w.id,
+    输入: w.token_usage?.input_tokens || 0,
+    输出: w.token_usage?.output_tokens || 0,
+    总计: (w.token_usage?.total_tokens || 0),
+  }));
+
+  const pieData = [
+    { name: '输入 Token', value: totalInput },
+    { name: '输出 Token', value: totalOutput },
+  ].filter(d => d.value > 0);
+
+  return (
+    <div style={{ marginTop: 16 }}>
+      {/* 总体统计 */}
+      <div style={{ display: 'flex', gap: 16, marginBottom: 24, flexWrap: 'wrap' }}>
+        {[
+          { label: '总调用次数', value: totalCalls, color: '#1890ff' },
+          { label: '总 Token 消耗', value: totalTokens.toLocaleString(), color: '#52c41a' },
+          { label: '输入 Token', value: totalInput.toLocaleString(), color: '#1890ff' },
+          { label: '输出 Token', value: totalOutput.toLocaleString(), color: '#faad14' },
+        ].map(s => (
+          <Card key={s.label} size="small" style={{ minWidth: 140, flex: 1 }}>
+            <div style={{ color: '#999', fontSize: 12 }}>{s.label}</div>
+            <div style={{ color: s.color, fontSize: 20, fontWeight: 600 }}>{s.value}</div>
+          </Card>
+        ))}
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(360px, 1fr))', gap: 24 }}>
+        {/* Token 消耗柱状图 */}
+        <Card title="各 Worker Token 消耗对比" size="small">
+          <ResponsiveContainer width="100%" height={220}>
+            <BarChart data={barData} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
+              <XAxis dataKey="name" tick={{ fontSize: 11 }} />
+              <YAxis tick={{ fontSize: 11 }} />
+              <RTooltip formatter={(v: number) => v.toLocaleString()} />
+              <Legend />
+              <Bar dataKey="输入" stackId="a" fill="#1890ff" name="输入" />
+              <Bar dataKey="输出" stackId="a" fill="#52c41a" name="输出" />
+            </BarChart>
+          </ResponsiveContainer>
+        </Card>
+
+        {/* 输入/输出占比饼图 */}
+        <Card title="总体 Token 输入/输出占比" size="small">
+          {pieData.length > 0 ? (
+            <ResponsiveContainer width="100%" height={220}>
+              <PieChart>
+                <Pie
+                  data={pieData}
+                  cx="50%"
+                  cy="50%"
+                  innerRadius={50}
+                  outerRadius={90}
+                  paddingAngle={3}
+                  dataKey="value"
+                  label={({ name, percent }) => `${name} ${(percent * 100).toFixed(1)}%`}
+                  labelLine={false}
+                >
+                  {pieData.map((_, i) => (
+                    <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
+                  ))}
+                </Pie>
+                <RTooltip formatter={(v: number) => v.toLocaleString()} />
+              </PieChart>
+            </ResponsiveContainer>
+          ) : (
+            <Empty description="暂无数据" />
+          )}
+        </Card>
+      </div>
+    </div>
+  );
+};
+
+
+// ==================== Worker 日志查看器 ====================
+
+const WorkerLogViewer: React.FC<{ workers: any[]; onRefresh: () => void }> = ({ workers, onRefresh }) => {
+  const [selectedWorker, setSelectedWorker] = useState<string | null>(null);
+  const [logs, setLogs] = useState<any[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [autoRefresh, setAutoRefresh] = useState(false);
+  const logEndRef = useRef<HTMLDivElement>(null);
+
+  const fetchLogs = async (workerId: string) => {
+    setLoading(true);
+    try {
+      const res = await api.getWorkerLogs(workerId, 100);
+      setLogs(res.data.logs || []);
+    } catch (err: any) {
+      message.error('获取日志失败: ' + (err.response?.data?.detail || err.message));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (selectedWorker) {
+      fetchLogs(selectedWorker);
+      if (autoRefresh) {
+        const interval = setInterval(() => fetchLogs(selectedWorker), 3000);
+        return () => clearInterval(interval);
+      }
+    }
+  }, [selectedWorker, autoRefresh]);
+
+  useEffect(() => {
+    if (autoRefresh) {
+      logEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [logs, autoRefresh]);
+
+  const handleClearLogs = async () => {
+    if (!selectedWorker) return;
+    try {
+      await api.clearWorkerLogs(selectedWorker);
+      setLogs([]);
+      message.success('日志已清空');
+      onRefresh();
+    } catch (err: any) {
+      message.error('清空失败: ' + (err.response?.data?.detail || err.message));
+    }
+  };
+
+  const levelColor = (level: string) => {
+    switch (level) {
+      case 'error': return '#f5222d';
+      case 'warn': return '#faad14';
+      case 'debug': return '#999';
+      default: return '#52c41a';
+    }
+  };
+
+  return (
+    <div style={{ marginTop: 8 }}>
+      <Space style={{ marginBottom: 12 }} wrap>
+        <Select
+          placeholder="选择 Worker"
+          style={{ width: 200 }}
+          value={selectedWorker}
+          onChange={v => { setSelectedWorker(v); setLogs([]); }}
+          allowClear
+          options={workers.map((w: any) => ({ value: w.id, label: w.display_name || w.id }))}
+        />
+        <Button icon={<ReloadOutlined />} onClick={() => selectedWorker && fetchLogs(selectedWorker)} disabled={!selectedWorker}>
+          刷新
+        </Button>
+        <Button icon={<DeleteOutlined />} danger onClick={handleClearLogs} disabled={!selectedWorker}>
+          清空日志
+        </Button>
+        <Checkbox checked={autoRefresh} onChange={e => setAutoRefresh(e.target.checked)}>
+          自动刷新（3秒）
+        </Checkbox>
+        {selectedWorker && logs.length > 0 && (
+          <Tag>{logs.length} 条日志</Tag>
+        )}
+      </Space>
+
+      {selectedWorker ? (
+        <Card
+          bodyStyle={{ padding: 0, background: '#1e1e1e', maxHeight: 480, overflow: 'auto' }}
+          size="small"
+        >
+          {loading && logs.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: 40, color: '#999' }}><Spin /></div>
+          ) : logs.length === 0 ? (
+            <div style={{ textAlign: 'center', padding: 40, color: '#999' }}>暂无日志</div>
+          ) : (
+            <div style={{ fontFamily: 'monospace', fontSize: 12, padding: 8 }}>
+              {logs.map((log: any, i: number) => (
+                <div key={i} style={{ color: levelColor(log.level), padding: '2px 0', borderBottom: '1px solid #2a2a2a' }}>
+                  <span style={{ color: '#666', marginRight: 8 }}>
+                    {dayjs(log.timestamp).format('HH:mm:ss')}
+                  </span>
+                  <span style={{
+                    background: levelColor(log.level),
+                    color: '#fff',
+                    borderRadius: 3,
+                    padding: '0 4px',
+                    fontSize: 10,
+                    marginRight: 8,
+                  }}>
+                    {log.level.toUpperCase()}
+                  </span>
+                  <span style={{ color: '#d4d4d4' }}>{log.message}</span>
+                  {log.meta && Object.keys(log.meta).length > 0 && (
+                    <span style={{ color: '#888', marginLeft: 8 }}>
+                      {Object.entries(log.meta).map(([k, v]) => `${k}=${v}`).join(', ')}
+                    </span>
+                  )}
+                </div>
+              ))}
+              <div ref={logEndRef} />
+            </div>
+          )}
+        </Card>
+      ) : (
+        <Empty description="请选择 Worker 查看日志" />
+      )}
+    </div>
+  );
+};
+
+
 // ==================== Worker 监控页面 ====================
 
 const WorkerCard: React.FC<{
@@ -2720,6 +3108,26 @@ const WorkerCard: React.FC<{
             <span>输入: {fmtToken(u.input_tokens || 0)}</span>
             <span>输出: {fmtToken(u.output_tokens || 0)}</span>
           </div>
+          {/* Token 消耗可视化条 — CSS bar */}
+          {u.total_tokens ? (
+            <div style={{ marginTop: 6 }}>
+              <div style={{ display: 'flex', height: 6, borderRadius: 3, overflow: 'hidden', background: '#e8e8e8' }}>
+                <div style={{
+                  width: `${u.total_tokens ? Math.min(((u.input_tokens || 0) / (u.total_tokens || 1)) * 100, 100) : 0}%`,
+                  background: '#1890ff',
+                  borderRadius: '3px 0 0 3px',
+                }} />
+                <div style={{
+                  width: `${u.total_tokens ? Math.min(((u.output_tokens || 0) / (u.total_tokens || 1)) * 100, 100) : 0}%`,
+                  background: '#52c41a',
+                }} />
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 2, fontSize: 10, color: '#aaa' }}>
+                <span><span style={{ color: '#1890ff' }}>■</span> 输入 {Math.round((u.input_tokens || 0) / (u.total_tokens || 1) * 100)}%</span>
+                <span><span style={{ color: '#52c41a' }}>■</span> 输出 {Math.round((u.output_tokens || 0) / (u.total_tokens || 1) * 100)}%</span>
+              </div>
+            </div>
+          ) : null}
         </div>
 
         {/* ========== 编辑模式 ========== */}
@@ -2983,24 +3391,42 @@ const WorkersPage: React.FC = () => {
         style={{ marginBottom: 16 }}
       />
 
-      {loading ? (
-        <div style={{ textAlign: 'center', padding: 40 }}>
-          <Spin />
-        </div>
-      ) : (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 16 }}>
-          {workers.map((worker: any) => (
-            <WorkerCard
-              key={worker.id}
-              worker={worker}
-              providers={providers}
-              onSaved={fetchWorkers}
-              onDelete={handleDelete}
-              workerCount={workers.length}
-            />
-          ))}
-        </div>
-      )}
+      <Tabs
+        defaultActiveKey="cards"
+        style={{ marginBottom: 0 }}
+        items={[
+          {
+            key: 'cards',
+            label: 'Worker 名片',
+            children: loading ? (
+              <div style={{ textAlign: 'center', padding: 40 }}><Spin /></div>
+            ) : (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(320px, 1fr))', gap: 16 }}>
+                {workers.map((worker: any) => (
+                  <WorkerCard
+                    key={worker.id}
+                    worker={worker}
+                    providers={providers}
+                    onSaved={fetchWorkers}
+                    onDelete={handleDelete}
+                    workerCount={workers.length}
+                  />
+                ))}
+              </div>
+            ),
+          },
+          {
+            key: 'tokens',
+            label: 'Token 统计',
+            children: <WorkerTokenCharts workers={workers} />,
+          },
+          {
+            key: 'logs',
+            label: '运行日志',
+            children: <WorkerLogViewer workers={workers} onRefresh={fetchWorkers} />,
+          },
+        ]}
+      />
 
       {/* 新增 Worker 弹窗 */}
       <Modal
@@ -3057,6 +3483,162 @@ const WorkersPage: React.FC = () => {
         </Space>
       </Modal>
     </Card>
+  );
+};
+
+// ==================== 设置页面 ====================
+
+const SettingsPage: React.FC = () => {
+  const isMobile = useIsMobile();
+  const [memoryConfig, setMemoryConfig] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [apiKeys, setApiKeys] = useState<Record<string, string>>({});
+  const [showKeys, setShowKeys] = useState<Record<string, boolean>>({});
+
+  const fetchConfig = async () => {
+    setLoading(true);
+    try {
+      const res = await axios.get(`${API_BASE}/memory/config`);
+      setMemoryConfig(res.data);
+    } catch {
+      message.error('获取配置失败');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchConfig();
+    // 从环境变量中读取 API Key 状态（前端无法直接读 .env，这里显示配置状态）
+    setApiKeys({});
+  }, []);
+
+  const handleSaveMemory = async (updates: any) => {
+    setSaving(true);
+    try {
+      await axios.patch(`${API_BASE}/memory/config`, updates);
+      message.success('配置已保存');
+      fetchConfig();
+    } catch (err: any) {
+      message.error(err.response?.data?.detail || '保存失败');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div>
+      <Title level={4}>⚙️ 设置</Title>
+
+      {/* 记忆管理 */}
+      <Card title="🧠 记忆管理" style={{ marginBottom: 16, maxWidth: 720 }} loading={loading}>
+        {memoryConfig && (
+          <Form layout="vertical">
+            <Form.Item label="启用记忆管理">
+              <Switch
+                checked={memoryConfig.enabled}
+                onChange={v => handleSaveMemory({ enabled: v })}
+                loading={saving}
+              />
+              <Text type="secondary" style={{ marginLeft: 12 }}>
+                {memoryConfig.enabled ? '已开启 — 对话将在超过一定轮数后自动压缩摘要' : '已关闭'}
+              </Text>
+            </Form.Item>
+
+            {memoryConfig.enabled && (
+              <>
+                <Form.Item label={`摘要触发轮数（当前: ${memoryConfig.max_turns_before_compress} 轮）`}>
+                  <Slider
+                    min={3}
+                    max={30}
+                    value={memoryConfig.max_turns_before_compress}
+                    onAfterChange={v => handleSaveMemory({ max_turns_before_compress: v })}
+                    marks={{ 5: '5', 10: '10', 20: '20', 30: '30' }}
+                    disabled={saving}
+                  />
+                </Form.Item>
+
+                <Form.Item label={`摘要最大字符数（当前: ${memoryConfig.summary_max_chars} 字）`}>
+                  <Slider
+                    min={100}
+                    max={2000}
+                    step={50}
+                    value={memoryConfig.summary_max_chars}
+                    onAfterChange={v => handleSaveMemory({ summary_max_chars: v })}
+                    marks={{ 200: '200', 500: '500', 1000: '1000', 2000: '2000' }}
+                    disabled={saving}
+                  />
+                </Form.Item>
+
+                <Form.Item label={`摘要后保留最近消息数（当前: ${memoryConfig.recent_messages_to_keep} 条）`}>
+                  <Slider
+                    min={0}
+                    max={20}
+                    value={memoryConfig.recent_messages_to_keep}
+                    onAfterChange={v => handleSaveMemory({ recent_messages_to_keep: v })}
+                    marks={{ 0: '0', 4: '4', 10: '10', 20: '20' }}
+                    disabled={saving}
+                  />
+                </Form.Item>
+              </>
+            )}
+          </Form>
+        )}
+      </Card>
+
+      {/* API Key 配置状态 */}
+      <Card title="🔑 Provider API Key 状态" style={{ marginBottom: 16, maxWidth: 720 }}>
+        <Alert
+          message="API Key 安全说明"
+          description="API Key 配置在 config.yaml 或环境变量中，服务端持有，不暴露到前端。以下显示各 Provider 的配置状态（已配置 / 未配置），不显示实际密钥。"
+          type="info"
+          style={{ marginBottom: 16 }}
+        />
+        <List
+          size="small"
+          dataSource={[
+            { provider: 'DashScope（阿里云）', env: 'DASHSCOPE_API_KEY' },
+            { provider: 'OpenAI', env: 'OPENAI_API_KEY' },
+            { provider: 'Anthropic', env: 'ANTHROPIC_API_KEY' },
+            { provider: 'Google', env: 'GOOGLE_API_KEY' },
+            { provider: 'MiniMax', env: 'MINIMAX_API_KEY' },
+            { provider: 'Kimi', env: 'KIMI_API_KEY' },
+          ]}
+          renderItem={(item: any) => {
+            const configured = !!import.meta.env[`VITE_${item.env}`];
+            return (
+              <List.Item>
+                <Space>
+                  {configured ? (
+                    <CheckCircleOutlined style={{ color: '#52c41a' }} />
+                  ) : (
+                    <CloseCircleOutlined style={{ color: '#ff4d4f' }} />
+                  )}
+                  <Text>{item.provider}</Text>
+                  <Text type="secondary" style={{ fontSize: 11 }}>（环境变量: {item.env}）</Text>
+                  <Tag color={configured ? 'green' : 'red'} style={{ fontSize: 11 }}>
+                    {configured ? '已配置' : '未配置'}
+                  </Tag>
+                </Space>
+              </List.Item>
+            );
+          }}
+        />
+      </Card>
+
+      {/* 关于 */}
+      <Card title="ℹ️ 关于 MemoX" style={{ maxWidth: 720 }}>
+        <Space direction="vertical">
+          <Text><Text strong>版本:</Text> 0.1.0</Text>
+          <Text><Text strong>架构:</Text> Multi-Agent RAG + 知识管理 + 任务调度</Text>
+          <Text><Text strong>主要依赖:</Text> FastAPI · ChromaDB · DashScope · React</Text>
+          <Text type="secondary">
+            MemoX 是一个多 Agent 协作知识管理平台，支持混合检索、语义切片、知识图谱、对话摘要、跨会话记忆和用户偏好学习。
+          </Text>
+        </Space>
+      </Card>
+    </div>
   );
 };
 
@@ -3127,6 +3709,7 @@ const App: React.FC = () => {
                 <Route path="/tasks" element={<TasksPage />} />
                 <Route path="/scheduled-tasks" element={<ScheduledTasksPage />} />
                 <Route path="/workers" element={<WorkersPage />} />
+                <Route path="/settings" element={<SettingsPage />} />
               </Routes>
             </AppLayout>
           </RequireAuth>

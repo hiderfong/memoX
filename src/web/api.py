@@ -2164,6 +2164,137 @@ async def delete_scheduled_task_api(
     return {"success": True}
 
 
+# ==================== Workflow API ====================
+
+from workflow import (
+    WorkflowEngine,
+    WorkflowPersistence,
+    parse_workflow_yaml,
+    parse_workflow_yaml_file,
+)
+from workflow.engine import WorkflowRunStatus
+
+_workflow_engine: WorkflowEngine | None = None
+_workflow_persistence: WorkflowPersistence | None = None
+
+
+def get_workflow_engine() -> WorkflowEngine:
+    global _workflow_engine, _workflow_persistence
+    if _workflow_engine is None:
+        worker_pool = get_worker_pool()
+        provider = create_provider()
+        _workflow_persistence = WorkflowPersistence()
+        _workflow_engine = WorkflowEngine(worker_pool, provider, _workflow_persistence)
+    return _workflow_engine
+
+
+@app.post("/api/workflows/validate")
+async def validate_workflow(yaml_content: str) -> dict:
+    """验证工作流 YAML 语法和 DAG 合法性"""
+    try:
+        wf = parse_workflow_yaml(yaml_content)
+        errors = wf.validate()
+        return {"valid": len(errors) == 0, "errors": errors, "step_count": len(wf.steps)}
+    except Exception as e:
+        return {"valid": False, "errors": [str(e)], "step_count": 0}
+
+
+@app.post("/api/workflows/run")
+async def run_workflow(
+    yaml_content: str,
+    context: dict | None = None,
+) -> dict:
+    """执行工作流（YAML 内容）"""
+    try:
+        wf = parse_workflow_yaml(yaml_content)
+        engine = get_workflow_engine()
+        run = await engine.execute(wf, context=context or {})
+        return {
+            "run_id": run.id,
+            "status": run.status.value,
+            "context_keys": list(run.context.keys()),
+            "step_count": len(run.step_records),
+        }
+    except Exception as e:
+        logger.error(f"[Workflow] 执行失败: {e}")
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@app.get("/api/workflows/runs")
+async def list_workflow_runs(workflow_name: str | None = None, limit: int = 50) -> list[dict]:
+    """列出工作流运行记录"""
+    persistence = get_workflow_engine()  # ensure init
+    runs = _workflow_persistence.list_runs(workflow_name=workflow_name, limit=limit)
+    return [
+        {
+            "id": r.id,
+            "workflow_name": r.workflow_name,
+            "status": r.status.value,
+            "created_at": r.created_at,
+            "updated_at": r.updated_at,
+            "step_count": len(r.step_records),
+        }
+        for r in runs
+    ]
+
+
+@app.get("/api/workflows/runs/{run_id}")
+async def get_workflow_run(run_id: str) -> dict:
+    """获取工作流运行详情"""
+    run = _workflow_persistence.load_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="运行记录不存在")
+    return {
+        "id": run.id,
+        "workflow_name": run.workflow_name,
+        "status": run.status.value,
+        "context": run.context,
+        "created_at": run.created_at,
+        "updated_at": run.updated_at,
+        "paused_at": run.paused_at,
+        "completed_at": run.completed_at,
+        "steps": [
+            {
+                "step_id": r.step_id,
+                "status": r.status.value,
+                "output": r.output,
+                "error": r.error,
+                "duration_ms": r.duration_ms,
+                "started_at": r.started_at,
+                "completed_at": r.completed_at,
+            }
+            for r in run.step_records
+        ],
+    }
+
+
+@app.post("/api/workflows/runs/{run_id}/pause")
+async def pause_workflow_run(run_id: str) -> dict:
+    """暂停工作流运行"""
+    run = await get_workflow_engine().pause(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="运行记录不存在")
+    return {"run_id": run.id, "status": run.status.value}
+
+
+@app.post("/api/workflows/runs/{run_id}/resume")
+async def resume_workflow_run(run_id: str, yaml_content: str, context: dict | None = None) -> dict:
+    """恢复暂停的工作流"""
+    try:
+        wf = parse_workflow_yaml(yaml_content)
+        run = await get_workflow_engine().resume(run_id, wf, context=context)
+        return {"run_id": run.id, "status": run.status.value}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@app.delete("/api/workflows/runs/{run_id}")
+async def delete_workflow_run(run_id: str) -> dict:
+    """删除工作流运行记录"""
+    _workflow_persistence._delete_run(run_id)
+    return {"deleted": run_id}
+
+
 # ==================== Worker 状态 API ====================
 
 @app.get("/api/workers")
@@ -2173,6 +2304,29 @@ async def list_workers() -> list[dict]:
     if not worker_pool:
         return []
     return worker_pool.list_workers()
+
+
+@app.get("/api/workers/{worker_id}/logs")
+async def get_worker_logs(worker_id: str, limit: int = 50) -> dict:
+    """获取指定 Worker 的最近日志"""
+    worker_pool = get_worker_pool()
+    if not worker_pool or worker_id not in worker_pool._workers:
+        raise HTTPException(status_code=404, detail="Worker 不存在")
+    worker = worker_pool._workers[worker_id]
+    return {
+        "worker_id": worker_id,
+        "logs": worker.get_logs(limit),
+    }
+
+
+@app.delete("/api/workers/{worker_id}/logs")
+async def clear_worker_logs(worker_id: str) -> dict:
+    """清空指定 Worker 的日志"""
+    worker_pool = get_worker_pool()
+    if not worker_pool or worker_id not in worker_pool._workers:
+        raise HTTPException(status_code=404, detail="Worker 不存在")
+    worker_pool._workers[worker_id].clear_logs()
+    return {"success": True, "message": "日志已清空"}
 
 
 @app.get("/api/providers")
