@@ -2645,8 +2645,10 @@ async def list_installed_skills() -> dict:
 
 @app.get("/api/skills/search")
 async def search_skills(q: str = "", limit: int = 10) -> dict:
-    """在 registry 里按关键字搜索 skill。已安装的会被排除。
+    """在 registry 里按关键字+向量混合搜索 skill。已安装的会被排除。
 
+    当 registry 中有预计算的 embedding 时，使用 keyword score (0-1) +
+    cosine similarity (0-1) 混合评分，各占 50%。
     结果会尽力附带 GitHub stars + pushed_at(本地 24h TTL 缓存,首次冷启会拉网);
     若元数据未就绪(缓存没命中且抓取失败/超时),对应字段缺省,前端需容忍缺失。
     """
@@ -2660,7 +2662,19 @@ async def search_skills(q: str = "", limit: int = 10) -> dict:
 
     installed = {s.name for s in _list_skills(skills_dir)}
     entries = load_registry(registry_path)
-    results = search_registry(entries, q, installed, limit=limit)
+
+    # Embedding-based search when query is not empty and rag_engine is available
+    query_embedding: list[float] | None = None
+    if q and _rag_engine is not None and _rag_engine.vector_store is not None:
+        try:
+            emb_fn = _rag_engine.vector_store.embedding_function
+            if emb_fn is not None:
+                results_emb = await emb_fn.embed([q])
+                query_embedding = results_emb[0]
+        except Exception:
+            pass  # Fall back to keyword-only search
+
+    results = search_registry(entries, q, installed, limit=limit, query_embedding=query_embedding)
 
     meta = await enrich_with_repo_meta([r.source_url for r in results], meta_cache_path)
 
@@ -2749,6 +2763,32 @@ async def install_skill(body: SkillInstallRequest):
             yield f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@app.post("/api/skills/rebuild-embeddings")
+async def rebuild_skill_embeddings(
+    _: Annotated[AuthUser, require_role("admin")],
+) -> dict:
+    """预计算所有 skill 的描述向量（仅管理员）。用于首次启用向量搜索。
+
+    过程: 遍历 skills_registry.json 中无 embedding 的 entry，
+    调用 RAG 同款 embedding function 补全 embedding 字段。
+    后续新增/更新 skill 时自动补全，无需重复调用。
+    """
+    if _rag_engine is None or _rag_engine.vector_store is None:
+        raise HTTPException(status_code=503, detail="RAG engine 未初始化")
+
+    emb_fn = _rag_engine.vector_store.embedding_function
+    if emb_fn is None:
+        raise HTTPException(status_code=503, detail="embedding function 不可用")
+
+    registry_path = Path("data/skills_registry.json")
+    if not registry_path.is_file():
+        raise HTTPException(status_code=404, detail="skills_registry.json 不存在")
+
+    from skills.registry import rebuild_embeddings
+    count = await rebuild_embeddings(registry_path, emb_fn)
+    return {"computed": count, "message": f"已为 {count} 个 skill 计算向量"}
 
 
 @app.delete("/api/skills/{name}")

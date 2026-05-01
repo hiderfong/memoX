@@ -1,10 +1,26 @@
-"""Skill registry search — looks up skills by keyword in a curated JSON index."""
+"""Skill registry search — keyword + embedding similarity hybrid search."""
 
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from pathlib import Path
+
+# ── cosine similarity ────────────────────────────────────────────────────────
+
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    """Cosine similarity between two vectors."""
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    if norm_a == 0 or norm_b == 0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+# ── dataclass ────────────────────────────────────────────────────────────────
 
 
 @dataclass
@@ -13,6 +29,7 @@ class RegistryEntry:
     description: str
     source_url: str
     keywords: list[str]
+    embedding: list[float] | None = None
     score: float = 0.0
 
 
@@ -65,6 +82,7 @@ def load_registry(registry_path: Path) -> list[RegistryEntry]:
             description=s.get("description", ""),
             source_url=s["source_url"],
             keywords=[k.lower() for k in s.get("keywords", [])],
+            embedding=s.get("embedding"),
         ))
     return out
 
@@ -74,23 +92,47 @@ def search_registry(
     query: str,
     installed: set[str],
     limit: int = 10,
+    query_embedding: list[float] | None = None,
 ) -> list[RegistryEntry]:
-    """Return entries ranked by relevance to query, excluding already-installed."""
+    """Return entries ranked by relevance to query, excluding already-installed.
+
+    When query_embedding is provided, blends keyword score (0-1) with
+    cosine similarity from the embedding (0-1) using equal weighting.
+    """
     q = query.strip().lower()
     results: list[RegistryEntry] = []
 
     for e in entries:
         if e.name in installed:
             continue
-        score = _score(e, q)
-        if score <= 0 and q:
+        kw_score = _score(e, q)
+        if kw_score <= 0 and q:
             continue
+
+        # Normalise keyword score to [0, 1] — max observed ≈ 100
+        norm_kw = min(kw_score / 100.0, 1.0) if kw_score > 0 else 0.0
+
+        # Embedding similarity (when pre-computed)
+        emb_sim = 0.0
+        if query_embedding is not None and e.embedding is not None:
+            try:
+                emb_sim = _cosine(query_embedding, e.embedding)
+            except Exception:
+                emb_sim = 0.0
+
+        # Blend: 50/50 keyword + embedding
+        if query_embedding is not None and e.embedding is not None:
+            final_score = 0.5 * norm_kw + 0.5 * emb_sim
+        else:
+            final_score = norm_kw
+
         copy = RegistryEntry(
             name=e.name,
             description=e.description,
             source_url=e.source_url,
             keywords=e.keywords,
-            score=score,
+            embedding=e.embedding,
+            score=final_score,
         )
         results.append(copy)
 
@@ -134,3 +176,41 @@ def _score(entry: RegistryEntry, q: str) -> float:
                 score += 1
 
     return score
+
+
+async def rebuild_embeddings(
+    registry_path: Path,
+    embed_fn: "EmbeddingFunction",
+) -> int:
+    """Compute and store embeddings for all skills that don't have one yet.
+
+    Uses the description field as the text to embed.
+    Returns the number of embeddings actually computed.
+    """
+    from knowledge.vector_store import EmbeddingFunction
+
+    entries = load_registry(registry_path)
+    needs_embed = [e for e in entries if e.embedding is None]
+    if not needs_embed:
+        return 0
+
+    texts = [e.description for e in needs_embed]
+    vectors = await embed_fn(texts)
+
+    # Reload to avoid concurrent-write races
+    data = json.loads(registry_path.read_text(encoding="utf-8"))
+    name_to_emb = {e.name: vectors[i] for i, e in enumerate(needs_embed)}
+
+    changed = False
+    for skill in data.get("skills", []):
+        if skill["name"] in name_to_emb and "embedding" not in skill:
+            skill["embedding"] = name_to_emb[skill["name"]]
+            changed = True
+
+    if changed:
+        registry_path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+    return len(name_to_emb)
