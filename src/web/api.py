@@ -434,6 +434,15 @@ async def startup():
         runner = init_runner(get_store(), _orchestrator)
         runner.start()
 
+    # 注册优雅停机
+    import atexit
+    def _stop_scheduler():
+        from scheduler import get_runner
+        r = get_runner()
+        if r:
+            r.stop()
+    atexit.register(_stop_scheduler)
+
     # 初始化文生图客户端
     img_cfg = _config.image_generation if _config else None
     if img_cfg and img_cfg.enabled:
@@ -2101,7 +2110,10 @@ async def list_scheduled_tasks() -> list[dict]:
 
 
 @app.post("/api/scheduled-tasks")
-async def create_scheduled_task_api(request: ScheduledTaskCreate) -> dict:
+async def create_scheduled_task_api(
+    request: ScheduledTaskCreate,
+    _: Annotated[AuthUser, require_role("admin")],
+) -> dict:
     from datetime import datetime as _dt
 
     from scheduler import next_run_after, validate_cron
@@ -2132,7 +2144,11 @@ async def create_scheduled_task_api(request: ScheduledTaskCreate) -> dict:
 
 
 @app.patch("/api/scheduled-tasks/{task_id}")
-async def update_scheduled_task_api(task_id: str, request: ScheduledTaskUpdate) -> dict:
+async def update_scheduled_task_api(
+    task_id: str,
+    request: ScheduledTaskUpdate,
+    _: Annotated[AuthUser, require_role("admin")],
+) -> dict:
     from datetime import datetime as _dt
 
     from scheduler import next_run_after, validate_cron
