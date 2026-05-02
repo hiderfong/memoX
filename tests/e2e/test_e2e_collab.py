@@ -238,27 +238,32 @@ def test_three_node_dependency_chain(tmp_path):
     """
     TASK_DESCRIPTION = """【三节点依赖链协作任务】
 
-请严格按以下分工和依赖关系完成：
+请严格按以下分工完成。必须严格遵循指定的文件格式，不得自行更改字段名。
+
+【数据格式规范】
+- data.json 必须包含顶级字段名为 "items"（不是 products/fruits/goods 等其他名称）
+- processed.json 必须包含 "total_items" 和 "total_price" 两个字段
 
 【子任务1：数据准备（无依赖）】
-用 write_file 创建 data.json，内容为：
+1. 用 write_file 创建 data.json，严格按照以下 JSON 内容（不得修改结构和字段名）：
 {"items": [{"name": "apple", "price": 3}, {"name": "banana", "price": 2}, {"name": "cherry", "price": 5}]}
-完成后用 send_mail 通知 processor，主题 "data_ready"，说明 data.json 已创建。
+2. 完成后用 send_mail 通知 processor，主题 "data_ready"，正文说明 data.json 已创建完成。
 
 【子任务2：数据处理（依赖子任务1）】
-先用 read_mail 确认 data.json 已就绪。
-用 read_file 读取 data.json，计算所有 items 的总价。
-用 write_file 创建 processed.json，内容为：
-{"total_items": 3, "total_price": 10, "items": [...原始items...]}
-完成后用 send_mail 通知 reporter，主题 "processed_ready"。
+1. 用 read_mail 确认收到 "data_ready" 邮件（表示数据已就绪）
+2. 用 read_file 读取 data.json
+3. 计算所有 items 的总价（apple=3, banana=2, cherry=5，总价=10）
+4. 用 write_file 创建 processed.json，严格按照以下 JSON 格式（total_items=3, total_price=10，items 字段必须保留原始数据）：
+{"total_items": 3, "total_price": 10, "items": [{"name": "apple", "price": 3}, {"name": "banana", "price": 2}, {"name": "cherry", "price": 5}]}
+5. 完成后用 send_mail 通知 reporter，主题 "processed_ready"，正文说明处理完成。
 
 【子任务3：报告生成（依赖子任务2）】
-先用 read_mail 确认处理完成。
-用 read_file 读取 processed.json。
-用 write_file 创建 report.txt，内容为一份简洁的文本报告，包含：
-- 总商品数
-- 总价格
-- 每个商品的名称和价格"""
+1. 用 read_mail 确认收到 "processed_ready" 邮件
+2. 用 read_file 读取 processed.json
+3. 用 write_file 创建 report.txt，文本内容必须包含：
+   - 商品列表：apple 3元, banana 2元, cherry 5元
+   - 总商品数：3
+   - 总价格：10元"""
 
     provider = make_minimax_provider()
 

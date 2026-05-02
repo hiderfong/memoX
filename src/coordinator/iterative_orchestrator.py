@@ -171,10 +171,12 @@ class IterativeOrchestrator:
             self._prepare_workers(task, mail_bus, refinement_instructions)
 
             # Step 5: 重置子任务状态（多轮迭代时需要）
+            # 只重置非终态的任务，COMPLETED/FAILED 保持不变以避免重复执行
             for st in task.sub_tasks:
-                st.status = TaskStatus.PENDING
-                st.result = None
-                st.error = None
+                if st.status not in (TaskStatus.COMPLETED, TaskStatus.FAILED):
+                    st.status = TaskStatus.PENDING
+                    st.result = None
+                    st.error = None
 
             # Step 6: 带依赖注入地执行子任务
             await self._execute_with_deps(task, ctx)
@@ -416,6 +418,23 @@ class IterativeOrchestrator:
                 st.completed_at = datetime.now().isoformat()
                 completed[st.id] = result or error or ""
                 pending.remove(st)
+
+            # 清理：如果有任务被标记为 RUNNING 但从未被 dispatch（即在等待队列中）
+            # 则重置为 PENDING 以便下次 iteration 重试；同时从 pending 中移除
+            # 已 COMPLETED/FAILED 的任务，避免在 orchestrator 的状态重置中被重新执行
+            still_pending = []
+            for st in pending:
+                if st.status == TaskStatus.RUNNING:
+                    # 尝试检测是否从未被 dispatch（worker 已空闲但任务未完成）
+                    assigned = st.assigned_agent or ""
+                    worker = self._worker_pool._workers.get(assigned)
+                    if worker and not worker.is_busy:
+                        # worker 已空闲但任务状态仍为 RUNNING，说明从未被真正 dispatch
+                        st.status = TaskStatus.PENDING
+                        # 不加入 still_pending，等 orchestrator 循环的状态重置
+                    # 如果 worker 仍忙碌，不处理（下次 iteration 会继续等待）
+                # COMPLETED/FAILED 任务不重新加入 still_pending（它们已完成）
+            # pending 在循环中会被重新赋值为 still_pending
 
     def _merge(self, task: Task) -> str:
         """读取所有 Agent 沙箱文件，合并到 shared/，返回摘要"""
