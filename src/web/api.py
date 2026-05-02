@@ -16,7 +16,7 @@ _src_dir = Path(__file__).parent.parent
 if str(_src_dir) not in sys.path:
     sys.path.insert(0, str(_src_dir))
 
-from typing import Annotated  # noqa: E402, I001
+from typing import Annotated, Literal  # noqa: E402, I001
 
 from fastapi import (  # noqa: E402
     Depends,
@@ -2704,6 +2704,13 @@ async def search_skills(q: str = "", limit: int = 10) -> dict:
                 "score": r.score,
                 "stars": meta.get(r.source_url, {}).get("stars"),
                 "pushed_at": meta.get(r.source_url, {}).get("pushed_at"),
+                # wiki-style frontmatter fields
+                "created": r.created,
+                "updated": r.updated,
+                "tags": r.tags,
+                "sources": r.sources,
+                "contradictions": r.contradictions,
+                "contested": r.contested,
             }
             for r in results
         ],
@@ -2744,14 +2751,16 @@ async def install_skill(body: SkillInstallRequest):
             # 回写 registry — 让下次搜索直接命中
             try:
                 from skills.registry import upsert_registry_entry
-                changed = upsert_registry_entry(
+                changed, action = upsert_registry_entry(
                     Path("data/skills_registry.json"),
                     name=skill.name,
                     description=skill.description,
                     source_url=body.source_url,
                 )
                 if changed:
-                    await queue.put({"stage": "registry", "message": "已登记到 registry"})
+                    await queue.put({"stage": "registry", "message": f"已登记到 registry ({action})"})
+                else:
+                    await queue.put({"stage": "registry", "message": "registry 内容无变化"})
             except Exception as e:  # noqa: BLE001
                 await queue.put({"stage": "registry", "message": f"registry 写入失败: {e}"})
             await queue.put({
@@ -2805,6 +2814,111 @@ async def rebuild_skill_embeddings(
     from skills.registry import rebuild_embeddings
     count = await rebuild_embeddings(registry_path, emb_fn)
     return {"computed": count, "message": f"已为 {count} 个 skill 计算向量"}
+
+
+# ── wiki-style registry lint / log / tags ────────────────────────────────────
+
+
+@app.get("/api/skills/log")
+async def get_skill_log(limit: int = 20) -> dict:
+    """返回 registry 变更日志（append-only），最新在前。"""
+    registry_path = Path("data/skills_registry.json")
+    if not registry_path.is_file():
+        raise HTTPException(status_code=404, detail="skills_registry.json 不存在")
+    from skills.registry import get_change_log
+    log = get_change_log(registry_path, limit=limit)
+    return {"log": log, "count": len(log)}
+
+
+@app.get("/api/skills/contested")
+async def get_contested_skills() -> dict:
+    """返回所有标记了 contested 的 entry（存在未解决冲突）。"""
+    registry_path = Path("data/skills_registry.json")
+    if not registry_path.is_file():
+        raise HTTPException(status_code=404, detail="skills_registry.json 不存在")
+    from skills.registry import get_contested, load_registry
+    entries = get_contested(registry_path)
+    return {
+        "contested": [
+            {
+                "name": e.name,
+                "description": e.description,
+                "contradictions": e.contradictions,
+                "updated": e.updated,
+            }
+            for e in entries
+        ],
+        "count": len(entries),
+    }
+
+
+@app.get("/api/skills/tags")
+async def get_all_skill_tags() -> dict:
+    """返回 registry 中所有已使用的标签（去重、排序）。"""
+    registry_path = Path("data/skills_registry.json")
+    if not registry_path.is_file():
+        raise HTTPException(status_code=404, detail="skills_registry.json 不存在")
+    from skills.registry import get_all_tags
+    tags = get_all_tags(registry_path)
+    return {"tags": tags, "count": len(tags)}
+
+
+class SkillLintRequest(BaseModel):
+    action: Literal["upsert", "resolve"]  # noqa: N815
+    name: str
+    contradictions: list[str] = []
+    contested: bool = False
+
+
+@app.post("/api/skills/lint")
+async def lint_skill_registry(
+    body: SkillLintRequest,
+    _: Annotated[AuthUser, require_role("admin")],
+) -> dict:
+    """手动更新 skill 的冲突标记（仅管理员）。
+
+    action=upsert:   对已有 entry 更新 contradictions / contested 字段。
+    action=resolve:  清除 contested 标记，表示冲突已人工审查并解决。
+    """
+    registry_path = Path("data/skills_registry.json")
+    if not registry_path.is_file():
+        raise HTTPException(status_code=404, detail="skills_registry.json 不存在")
+
+    from skills.registry import load_registry
+
+    data = json.loads(registry_path.read_text(encoding="utf-8"))
+    entries: list[dict] = data.get("skills", [])
+
+    for e in entries:
+        if e["name"] == body.name:
+            if body.action == "upsert":
+                e["contradictions"] = body.contradictions
+                e["contested"] = body.contested
+                _append_log(data, "conflict_mark", body.name, f"contested={body.contested}")
+            elif body.action == "resolve":
+                e["contested"] = False
+                _append_log(data, "resolve", body.name, "")
+            registry_path.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            return {"ok": True, "name": body.name, "action": body.action}
+    raise HTTPException(status_code=404, detail=f"skill '{body.name}' not found in registry")
+
+
+def _append_log(data: dict, action: str, name: str, note: str = "") -> None:
+    """Append to the in-memory log list within data (used by lint endpoint)."""
+    from datetime import datetime
+    log: list[dict] = data.setdefault("log", [])
+    entry = {
+        "action": action,
+        "name": name,
+        "at": datetime.now().isoformat(timespec="seconds"),
+        "note": note,
+    }
+    if len(log) >= 500:
+        log[:] = log[-499:]
+    log.append(entry)
 
 
 @app.delete("/api/skills/{name}")
