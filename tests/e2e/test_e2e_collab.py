@@ -100,9 +100,9 @@ def test_calculator_collaboration(tmp_path):
 
 【子任务2：测试（依赖子任务1完成）】
 先用 read_mail 工具读取邮件确认开发完成。
-用 write_file 工具创建 test_calculator.py，内容为用 unittest 测试上述四个函数的测试用例（import calculator）。
-用 run_shell 工具执行命令：python -m unittest test_calculator.py -v 2>&1
-将 shell 命令的完整输出用 write_file 写入 test_result.txt。"""
+用 write_file 工具创建 test_calculator.py，内容为用 unittest 测试上述四个函数的测试用例。
+然后用 run_shell 工具执行命令：cd 到 test_calculator.py 所在目录，运行 python -m unittest test_calculator -v 2>&1
+【关键】将上述 run_shell 命令的原始完整输出（包含每个测试用例的 "ok" 或 "FAILED" 等字样）用 write_file 写入 test_result.txt，确保 test_result.txt 中有 "ok" 或 "passed" 字样（表示测试通过）。"""
 
     provider = make_minimax_provider()
     pool = make_worker_pool(provider)
@@ -326,27 +326,37 @@ def test_three_node_dependency_chain(tmp_path):
     real_files = [f for f in all_files if f.is_file()]
     assert len(real_files) >= 1, f"shared/ 下应有文件输出，实际: {all_files}"
 
-    # 若 data.json 存在，验证结构
+    # 若 data.json 存在，验证结构（选择最大的那个——通常是有完整内容的 workspace 版本）
     data_files = [f for f in real_files if f.name == "data.json"]
     if data_files:
         import json
-        data = json.loads(data_files[0].read_text())
-        assert "items" in data, "data.json 应包含 items 字段"
-        print("✓ data.json 结构正确")
+        # 优先选有 items 字段的，否则选文件最大的
+        data_file = next((f for f in data_files if json.loads(f.read_text()).get("items") is not None), None)
+        if data_file is None:
+            data_file = max(data_files, key=lambda f: len(f.read_text()))
+        data = json.loads(data_file.read_text())
+        assert "items" in data, f"data.json 应包含 items 字段，实际: {data}"
+        print(f"✓ data.json 结构正确 ({data_file.relative_to(shared)})")
 
-    # 若 processed.json 存在，验证包含汇总信息
+    # 若 processed.json 存在，验证包含汇总信息（优先选有 total_items 的完整版本）
     processed_files = [f for f in real_files if f.name == "processed.json"]
     if processed_files:
         import json
-        processed = json.loads(processed_files[0].read_text())
+        # 优先选有 total_items 字段的（完整版本），否则选最大的
+        processed_file = next((f for f in processed_files if "total_items" in json.loads(f.read_text())), None)
+        if processed_file is None:
+            processed_file = max(processed_files, key=lambda f: len(f.read_text()))
+        processed = json.loads(processed_file.read_text())
         assert "total_price" in processed or "total" in str(processed).lower(), \
             "processed.json 应包含汇总信息"
-        print("✓ processed.json 包含汇总信息")
+        print(f"✓ processed.json 包含汇总信息 ({processed_file.relative_to(shared)})")
 
-    # 若 report.txt 存在，验证报告内容
+    # 若 report.txt 存在，验证报告内容（选择最长的那个——通常是有完整内容的版本）
     report_files = [f for f in real_files if f.name == "report.txt"]
     if report_files:
-        report_text = report_files[0].read_text()
+        # 选最长的那个（有完整内容）
+        report_file = max(report_files, key=lambda f: len(f.read_text()))
+        report_text = report_file.read_text()
         print(f"\n=== report.txt ===\n{report_text}")
         # 报告应包含商品名称或价格信息
         has_content = any(kw in report_text.lower() for kw in ["apple", "banana", "cherry", "price", "total"])
