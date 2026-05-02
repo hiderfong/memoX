@@ -90,6 +90,7 @@ class KnowledgeBaseConfig:
     # 知识图谱配置（实验性）
     enable_graph: bool = False
     graph_persist_path: str = "./data/knowledge_graph.gml"
+    manifest_path: str = "./data/documents_manifest.json"
     graph_llm_provider: str = "dashscope"
     graph_llm_api_key: str = ""
 

@@ -1,15 +1,128 @@
-"""RAG 引擎 - 检索增强生成"""
+"""RAG 引擎 - 检索增强生成
 
+增量更新策略（P2）：
+- 上传文件时计算 SHA256 content hash
+- manifest（data/documents_manifest.json）按 (filename, file_size) 匹配已有记录
+- content hash 一致 → 跳过重新索引，直接返回已有 doc_info
+- content hash 变化 → 删除旧 chunks，重新索引
+- manifest 在 RAGEngine 实例化时加载，保持内存缓存 + 定期写回
+"""
+
+import hashlib
+import json
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
+from typing import Literal
 
 from .bm25_indexer import BM25Indexer, get_bm25_indexer
 from .document_parser import DocumentParser
 from .hybrid_retriever import HybridRetriever
 from .knowledge_graph import KnowledgeGraph, get_knowledge_graph
 from .vector_store import ChromaVectorStore, EmbeddingFunction, get_vector_store
+
+
+@dataclass
+class UpsertResult:
+    """add_document 的增量更新结果"""
+    doc_info: "DocumentInfo"
+    action: Literal["indexed", "skipped", "updated"]
+
+
+class _DocumentManifest:
+    """data/documents_manifest.json 管理器。
+
+    Manifest 按 (filename, file_size) 索引已有文档，value 为
+    {doc_id, content_hash, chunk_count, created_at}。
+    用于增量更新检测：content hash 不变则跳过重索引。
+    """
+
+    MANIFEST_VERSION = 1
+    HASH_CHUNK_SIZE = 65536  # 64 KB reads for SHA256
+
+    def __init__(self, manifest_path: Path):
+        self._path = manifest_path
+        self._data: dict[str, dict] = {}  # key: f"{filename}::{file_size}"
+        self._dirty = False
+        self._load()
+
+    # ── persistence ──────────────────────────────────────────────────────────
+
+    def _load(self) -> None:
+        if self._path.is_file():
+            try:
+                raw = json.loads(self._path.read_text(encoding="utf-8"))
+                version = raw.get("version", 1)
+                if version != self.MANIFEST_VERSION:
+                    # Future migrations go here
+                    pass
+                self._data = raw.get("documents", {})
+            except (json.JSONDecodeError, OSError):
+                self._data = {}
+        else:
+            self._data = {}
+
+    def save(self) -> None:
+        if not self._dirty:
+            return
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        raw = {"version": self.MANIFEST_VERSION, "documents": self._data}
+        self._path.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        self._dirty = False
+
+    # ── lookup ───────────────────────────────────────────────────────────────
+
+    def _make_key(self, filename: str, file_size: int) -> str:
+        return f"{filename}::{file_size}"
+
+    def get(self, filename: str, file_size: int) -> dict | None:
+        """Return manifest entry for (filename, file_size) if present."""
+        return self._data.get(self._make_key(filename, file_size))
+
+    def get_by_doc_id(self, doc_id: str) -> dict | None:
+        for entry in self._data.values():
+            if entry.get("doc_id") == doc_id:
+                return entry
+        return None
+
+    # ── mutation ────────────────────────────────────────────────────────────
+
+    def put(self, filename: str, file_size: int, doc_id: str,
+            content_hash: str, chunk_count: int, created_at: str,
+            doc_type: str = "unknown") -> None:
+        key = self._make_key(filename, file_size)
+        self._data[key] = {
+            "doc_id": doc_id,
+            "content_hash": content_hash,
+            "chunk_count": chunk_count,
+            "created_at": created_at,
+            "updated_at": date.today().isoformat(),
+            "doc_type": doc_type,
+        }
+        self._dirty = True
+
+    def remove(self, filename: str, file_size: int) -> None:
+        key = self._make_key(filename, file_size)
+        if key in self._data:
+            del self._data[key]
+            self._dirty = True
+
+    def remove_by_doc_id(self, doc_id: str) -> None:
+        """Remove entry by doc_id (doc_id is unique across manifest)."""
+        for key, entry in list(self._data.items()):
+            if entry.get("doc_id") == doc_id:
+                del self._data[key]
+                self._dirty = True
+                return
+
+    def content_hash_of(self, file_path: Path) -> str:
+        """Compute SHA256 hex digest of a file, streaming to handle large files."""
+        h = hashlib.sha256()
+        with file_path.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(self.HASH_CHUNK_SIZE), b""):
+                h.update(chunk)
+        return h.hexdigest()
 
 
 @dataclass
@@ -130,6 +243,7 @@ class RAGEngine:
         chunk_strategy: str = "size",
         enable_graph: bool = False,
         graph_persist_path: str = "./data/knowledge_graph.gml",
+        manifest_path: str = "./data/documents_manifest.json",
     ):
         self.vector_store = vector_store or get_vector_store()
         self.document_parser = document_parser or DocumentParser(
@@ -166,17 +280,61 @@ class RAGEngine:
         self._sessions: dict[str, ChatSession] = {}
         self._documents: dict[str, DocumentInfo] = {}
 
+        # 文档增量更新 manifest
+        self._manifest = _DocumentManifest(Path(manifest_path))
+
     async def add_document(
         self,
         file_path: Path,
         collection_name: str = "documents",
         group_id: str = "ungrouped",
         original_filename: str | None = None,
-    ) -> DocumentInfo:
-        """添加文档到知识库"""
-        doc_id = str(uuid.uuid4())[:8]
-        display_name = original_filename or file_path.name
+    ) -> UpsertResult:
+        """添加文档到知识库，支持增量更新。
 
+        策略：
+        - 先计算文件 content hash（SHA256）
+        - 按 (filename, file_size) 查 manifest：
+          - 无记录 → 完整解析并索引（action="indexed"）
+          - 有记录且 hash 未变 → 跳过解析，直接返回已有 doc_info（action="skipped"）
+          - 有记录但 hash 变化 → 删除旧 chunks，重新索引（action="updated"）
+        - 完成后更新 manifest 并写盘
+        """
+        display_name = original_filename or file_path.name
+        file_size = file_path.stat().st_size
+
+        # 增量检测：计算 content hash 并查询 manifest
+        content_hash = self._manifest.content_hash_of(file_path)
+        manifest_entry = self._manifest.get(display_name, file_size)
+
+        if manifest_entry is not None:
+            existing_hash = manifest_entry["content_hash"]
+            if existing_hash == content_hash:
+                # Content 未变，跳过解析和索引
+                doc_id = manifest_entry["doc_id"]
+                print(f"[RAG] Document '{display_name}' content unchanged (hash={content_hash[:12]}...), skipping reindex.")
+                # 尝试从内存或向量库恢复 doc_info
+                doc_info = self._documents.get(doc_id)
+                if doc_info is None:
+                    doc_info = DocumentInfo(
+                        id=doc_id,
+                        filename=display_name,
+                        type=manifest_entry.get("doc_type", "unknown"),
+                        chunk_count=manifest_entry["chunk_count"],
+                        created_at=manifest_entry["created_at"],
+                        size=file_size,
+                        group_id=group_id,
+                    )
+                return UpsertResult(doc_info=doc_info, action="skipped")
+
+        # Content 变化或无记录：完整解析并索引
+        # 若有旧记录，先删除旧 chunks
+        if manifest_entry is not None:
+            old_doc_id = manifest_entry["doc_id"]
+            print(f"[RAG] Document '{display_name}' content changed — deleting old doc_id={old_doc_id}.")
+            await self.delete_document(old_doc_id, collection_name)
+
+        doc_id = str(uuid.uuid4())[:8]
         print(f"[RAG] Starting to process document: {display_name}")
         print(f"[RAG] Document ID: {doc_id}")
 
@@ -194,7 +352,6 @@ class RAGEngine:
 
         # 添加文档元数据（写入 ChromaDB 以持久化，重启后可恢复列表）
         created_at = datetime.now().isoformat()
-        file_size = file_path.stat().st_size
         for chunk in chunks:
             chunk.metadata["doc_id"] = doc_id
             chunk.metadata["filename"] = display_name
@@ -222,8 +379,21 @@ class RAGEngine:
         )
         self._documents[doc_id] = doc_info
 
+        # 更新 manifest（写入文件）
+        self._manifest.put(
+            filename=display_name,
+            file_size=file_size,
+            doc_id=doc_id,
+            content_hash=content_hash,
+            chunk_count=len(chunks),
+            created_at=created_at,
+            doc_type=document.metadata.get("type", "unknown"),
+        )
+        self._manifest.save()
+
         print(f"[RAG] Document processing complete: {doc_info}")
-        return doc_info
+        action = "updated" if manifest_entry is not None else "indexed"
+        return UpsertResult(doc_info=doc_info, action=action)
 
     async def _index_document_chunks(
         self,
@@ -266,7 +436,7 @@ class RAGEngine:
             self._knowledge_graph.save()
 
     async def delete_document(self, doc_id: str, collection_name: str = "documents") -> bool:
-        """从知识库删除文档"""
+        """从知识库删除文档，同时清理 manifest 记录"""
         count = await self.vector_store.delete_by_document_id(doc_id, collection_name)
         if self._hybrid_retriever is not None:
             self._hybrid_retriever.bm25_indexer.delete_by_doc_id(doc_id)
@@ -274,6 +444,9 @@ class RAGEngine:
             self._knowledge_graph.remove_by_chunk_id(doc_id)
         if doc_id in self._documents:
             del self._documents[doc_id]
+        # 从 manifest 中移除
+        self._manifest.remove_by_doc_id(doc_id)
+        self._manifest.save()
         return count > 0
 
     @staticmethod
@@ -604,6 +777,7 @@ def init_rag_engine(
     chunk_strategy: str = "size",
     enable_graph: bool = False,
     graph_persist_path: str = "./data/knowledge_graph.gml",
+    manifest_path: str = "./data/documents_manifest.json",
 ) -> RAGEngine:
     """初始化 RAG 引擎"""
     global _rag_engine
@@ -620,5 +794,6 @@ def init_rag_engine(
         chunk_strategy=chunk_strategy,
         enable_graph=enable_graph,
         graph_persist_path=graph_persist_path,
+        manifest_path=manifest_path,
     )
     return _rag_engine

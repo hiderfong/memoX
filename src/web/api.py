@@ -244,6 +244,7 @@ class DocumentResponse(BaseModel):
     created_at: str
     size: int
     group_id: str = "ungrouped"
+    action: Literal["indexed", "skipped", "updated"] = "indexed"
 
 
 class GroupCreate(BaseModel):
@@ -346,6 +347,7 @@ async def startup():
         chunk_strategy=hybrid_cfg.get("chunk_strategy", "size") if hybrid_cfg else "size",
         enable_graph=kb_config.enable_graph,
         graph_persist_path=kb_config.graph_persist_path,
+        manifest_path=kb_config.manifest_path,
     )
 
     # 预热嵌入模型（避免首次请求时延迟）
@@ -595,11 +597,13 @@ async def upload_document(
     # 添加到知识库（带整体超时）
     try:
         # 总超时 300 秒（5分钟），给大文件处理足够时间
-        doc_info = await asyncio.wait_for(
+        result = await asyncio.wait_for(
             _rag_engine.add_document(file_path, group_id=group_id, original_filename=file.filename),
             timeout=300.0
         )
-        logger.info(f"[UPLOAD] Document added: {doc_info.id}")
+        doc_info = result.doc_info
+        action = result.action
+        logger.info(f"[UPLOAD] Document added: {doc_info.id} (action={action})")
         return DocumentResponse(
             id=doc_info.id,
             filename=doc_info.filename,
@@ -608,6 +612,7 @@ async def upload_document(
             created_at=doc_info.created_at,
             size=doc_info.size,
             group_id=doc_info.group_id,
+            action=action,
         )
     except asyncio.TimeoutError as e:
         logger.error("[UPLOAD ERROR] 文档处理超时")

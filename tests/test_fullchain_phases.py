@@ -97,6 +97,7 @@ def client(test_dirs):
         chunk_size=200,
         chunk_overlap=20,
         top_k=5,
+        manifest_path=os.path.join(test_dirs["base"], "documents_manifest.json"),
     )
 
     # Worker Pool (mock provider)

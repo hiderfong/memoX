@@ -35,6 +35,7 @@ data/groups.json
 data/skills/
 data/bm25_index.pkl
 data/knowledge_graph.gml
+data/documents_manifest.json
 
 # ---- Secrets & TLS ----
 ssl/
