@@ -58,6 +58,11 @@ from knowledge.vector_store import (  # noqa: E402
     SentenceTransformerEmbedding,
 )
 from storage import get_store, init_store  # noqa: E402
+from workflow import (  # noqa: E402
+    WorkflowEngine,
+    WorkflowPersistence,
+    parse_workflow_yaml,
+)
 
 
 def _audit_log(
@@ -101,6 +106,9 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "Accept"],
 )
+
+# ── Upload limits ──────────────────────────────────────────────
+MAX_UPLOAD_SIZE = 100 * 1024 * 1024  # 100 MB per file
 
 # ── Rate Limiter ────────────────────────────────────────────────
 limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
@@ -581,18 +589,44 @@ async def upload_document(
     import asyncio
     import traceback
 
+    # 检查 Content-Length（如果客户端提供了的话）
+    content_length = request.headers.get("content-length")
+    if content_length:
+        try:
+            cl = int(content_length)
+            if cl > MAX_UPLOAD_SIZE:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"文件大小 {cl / 1024 / 1024:.1f} MB 超过上限 {MAX_UPLOAD_SIZE / 1024 / 1024:.0f} MB",
+                )
+        except ValueError:
+            pass  # 无法解析 Content-Length，继续由 UploadFile.spool_max_size 兜底
+
     upload_dir = Path(_config.knowledge_base.upload_directory)
     upload_dir.mkdir(parents=True, exist_ok=True)
 
-    # 保存文件
+    # 保存文件（流式写入，避免大文件撑爆内存）
     file_path = upload_dir / f"{uuid.uuid4().hex}_{file.filename}"
+    bytes_written = 0
     try:
-        content = await file.read()
-        file_path.write_bytes(content)
+        with file_path.open("wb") as dest:
+            while chunk := await file.read(65536):  # 64 KB per read
+                bytes_written += len(chunk)
+                if bytes_written > MAX_UPLOAD_SIZE:
+                    file_path.unlink(missing_ok=True)
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"文件大小超过上限 {MAX_UPLOAD_SIZE / 1024 / 1024:.0f} MB",
+                    )
+                dest.write(chunk)
+    except HTTPException:
+        raise
     except Exception as e:
+        with contextlib.suppress(Exception):
+            file_path.unlink(missing_ok=True)
         raise HTTPException(status_code=400, detail=f"文件保存失败: {str(e)}") from e
 
-    logger.info(f"[UPLOAD] File saved: {file_path}, size: {len(content)} bytes")
+    logger.info(f"[UPLOAD] File saved: {file_path}, size: {bytes_written} bytes")
 
     # 添加到知识库（带整体超时）
     try:
@@ -639,6 +673,27 @@ async def upload_document(
         raise HTTPException(status_code=500, detail=f"文档处理失败: {type(e).__name__}: {str(e)}") from e
 
 
+def _check_url_not_ssrf(url: str) -> None:
+    """Raise HTTPException if URL resolves to a private/reserved IP (SSRF protection)."""
+    import ipaddress
+    import socket
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    hostname = parsed.hostname
+    if not hostname:
+        raise HTTPException(status_code=400, detail="URL 无法解析主机名")
+
+    try:
+        ip_str = socket.gethostbyname(hostname)
+    except socket.gaierror as e:
+        raise HTTPException(status_code=400, detail=f"DNS 解析失败: {e}") from e
+
+    ip = ipaddress.ip_address(ip_str)
+    if ip.is_loopback or ip.is_private or ip.is_link_local or ip.is_reserved:
+        raise HTTPException(status_code=400, detail=f"不允许访问私有/保留 IP 地址: {ip_str}")
+
+
 @app.post("/api/documents/url")
 async def import_url(request: URLRequest) -> DocumentResponse:
     """从 URL 抓取网页并导入知识库"""
@@ -646,6 +701,8 @@ async def import_url(request: URLRequest) -> DocumentResponse:
     url = request.url.strip()
     if not re.match(r"^https?://", url):
         raise HTTPException(status_code=400, detail="URL 必须以 http:// 或 https:// 开头")
+
+    _check_url_not_ssrf(url)
 
     doc_id = uuid.uuid4().hex[:8]
     parser = WebPageParser()
@@ -1608,11 +1665,12 @@ async def chat_stream(request: Request, chat_req: ChatRequest):
             search_results = await _rag_engine.search(_message, group_ids=_active_group_ids)
 
             # 先发送检索结果（包含完整元数据，P4-3 引用支持）
-            yield f"data: {json.dumps({'type': 'sources', 'data': [
+            sources_data = [
                 {'filename': r.metadata.get('filename', 'unknown'), 'score': r.score,
                  'doc_id': r.metadata.get('doc_id', ''), 'chunk_index': r.metadata.get('chunk_index', 0)}
                 for r in search_results
-            ]})}\n\n"
+            ]
+            yield f"data: {json.dumps({'type': 'sources', 'data': sources_data})}\n\n"
 
         # 构建提示
         from imaging import get_image_client, get_video_client
@@ -2207,14 +2265,6 @@ async def delete_scheduled_task_api(
 
 # ==================== Workflow API ====================
 
-from workflow import (
-    WorkflowEngine,
-    WorkflowPersistence,
-    parse_workflow_yaml,
-    parse_workflow_yaml_file,
-)
-from workflow.engine import WorkflowRunStatus
-
 _workflow_engine: WorkflowEngine | None = None
 _workflow_persistence: WorkflowPersistence | None = None
 
@@ -2264,7 +2314,7 @@ async def run_workflow(
 @app.get("/api/workflows/runs")
 async def list_workflow_runs(workflow_name: str | None = None, limit: int = 50) -> list[dict]:
     """列出工作流运行记录"""
-    persistence = get_workflow_engine()  # ensure init
+    get_workflow_engine()  # ensure init
     runs = _workflow_persistence.list_runs(workflow_name=workflow_name, limit=limit)
     return [
         {
@@ -2841,7 +2891,7 @@ async def get_contested_skills() -> dict:
     registry_path = Path("data/skills_registry.json")
     if not registry_path.is_file():
         raise HTTPException(status_code=404, detail="skills_registry.json 不存在")
-    from skills.registry import get_contested, load_registry
+    from skills.registry import get_contested
     entries = get_contested(registry_path)
     return {
         "contested": [
@@ -2889,7 +2939,6 @@ async def lint_skill_registry(
     if not registry_path.is_file():
         raise HTTPException(status_code=404, detail="skills_registry.json 不存在")
 
-    from skills.registry import load_registry
 
     data = json.loads(registry_path.read_text(encoding="utf-8"))
     entries: list[dict] = data.get("skills", [])
