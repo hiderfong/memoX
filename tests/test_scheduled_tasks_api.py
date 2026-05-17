@@ -14,7 +14,7 @@ def _bypass_auth(monkeypatch):
     Both the middleware (_get_auth_from_request(request)) and FastAPI route
     dependencies (Depends(_get_auth_from_request)) will use the mock AuthManager.
     """
-    from src.auth import AuthUser, _get_auth_from_request
+    from src.auth import _get_auth_from_request
     from src.web.api import app
 
     mock_mgr = MagicMock()
@@ -33,12 +33,14 @@ def _bypass_auth(monkeypatch):
 
 @pytest.fixture
 def mock_store(tmp_path, monkeypatch):
-    """创建一个真实的 PersistenceStore 并注入到 api 模块"""
-    from src.web import api as api_mod
+    """创建一个真实的 PersistenceStore 并注入到 scheduled router"""
     from storage.persistence import PersistenceStore
+    from web.routers import scheduled as sched_mod
 
     store = PersistenceStore(tmp_path / "sched_test.db")
-    monkeypatch.setattr(api_mod, "get_store", lambda: store)
+    # scheduled.py imports: from web.state import get_store as _gs (bound at import time)
+    # Must patch where it's used, not where it's defined
+    monkeypatch.setattr(sched_mod, "_gs", lambda: store)
     yield store
     store.close()
 
