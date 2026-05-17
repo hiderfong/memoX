@@ -73,7 +73,7 @@ class ResultAggregator:
             return "", 0.0
 
         successful = [r for r in results if r.success and r.content]
-        failed = [r for r in results if not r.success]
+        [r for r in results if not r.success]
 
         # 构建聚合 prompt
         worker_outputs = []
@@ -196,9 +196,9 @@ class MultiAgentExecutor:
         task_workspace = ctx.get("_task_workspace")
         from agents.sandbox import SandboxManager
         if task_workspace:
-            sandbox_mgr = SandboxManager(task_workspace)
+            SandboxManager(task_workspace)
         else:
-            sandbox_mgr = SandboxManager()
+            SandboxManager()
 
         # 准备 Worker 工具
         self._prepare_workers(task)
@@ -211,14 +211,12 @@ class MultiAgentExecutor:
             if all(d in {r.subtask_id for r in []} for d in st.dependencies)  # 空依赖 = 立即执行
         ]
         # 实际按 subtask_id 匹配已完成结果
-        completed_ids: set[str] = set()
-        pending = list(task.sub_tasks)
+        list(task.sub_tasks)
         subtask_results: list[SubTaskResult] = []
 
         async def run_single(st: Any, context: dict) -> SubTaskResult:
             """运行单个子任务并返回结果"""
             import time
-            from agents.worker_pool import TaskStatus
             t0 = time.perf_counter()
 
             worker = self._worker_pool.get_worker_for(st)
@@ -304,10 +302,10 @@ class MultiAgentExecutor:
 
     def _prepare_workers(self, task: Task) -> None:
         """为每个子任务绑定工具（从 IterativeOrchestrator 复制逻辑）"""
-        from agents.sandbox import SandboxManager
-        from agents.worker_pool import TaskStatus
-        from config import get_config
         from pathlib import Path
+
+        from agents.sandbox import SandboxManager
+        from config import get_config
         from skills.tool import LoadSkillTool
         from tools.filesystem import ListFilesTool, ReadFileTool, WriteFileTool
         from tools.mail import ReadMailTool, SendMailTool

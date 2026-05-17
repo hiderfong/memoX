@@ -8,11 +8,7 @@
 from __future__ import annotations
 
 import asyncio
-import tempfile
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
-
-import pytest
 
 from src.knowledge.bm25_indexer import (
     BM25Indexer,
@@ -24,9 +20,7 @@ from src.knowledge.bm25_indexer import (
 from src.knowledge.hybrid_retriever import (
     HybridRetriever,
     RetrievedChunk,
-    SearchQuality,
 )
-
 
 # ── BM25Indexer 单元测试 ────────────────────────────────────────────────────
 

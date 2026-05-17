@@ -1,10 +1,10 @@
 """Agent 间通信协议 — InterAgentMessage 标准结构"""
 
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import IntEnum
 from typing import Any
-import uuid
 
 
 class MessagePriority(IntEnum):

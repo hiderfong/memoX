@@ -15,8 +15,6 @@ MemoX Streamlit 管理界面
 from __future__ import annotations
 
 import time
-from datetime import datetime
-from pathlib import Path
 
 import requests
 import streamlit as st
@@ -226,7 +224,7 @@ def page_workers():
     # 状态概览
     if workers:
         online = sum(1 for w in workers if w.get("status") == "online")
-        st.metric("在线 Worker", online, total := len(workers))
+        st.metric("在线 Worker", online, len(workers))
     if tasks_running is not None:
         st.metric("运行中任务", len(tasks_running) if isinstance(tasks_running, list) else 0)
 
@@ -304,23 +302,22 @@ def page_memory():
                     st.divider()
 
     # Tab: 添加
-    with tab_add:
-        with st.form("add_memory_form"):
-            content = st.text_area("记忆内容", placeholder="输入要记住的信息...", height=100)
-            new_user_id = st.text_input("用户 ID", value="default")
-            new_category = st.selectbox("类别", ["fact", "preference", "todo", "context"])
-            new_importance = st.slider("重要程度", 0.0, 1.0, 0.5, 0.1)
-            submitted = st.form_submit_button("添加记忆", type="primary")
-            if submitted and content:
-                result = api_post(f"{API_BASE}/memories", {
-                    "content": content,
-                    "user_id": new_user_id,
-                    "category": new_category,
-                    "importance": new_importance,
-                })
-                if result:
-                    st.success("记忆已添加")
-                    st.rerun()
+    with tab_add, st.form("add_memory_form"):
+        content = st.text_area("记忆内容", placeholder="输入要记住的信息...", height=100)
+        new_user_id = st.text_input("用户 ID", value="default")
+        new_category = st.selectbox("类别", ["fact", "preference", "todo", "context"])
+        new_importance = st.slider("重要程度", 0.0, 1.0, 0.5, 0.1)
+        submitted = st.form_submit_button("添加记忆", type="primary")
+        if submitted and content:
+            result = api_post(f"{API_BASE}/memories", {
+                "content": content,
+                "user_id": new_user_id,
+                "category": new_category,
+                "importance": new_importance,
+            })
+            if result:
+                st.success("记忆已添加")
+                st.rerun()
 
     # Tab: 搜索
     with tab_search:

@@ -61,7 +61,7 @@ class SimpleVectorStore:
             content_lower = chunk["content"].lower()
 
             # 计算简单的相关性分数
-            score = 0
+            score: float = 0.0
             for word in query_words:
                 if word in content_lower:
                     score += content_lower.count(word) / len(chunk["content"])

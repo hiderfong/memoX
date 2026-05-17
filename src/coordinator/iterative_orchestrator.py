@@ -6,8 +6,7 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
-from typing import Literal
+from typing import Any, Literal
 
 from loguru import logger
 
@@ -422,7 +421,6 @@ class IterativeOrchestrator:
             # 清理：如果有任务被标记为 RUNNING 但从未被 dispatch（即在等待队列中）
             # 则重置为 PENDING 以便下次 iteration 重试；同时从 pending 中移除
             # 已 COMPLETED/FAILED 的任务，避免在 orchestrator 的状态重置中被重新执行
-            still_pending = []
             for st in pending:
                 if st.status == TaskStatus.RUNNING:
                     # 尝试检测是否从未被 dispatch（worker 已空闲但任务未完成）

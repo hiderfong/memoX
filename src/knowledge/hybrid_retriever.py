@@ -109,8 +109,8 @@ class HybridRetriever:
         bm25_ranks = {cid: rank + 1 for rank, cid in enumerate(cid for cid, _ in bm25_results)}
 
         # chunk_id → 原始分数
-        vector_scores_map = {cid: score for cid, score in vector_results}
-        bm25_scores_map = {cid: score for cid, score in bm25_results}
+        vector_scores_map = dict(vector_results)
+        bm25_scores_map = dict(bm25_results)
 
         # 合并候选集（去重）
         all_chunk_ids = set(vector_ranks) | set(bm25_ranks)
@@ -139,14 +139,14 @@ class HybridRetriever:
             # 尝试从向量结果中补充 metadata（向量结果有完整的 metadata）
             if chunk_id in vector_scores_map:
                 # 从向量结果重建 metadata（向量 store 返回的格式）
-                vec_meta = metadata.copy()  # 先用 BM25 的
+                metadata.copy()  # 先用 BM25 的
                 # NOTE: 这里向量结果只返回了 content，没有额外 metadata 字段，
                 # 因为 ChromaDB search 返回的 documents + distances 本身不含额外 metadata。
                 # metadata 已在 ChromaDB 的 chunk 中，以 field 形式存在。
                 # 从 ChromaDB 的 get_by_id 或已缓存获取更完整的 metadata 是设计问题，
                 # 目前的折中方案是 metadata 优先取 BM25Indexer 存储的副本。
             else:
-                vec_meta = {}
+                pass
 
             vec_score = float(vector_scores_map.get(chunk_id, 0.0))
             bm_score = float(bm25_scores_map.get(chunk_id, 0.0))
@@ -172,11 +172,11 @@ class HybridRetriever:
         collection_name: str = "documents",
         top_k: int = 20,
         filter_metadata: dict | None = None,
-    ) -> SearchQuality:
-        """同步版本的检索质量诊断（用于调试）"""
+    ) -> list[RetrievedChunk]:
+        """同步版本的检索（用于调试）"""
         import asyncio
 
-        return asyncio.run(self.search(query, collection_name, top_k, filter_metadata))  # type: ignore[arg-type]
+        return asyncio.run(self.search(query, collection_name, top_k, filter_metadata))
 
     # ── 内部方法 ──────────────────────────────────────────────────────────────
 

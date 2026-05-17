@@ -5,9 +5,8 @@ from unittest.mock import MagicMock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from storage.persistence import PersistenceStore
 from memory.memory_manager import MemoryManager, MemoryStats
-
+from storage.persistence import PersistenceStore
 
 # ─── Mock LLM Provider ────────────────────────────────────────────────────────
 

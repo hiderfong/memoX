@@ -38,12 +38,14 @@ from datetime import date, datetime
 from difflib import SequenceMatcher
 from pathlib import Path
 
+from knowledge.vector_store import EmbeddingFunction
+
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
     """Cosine similarity between two vectors."""
-    dot = sum(x * y for x, y in zip(a, b))
+    dot = sum(x * y for x, y in zip(a, b, strict=False))
     norm_a = math.sqrt(sum(x * x for x in a))
     norm_b = math.sqrt(sum(x * x for x in b))
     if norm_a == 0 or norm_b == 0:
@@ -406,14 +408,13 @@ def _score(entry: RegistryEntry, q: str) -> float:
 
 async def rebuild_embeddings(
     registry_path: Path,
-    embed_fn: "EmbeddingFunction",
+    embed_fn: EmbeddingFunction,
 ) -> int:
     """Compute and store embeddings for all skills that don't have one yet.
 
     Uses the description field as the text to embed.
     Returns the number of embeddings actually computed.
     """
-    from knowledge.vector_store import EmbeddingFunction
 
     entries = load_registry(registry_path)
     needs_embed = [e for e in entries if e.embedding is None]

@@ -8,8 +8,8 @@
 """
 
 import asyncio
+import contextlib
 import json
-import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -20,9 +20,7 @@ from typing import Any
 from loguru import logger
 
 from agents.base_agent import LLMProvider
-from agents.mail_bus import MailBus
-from agents.worker_pool import Task, TaskStatus, WorkerPool
-from agents.sandbox import SandboxManager
+from agents.worker_pool import TaskStatus, WorkerPool
 from workflow.dsl import StepCondition, Workflow, WorkflowStep
 from workflow.parser import resolve_template
 
@@ -535,10 +533,8 @@ class WorkflowEngine:
                 self._persistence.save_run(run)
 
                 if on_step_change:
-                    try:
+                    with contextlib.suppress(Exception):
                         on_step_change(step.id, WorkflowRunStatus.COMPLETED)
-                    except Exception:
-                        pass
 
                 return result_str
 

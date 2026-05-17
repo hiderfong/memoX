@@ -16,10 +16,10 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Literal
 
-from .bm25_indexer import BM25Indexer, get_bm25_indexer
+from .bm25_indexer import get_bm25_indexer
 from .document_parser import DocumentParser
 from .hybrid_retriever import HybridRetriever
-from .knowledge_graph import KnowledgeGraph, get_knowledge_graph
+from .knowledge_graph import get_knowledge_graph
 from .vector_store import ChromaVectorStore, EmbeddingFunction, get_vector_store
 
 
@@ -429,7 +429,7 @@ class RAGEngine:
         # 知识图谱（启用时同步写入三元组）
         if self._knowledge_graph is not None:
             for c in chunks:
-                from .knowledge_graph import _extract_triples_rule_based, Triple
+                from .knowledge_graph import _extract_triples_rule_based
                 triples = _extract_triples_rule_based(c.content, c.id)
                 for t in triples:
                     self._knowledge_graph.add_triple(t)

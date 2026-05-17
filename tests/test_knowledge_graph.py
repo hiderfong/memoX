@@ -1,19 +1,16 @@
 """知识图谱单元测试（P4-4）"""
 
-import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from src.knowledge.knowledge_graph import (
-    GraphSearchResult,
     KnowledgeGraph,
     Triple,
     _extract_triples_rule_based,
     get_knowledge_graph,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helper: fresh KG per test

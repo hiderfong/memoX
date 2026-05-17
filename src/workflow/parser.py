@@ -19,9 +19,9 @@ def parse_workflow_yaml(yaml_content: str) -> Workflow:
         import yaml
         data = yaml.safe_load(yaml_content)
     except ImportError:
-        raise WorkflowParseError("PyYAML 未安装: pip install pyyaml")
+        raise WorkflowParseError("PyYAML 未安装: pip install pyyaml") from None
     except yaml.YAMLError as e:
-        raise WorkflowParseError(f"YAML 语法错误: {e}")
+        raise WorkflowParseError(f"YAML 语法错误: {e}") from e
 
     if not data:
         raise WorkflowParseError("空工作流文件")

@@ -11,10 +11,11 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import re
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -277,10 +278,8 @@ class KnowledgeGraph:
 
             # MultiDiGraph 支持同一 (u,v) 对多条边，用 key=predicate 区分
             # 先尝试移除旧边（同一 subject+predicate+object 组合）
-            try:
+            with contextlib.suppress(nx.NetworkXError):
                 self._graph.remove_edge(triple.subject, triple.object, key=triple.predicate)
-            except nx.NetworkXError:
-                pass
             self._graph.add_edge(
                 triple.subject,
                 triple.object,

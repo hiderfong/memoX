@@ -211,7 +211,7 @@ class WorkerAgent:
 
             self._running = False
             self._current_task_id = None
-            self.add_log("info", f"任务完成", {"task_id": task.id, "result_len": len(result)})
+            self.add_log("info", "任务完成", {"task_id": task.id, "result_len": len(result)})
 
             logger.info(f"Worker {self.id} completed task {task.id}")
             return result, None
@@ -268,7 +268,7 @@ class WorkerAgent:
             store = get_store()
             if store:
                 store.increment_worker_token_usage(self.id, inp, out)
-            self.add_log("info", f"LLM 调用完成", {"input_tokens": inp, "output_tokens": out, "call_count": self.call_count})
+            self.add_log("info", "LLM 调用完成", {"input_tokens": inp, "output_tokens": out, "call_count": self.call_count})
 
             # 检查是否有工具调用
             if response.has_tool_calls:

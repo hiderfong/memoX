@@ -4,8 +4,8 @@ import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from storage.persistence import PersistenceStore
 from memory.memory_recall import MemoryRecall
+from storage.persistence import PersistenceStore
 
 
 def _make_recall(tmp_path):

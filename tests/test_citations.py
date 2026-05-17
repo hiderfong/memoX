@@ -13,10 +13,9 @@ import pytest
 
 from src.knowledge.rag_engine import (
     Citation,
-    SearchResult,
     RAGEngine,
+    SearchResult,
 )
-
 
 # ── Citation 数据类测试 ──────────────────────────────────────────────────────
 

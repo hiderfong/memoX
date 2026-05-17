@@ -10,20 +10,15 @@ from __future__ import annotations
 
 import asyncio
 import re
-from typing import Any
-from unittest.mock import AsyncMock
 
 import pytest
 
 from src.knowledge.semantic_chunker import (
-    SemanticChunker,
-    SemanticChunk,
-    Sentence,
-    _estimate_tokens,
     _SENTENCE_BOUNDARY_RE,
+    SemanticChunker,
+    _estimate_tokens,
     semantic_chunks_to_text_chunks,
 )
-
 
 # ── 辅助函数测试 ────────────────────────────────────────────────────────────
 

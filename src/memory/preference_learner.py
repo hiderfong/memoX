@@ -1,7 +1,6 @@
 """用户偏好学习器 — 从对话历史中自动学习用户偏好"""
 
 import logging
-import re
 import uuid
 from typing import TYPE_CHECKING
 

@@ -2,12 +2,14 @@
 
 import os
 import sys
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
 import pytest
 
 from workflow.dsl import StepCondition, Workflow, WorkflowStep
-from workflow.parser import parse_workflow_yaml, resolve_template
+from workflow.parser import WorkflowParseError, parse_workflow_yaml, resolve_template
+
 
 class TestWorkflowDSL:
     """Workflow DSL 数据类测试"""
@@ -142,7 +144,7 @@ workflow:
         assert wf.steps[1].condition == StepCondition.IF_RESULT
 
     def test_parse_error_empty(self):
-        with pytest.raises(Exception):
+        with pytest.raises(WorkflowParseError):
             parse_workflow_yaml("")
 
     def test_parse_error_missing_worker(self):
@@ -153,7 +155,7 @@ workflow:
     - id: s1
       input: "x"
 """
-        with pytest.raises(Exception):
+        with pytest.raises(WorkflowParseError):
             parse_workflow_yaml(yaml)
 
     def test_parse_error_no_steps(self):
@@ -161,7 +163,7 @@ workflow:
 workflow:
   name: "无步骤"
 """
-        with pytest.raises(Exception):
+        with pytest.raises(WorkflowParseError):
             parse_workflow_yaml(yaml)
 
     def test_parse_with_timeout(self):

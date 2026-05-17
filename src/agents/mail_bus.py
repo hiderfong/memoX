@@ -30,7 +30,7 @@ class MailBus:
         self.task_id = task_id
         self._lock = asyncio.Lock()
         self._messages: list[MailMessage] = []
-        self._inter_messages: list["InterAgentMessage"] = []  # P7-2 Agent 协议消息
+        self._inter_messages: list[InterAgentMessage] = []  # P7-2 Agent 协议消息
 
     async def send(
         self,
@@ -140,7 +140,7 @@ class MailBus:
                 msgs = [m for m in msgs if m.receiver is None or m.receiver == agent_name]
             if unread_only:
                 seen_ids: set[str] = set()
-                result: list["InterAgentMessage"] = []
+                result: list[InterAgentMessage] = []
                 for m in reversed(msgs):  # 从新到旧
                     if m.id not in seen_ids:
                         seen_ids.add(m.id)

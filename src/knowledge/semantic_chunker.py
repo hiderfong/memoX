@@ -12,10 +12,8 @@
 
 from __future__ import annotations
 
-import asyncio
 import re
-import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -110,7 +108,7 @@ class SemanticChunker:
 
         # 计算余弦相似度（dot product，已归一化向量）
         def cosine_sim(a: list[float], b: list[float]) -> float:
-            return sum(x * y for x, y in zip(a, b))
+            return sum(x * y for x, y in zip(a, b, strict=False))
 
         # 贪婪式分块
         chunks: list[SemanticChunk] = []
@@ -131,7 +129,7 @@ class SemanticChunker:
             # 计算新句子与当前 chunk 主题向量的相似度
             topic_vec = [
                 sum(dim) / len(current_embeddings)
-                for dim in zip(*current_embeddings)
+                for dim in zip(*current_embeddings, strict=False)
             ]
             sim = cosine_sim(emb, topic_vec)
 
@@ -214,10 +212,10 @@ class SemanticChunker:
             topic_score = 1.0
         else:
             # 主题向量 = 所有句子 embedding 的均值
-            topic_vec = [sum(dim) / len(embeddings) for dim in zip(*embeddings)]
+            topic_vec = [sum(dim) / len(embeddings) for dim in zip(*embeddings, strict=False)]
             # 各句子与主题向量的平均余弦相似度
             def cosine_sim(a, b):
-                return sum(x * y for x, y in zip(a, b))
+                return sum(x * y for x, y in zip(a, b, strict=False))
             scores = [cosine_sim(e, topic_vec) for e in embeddings]
             topic_score = sum(scores) / len(scores)
         return SemanticChunk(
@@ -229,7 +227,7 @@ class SemanticChunker:
     def _force_split(self, sentences: list[Sentence], embeddings: list[list[float]]) -> list[SemanticChunk]:
         """强制将超长句子列表逐条拆分为独立 chunk（不得已的下策）"""
         results: list[SemanticChunk] = []
-        for s, e in zip(sentences, embeddings, strict=False):
+        for s, _e in zip(sentences, embeddings, strict=False):
             results.append(SemanticChunk(sentences=[s], content=s.text, topic_score=1.0))
         return results
 
