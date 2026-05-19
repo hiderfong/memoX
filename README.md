@@ -34,6 +34,8 @@ memoX/
 ├── scripts/                    # 开发、验证脚本
 ├── tests/                      # 后端测试
 ├── config.yaml                # 配置文件
+├── config.example.yaml        # 可公开的配置模板
+├── .env.example               # 环境变量模板
 ├── pyproject.toml             # Python 依赖与工具配置
 └── uv.lock                    # Python 锁文件
 ```
@@ -52,7 +54,20 @@ cd frontend && npm ci
 
 ### 2. 配置
 
-编辑 `config.yaml`：
+仓库提供了 `config.example.yaml` 和 `.env.example` 作为可公开模板。首次启动前至少设置管理员密码；如果使用默认 DashScope 配置，还需要设置 `DASHSCOPE_API_KEY`。
+
+```bash
+# 如需从模板重建本地配置
+cp config.example.yaml config.yaml
+
+# 填写后加载环境变量；也可以改用 direnv、shell profile 或部署平台环境变量
+cp .env.example .env
+set -a
+source .env
+set +a
+```
+
+关键配置项：
 
 ```yaml
 providers:
@@ -70,13 +85,13 @@ auth:
       password: "${MEMOX_ADMIN_PASSWORD}"
 ```
 
-本地启动前至少设置管理员密码；如果使用默认 DashScope 配置，还需要设置 `DASHSCOPE_API_KEY`。
+`auth.enabled=true` 时，启动会拒绝空密码；如果 `MEMOX_ADMIN_PASSWORD` 未设置，后端会直接报出配置错误。
 
 ### 3. 启动
 
 ```bash
 # 启动后端 (终端 1)
-uv run python -m src.main
+uv run memox
 
 # 启动前端 (终端 2)
 cd frontend

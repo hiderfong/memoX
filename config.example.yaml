@@ -1,0 +1,167 @@
+# MemoX - example configuration
+#
+# To create a local config:
+#   cp config.example.yaml config.yaml
+#   export MEMOX_ADMIN_PASSWORD=...
+#   export DASHSCOPE_API_KEY=...
+
+app:
+  name: "MemoX"
+  debug: true
+  log_level: "INFO"
+  workspace: "./workspace"
+
+server:
+  host: "127.0.0.1"
+  port: 8080
+  cors_origins:
+    - "http://localhost:3000"
+    - "http://127.0.0.1:3000"
+    - "http://localhost:8080"
+    - "http://127.0.0.1:8080"
+
+coordinator:
+  provider: "dashscope"
+  model: "qwen3.6-plus"
+  temperature: 0.7
+  max_tokens: 4096
+  max_workers: 5
+  task_timeout: 300
+
+providers:
+  dashscope:
+    api_key: "${DASHSCOPE_API_KEY}"
+    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  openai:
+    api_key: "${OPENAI_API_KEY}"
+    base_url: "https://api.openai.com/v1"
+  anthropic:
+    api_key: "${ANTHROPIC_API_KEY}"
+    base_url: "https://api.anthropic.com"
+  google:
+    api_key: "${GOOGLE_API_KEY}"
+    base_url: "https://generativelanguage.googleapis.com"
+  minimax:
+    api_key: "${MINIMAX_API_KEY}"
+    base_url: "https://api.minimaxi.com/anthropic/v1"
+  kimi:
+    api_key: "${KIMI_API_KEY}"
+    base_url: "https://api.kimi.com/coding/v1"
+    headers:
+      User-Agent: "claude-code/0.1.0"
+
+worker_templates:
+  code_worker:
+    provider: "kimi"
+    model: "kimi-latest"
+    temperature: 0.7
+    icon: "💻"
+    display_name: "代码专家"
+    skills:
+      - "code-review"
+      - "frontend-design-3"
+    tools:
+      - "filesystem"
+      - "shell"
+      - "git"
+
+  research_worker:
+    provider: "minimax"
+    model: "MiniMax-M2.7-highspeed"
+    temperature: 0.3
+    icon: "🔎"
+    display_name: "研究助手"
+    skills:
+      - "data-analysis"
+      - "doc-coauthoring"
+    tools:
+      - "web_search"
+      - "web_fetch"
+
+  writer_worker:
+    provider: "kimi"
+    model: "kimi-coder"
+    temperature: 0.9
+    icon: "✍️"
+    display_name: "写作助手"
+    skills:
+      - "docx"
+      - "pdf"
+    tools:
+      - "filesystem"
+
+knowledge_base:
+  vector_store: "chroma"
+  persist_directory: "./data/chroma"
+  upload_directory: "./data/uploads"
+  skills_dir: "./data/skills"
+  embedding_provider: "dashscope"
+  embedding_model: "text-embedding-v3"
+  chunk_size: 500
+  chunk_overlap: 50
+  top_k: 5
+  hybrid_search:
+    enabled: true
+    bm25_persist_path: "./data/bm25_index.pkl"
+    rrf_k: 60
+    chunk_strategy: "size"
+  enable_graph: false
+  graph_persist_path: "./data/knowledge_graph.gml"
+  graph_llm_provider: "dashscope"
+  graph_llm_api_key: "${DASHSCOPE_API_KEY}"
+
+memory:
+  enabled: true
+  max_turns_before_compress: 10
+  summary_max_chars: 500
+  recent_messages_to_keep: 4
+
+auth:
+  enabled: true
+  public_paths:
+    - "/api/auth/login"
+    - "/api/health"
+    - "/api/docs"
+    - "/api/openapi.json"
+    - "/api/files/"
+  users:
+    - username: "admin"
+      password: "${MEMOX_ADMIN_PASSWORD}"
+      role: "admin"
+      display_name: "管理员"
+
+image_generation:
+  enabled: false
+  provider: "dashscope"
+  model: "qwen-image-2.0-pro"
+  api_key: "${DASHSCOPE_API_KEY}"
+  default_size: "1024*1024"
+
+video_generation:
+  enabled: false
+  provider: "dashscope"
+  model: "wan2.7-t2v"
+  api_key: "${DASHSCOPE_API_KEY}"
+  default_resolution: "720P"
+  default_ratio: "16:9"
+  default_duration: 5
+
+image_to_video:
+  enabled: false
+  provider: "dashscope"
+  model: "wan2.7-i2v"
+  api_key: "${DASHSCOPE_API_KEY}"
+  default_resolution: "720P"
+  default_duration: 5
+
+mcp:
+  github:
+    enabled: false
+  slack:
+    enabled: false
+
+channels:
+  web:
+    enabled: true
+  cli:
+    enabled: true

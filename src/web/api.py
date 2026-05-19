@@ -3,7 +3,6 @@
 import asyncio
 import contextlib
 import json
-import os
 import re as _re
 import sys
 import uuid
@@ -43,7 +42,7 @@ from slowapi.util import get_remote_address  # noqa: E402
 from agents.base_agent import ToolRegistry, create_provider  # noqa: E402
 from agents.worker_pool import WorkerAgent, WorkerConfig, get_worker_pool, init_worker_pool  # noqa: E402
 from auth import AuthUser, _get_auth_from_request, init_auth  # noqa: E402
-from config import Config, load_config  # noqa: E402
+from config import Config, load_config, resolve_env_value, validate_config  # noqa: E402
 from coordinator.iterative_orchestrator import IterativeOrchestrator  # noqa: E402
 from coordinator.task_planner import TaskPlanner, init_task_planner  # noqa: E402
 from memory import MemoryManager, MemoryRecall, PreferenceLearner  # noqa: E402
@@ -286,18 +285,15 @@ async def startup():
 
     # 加载配置
     _config = load_config()
+    validate_config(_config)
 
     # 初始化认证
     if _config.auth.enabled:
-        def _resolve(v: str) -> str:
-            if isinstance(v, str) and v.startswith("${") and v.endswith("}"):
-                return os.getenv(v[2:-1], "")
-            return v
         init_auth(
             [
                 {
                     "username": u.username,
-                    "password": _resolve(u.password),
+                    "password": resolve_env_value(u.password),
                     "role": u.role,
                     "display_name": u.display_name,
                 }

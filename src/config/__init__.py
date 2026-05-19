@@ -8,6 +8,42 @@ from typing import Any
 import yaml
 
 
+class ConfigError(ValueError):
+    """配置无效。"""
+
+
+def resolve_env_value(value: Any) -> str:
+    """解析 ${VAR_NAME} 形式的环境变量引用。"""
+    if value is None:
+        return ""
+    if isinstance(value, str) and value.startswith("${") and value.endswith("}"):
+        return os.getenv(value[2:-1], "")
+    return str(value)
+
+
+def validate_config(config: "Config") -> None:
+    """校验启动时必须满足的配置约束。"""
+    errors: list[str] = []
+
+    if config.auth.enabled:
+        if not config.auth.users:
+            errors.append("auth.enabled=true 时至少需要配置一个 auth.users 用户")
+
+        seen_usernames: set[str] = set()
+        for user in config.auth.users:
+            if user.username in seen_usernames:
+                errors.append(f"auth.users 中存在重复用户名: {user.username}")
+            seen_usernames.add(user.username)
+
+            if not resolve_env_value(user.password).strip():
+                errors.append(
+                    f"用户 {user.username!r} 的密码为空；请设置对应环境变量或在 config.yaml 中提供非空密码"
+                )
+
+    if errors:
+        raise ConfigError("MemoX 配置无效:\n- " + "\n- ".join(errors))
+
+
 @dataclass
 class AppConfig:
     """应用配置"""
@@ -38,11 +74,7 @@ class ProviderConfig:
 
     def resolve_api_key(self) -> str:
         """解析环境变量"""
-        key = self.api_key
-        if key.startswith("${") and key.endswith("}"):
-            env_var = key[2:-1]
-            return os.getenv(env_var, "")
-        return key
+        return resolve_env_value(self.api_key)
 
 
 @dataclass
@@ -124,10 +156,7 @@ class ImageGenerationConfig:
     default_size: str = "1024*1024"
 
     def resolve_api_key(self) -> str:
-        key = self.api_key
-        if key.startswith("${") and key.endswith("}"):
-            return os.getenv(key[2:-1], "")
-        return key
+        return resolve_env_value(self.api_key)
 
 
 @dataclass
@@ -142,10 +171,7 @@ class VideoGenerationConfig:
     default_duration: int = 5
 
     def resolve_api_key(self) -> str:
-        key = self.api_key
-        if key.startswith("${") and key.endswith("}"):
-            return os.getenv(key[2:-1], "")
-        return key
+        return resolve_env_value(self.api_key)
 
 
 @dataclass
@@ -159,10 +185,7 @@ class ImageToVideoConfig:
     default_duration: int = 5
 
     def resolve_api_key(self) -> str:
-        key = self.api_key
-        if key.startswith("${") and key.endswith("}"):
-            return os.getenv(key[2:-1], "")
-        return key
+        return resolve_env_value(self.api_key)
 
 
 @dataclass
