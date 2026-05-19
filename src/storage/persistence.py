@@ -135,7 +135,41 @@ class PersistenceStore:
             self._conn.execute("CREATE INDEX idx_memories_user ON memories(user_id)")
             self._conn.execute("CREATE INDEX idx_memories_category ON memories(category)")
             self._conn.execute("CREATE INDEX idx_memories_created ON memories(created_at DESC)")
+        self._ensure_memories_fts()
         self._conn.commit()
+
+    def _ensure_memories_fts(self) -> None:
+        """Keep runtime-created memory schema aligned with Alembic's FTS setup."""
+        try:
+            self._conn.executescript("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+                    content,
+                    content='memories',
+                    content_rowid='rowid'
+                );
+
+                CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
+                    INSERT INTO memories_fts(rowid, content) VALUES (NEW.rowid, NEW.content);
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
+                    INSERT INTO memories_fts(memories_fts, rowid, content)
+                    VALUES('delete', OLD.rowid, OLD.content);
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
+                    INSERT INTO memories_fts(memories_fts, rowid, content)
+                    VALUES('delete', OLD.rowid, OLD.content);
+                    INSERT INTO memories_fts(rowid, content) VALUES (NEW.rowid, NEW.content);
+                END;
+            """)
+            self._conn.execute("""
+                INSERT INTO memories_fts(rowid, content)
+                SELECT rowid, content FROM memories
+                WHERE rowid NOT IN (SELECT rowid FROM memories_fts)
+            """)
+        except sqlite3.OperationalError as e:
+            logger.warning(f"[PersistenceStore] FTS5 memory index unavailable: {e}")
 
     def save_session_summary(self, session_id: str, summary: str) -> None:
         """保存会话摘要（记忆压缩）。如果会话不存在，先创建它。"""
@@ -600,10 +634,19 @@ class PersistenceStore:
         now = datetime.now().isoformat()
         metadata_json = json.dumps(metadata or {}, ensure_ascii=False)
         self._conn.execute(
-            """INSERT OR REPLACE INTO memories
+            """INSERT INTO memories
                (id, user_id, content, category, importance, source_session_id,
                 created_at, updated_at, last_accessed_at, metadata)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                   user_id=excluded.user_id,
+                   content=excluded.content,
+                   category=excluded.category,
+                   importance=excluded.importance,
+                   source_session_id=excluded.source_session_id,
+                   updated_at=excluded.updated_at,
+                   last_accessed_at=excluded.last_accessed_at,
+                   metadata=excluded.metadata""",
             (memory_id, user_id, content, category, importance, source_session_id,
              now, now, now, metadata_json),
         )

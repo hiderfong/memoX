@@ -111,6 +111,40 @@ def test_update_session_title(tmp_path):
     store.close()
 
 
+def test_runtime_schema_matches_memory_and_summary_migrations(tmp_path):
+    store = PersistenceStore(tmp_path / "test.db")
+
+    session_cols = {
+        r["name"] for r in store._conn.execute("PRAGMA table_info(chat_sessions)").fetchall()
+    }
+    assert "summary" in session_cols
+
+    tables = {
+        r["name"]
+        for r in store._conn.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'trigger')").fetchall()
+    }
+    assert "memories_fts" in tables
+    assert {"memories_ai", "memories_ad", "memories_au"}.issubset(tables)
+
+    store.save_memory("m1", "Python memory", category="fact")
+    fts_rows = store._conn.execute(
+        "SELECT rowid, content FROM memories_fts WHERE memories_fts MATCH ?",
+        ("Python",),
+    ).fetchall()
+    assert len(fts_rows) == 1
+
+    store.save_memory("m1", "Rust memory", category="fact")
+    assert store._conn.execute(
+        "SELECT rowid FROM memories_fts WHERE memories_fts MATCH ?",
+        ("Python",),
+    ).fetchall() == []
+    assert len(store._conn.execute(
+        "SELECT rowid FROM memories_fts WHERE memories_fts MATCH ?",
+        ("Rust",),
+    ).fetchall()) == 1
+    store.close()
+
+
 # ==================== 定时任务 ====================
 
 
