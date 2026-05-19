@@ -1,11 +1,20 @@
 """MemoryRecall 单元测试"""
+import asyncio
 import os
 import sys
+from unittest.mock import MagicMock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from memory.memory_recall import MemoryRecall
 from storage.persistence import PersistenceStore
+
+
+class AsyncExtractProvider:
+    async def chat(self, messages, model=None, temperature=None, max_tokens=None):
+        response = MagicMock()
+        response.content = '{"memories":[{"content":"用户喜欢 Python","category":"preference","importance":4}]}'
+        return response
 
 
 def _make_recall(tmp_path):
@@ -134,3 +143,24 @@ def test_format_for_context_empty(tmp_path):
     """空列表返回空字符串"""
     recall = _make_recall(tmp_path)
     assert recall.format_for_context([]) == ""
+
+
+def test_save_from_conversation_async_provider(tmp_path):
+    store = PersistenceStore(tmp_path / "test.db")
+    recall = MemoryRecall(store)
+
+    count = asyncio.run(
+        recall.save_from_conversation_async(
+            messages=[
+                {"role": "user", "content": "我喜欢 Python"},
+                {"role": "assistant", "content": "我记住了。"},
+            ],
+            session_id="s1",
+            llm_provider=AsyncExtractProvider(),
+        )
+    )
+
+    assert count == 1
+    memories = recall.get_all(category="preference")
+    assert len(memories) == 1
+    assert "Python" in memories[0]["content"]

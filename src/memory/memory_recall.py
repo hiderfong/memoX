@@ -1,13 +1,17 @@
 """跨会话记忆召回 — 从持久化 memories 表中检索相关记忆"""
 
+import asyncio
+import inspect
 import logging
 import uuid
-from typing import TYPE_CHECKING
+from collections.abc import Coroutine
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 if TYPE_CHECKING:
     from storage.persistence import PersistenceStore
 
 logger = logging.getLogger(__name__)
+_T = TypeVar("_T")
 
 
 class MemoryRecall:
@@ -41,9 +45,35 @@ class MemoryRecall:
     def __init__(self, store: "PersistenceStore"):
         self._store = store
 
+    @staticmethod
+    def _run_sync(coro: Coroutine[Any, Any, _T]) -> _T:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(coro)
+        coro.close()
+        raise RuntimeError("当前处于异步上下文，请使用对应的 async 方法")
+
     # ─── 记忆写入 ───────────────────────────────────────────────
 
     def save_from_conversation(
+        self,
+        messages: list[dict],
+        session_id: str,
+        user_id: str | None = None,
+        llm_provider=None,
+    ) -> int:
+        """同步兼容包装。异步路由应使用 save_from_conversation_async。"""
+        return self._run_sync(
+            self.save_from_conversation_async(
+                messages=messages,
+                session_id=session_id,
+                user_id=user_id,
+                llm_provider=llm_provider,
+            )
+        )
+
+    async def save_from_conversation_async(
         self,
         messages: list[dict],
         session_id: str,
@@ -75,7 +105,9 @@ class MemoryRecall:
                     temperature=0.3,
                     max_tokens=512,
                 )
-                text = resp.content or ""
+                if inspect.isawaitable(resp):
+                    resp = await resp
+                text = str(resp.content or "")
                 # 尝试从响应中提取 JSON
                 start = text.find("{")
                 end = text.rfind("}") + 1
@@ -134,11 +166,11 @@ class MemoryRecall:
         """
         if not query or len(query) < 2:
             return []
-        return self._store.search_memories(
+        return cast(list[dict], self._store.search_memories(
             query=query,
             user_id=user_id,
             limit=limit,
-        )
+        ))
 
     def recall_for_session(
         self,
@@ -150,11 +182,11 @@ class MemoryRecall:
 
         这是新会话开始时的默认召回调用。
         """
-        return self._store.search_memories(
+        return cast(list[dict], self._store.search_memories(
             query=session_topic,
             user_id=user_id,
             limit=limit,
-        )
+        ))
 
     def get_all(
         self,
@@ -163,25 +195,25 @@ class MemoryRecall:
         limit: int = 50,
     ) -> list[dict]:
         """列出所有记忆（支持过滤）"""
-        return self._store.list_memories(
+        return cast(list[dict], self._store.list_memories(
             user_id=user_id,
             category=category,
             limit=limit,
-        )
+        ))
 
     # ─── 记忆管理 ───────────────────────────────────────────────
 
     def update_memory(self, memory_id: str, updates: dict) -> bool:
         """更新记忆内容/分类/重要性"""
-        return self._store.update_memory(memory_id, updates)
+        return cast(bool, self._store.update_memory(memory_id, updates))
 
     def delete_memory(self, memory_id: str) -> bool:
         """删除一条记忆"""
-        return self._store.delete_memory(memory_id)
+        return cast(bool, self._store.delete_memory(memory_id))
 
     def get_memory(self, memory_id: str) -> dict | None:
         """获取单条记忆详情"""
-        return self._store.get_memory(memory_id)
+        return cast(dict | None, self._store.get_memory(memory_id))
 
     # ─── 上下文格式化 ───────────────────────────────────────────
 

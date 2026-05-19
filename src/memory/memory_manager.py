@@ -1,15 +1,19 @@
 """记忆管理器 - 对话摘要与上下文压缩"""
 
+import asyncio
+import inspect
 import logging
 import re
 import threading
+from collections.abc import Coroutine
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, TypeVar
 
 if TYPE_CHECKING:
     from storage.persistence import PersistenceStore
 
 logger = logging.getLogger(__name__)
+_T = TypeVar("_T")
 
 
 @dataclass
@@ -86,7 +90,21 @@ class MemoryManager:
                 lines.append(f"{role}：{content[:300]}")
         return "\n\n".join(lines)
 
+    @staticmethod
+    def _run_sync(coro: Coroutine[Any, Any, _T]) -> _T:
+        """Run an async memory operation from sync call sites."""
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(coro)
+        coro.close()
+        raise RuntimeError("当前处于异步上下文，请使用对应的 async 方法")
+
     def _summarize_with_llm(self, history_text: str, llm_provider=None) -> str | None:
+        """同步兼容包装。异步路由应使用 _summarize_with_llm_async。"""
+        return self._run_sync(self._summarize_with_llm_async(history_text, llm_provider))
+
+    async def _summarize_with_llm_async(self, history_text: str, llm_provider=None) -> str | None:
         """使用 LLM 生成摘要（失败时返回 None）"""
         provider = llm_provider or self._llm_provider
         if not provider:
@@ -100,7 +118,9 @@ class MemoryManager:
                 temperature=0.3,
                 max_tokens=512,
             )
-            content = response.content or ""
+            if inspect.isawaitable(response):
+                response = await response
+            content = str(response.content or "")
             # 提取摘要内容
             match = re.search(r"【摘要】\s*(.+?)(?=\n\n【|$)", content, re.DOTALL)
             if match:
@@ -119,6 +139,10 @@ class MemoryManager:
         return f"对话约 {len(user_msgs)} 轮，主要涉及：{'; '.join(topics)}"
 
     def compress_session(self, session_id: str) -> MemoryStats | None:
+        """同步兼容包装。异步路由应使用 compress_session_async。"""
+        return self._run_sync(self.compress_session_async(session_id))
+
+    async def compress_session_async(self, session_id: str) -> MemoryStats | None:
         """压缩指定会话
 
         Returns:
@@ -141,7 +165,7 @@ class MemoryManager:
             history_text = self._build_history_text(messages[:-self._recent * 2]) if len(messages) > self._recent * 2 else self._build_history_text(messages)
 
             # 生成摘要
-            summary = self._summarize_with_llm(history_text)
+            summary = await self._summarize_with_llm_async(history_text)
             if not summary:
                 summary = self._summarize_fallback(messages)
 
@@ -179,6 +203,12 @@ class MemoryManager:
     def compress_if_needed(
         self, session_id: str, llm_provider=None, force: bool = False
     ) -> tuple[str, int]:
+        """同步兼容包装。异步路由应使用 compress_if_needed_async。"""
+        return self._run_sync(self.compress_if_needed_async(session_id, llm_provider, force=force))
+
+    async def compress_if_needed_async(
+        self, session_id: str, llm_provider=None, force: bool = False
+    ) -> tuple[str, int]:
         """检查是否需要压缩，必要时执行压缩。
 
         Returns:
@@ -186,7 +216,7 @@ class MemoryManager:
         """
         if force:
             # 强制压缩路径：先生成摘要再压缩
-            stats = self._compress_with_provider(session_id, llm_provider)
+            stats = await self._compress_with_provider_async(session_id, llm_provider)
             if stats:
                 msgs = self._store.get_session_messages(session_id)
                 archived = len(msgs) - self._recent if msgs else 0
@@ -209,7 +239,7 @@ class MemoryManager:
         if not provider:
             return "", 0
 
-        stats = self._compress_with_provider(session_id, provider)
+        stats = await self._compress_with_provider_async(session_id, provider)
         if stats:
             msgs = self._store.get_session_messages(session_id)
             archived = len(msgs) - self._recent if msgs else 0
@@ -217,6 +247,10 @@ class MemoryManager:
         return "", 0
 
     def _compress_with_provider(self, session_id: str, llm_provider) -> MemoryStats | None:
+        """同步兼容包装。异步路由应使用 _compress_with_provider_async。"""
+        return self._run_sync(self._compress_with_provider_async(session_id, llm_provider))
+
+    async def _compress_with_provider_async(self, session_id: str, llm_provider) -> MemoryStats | None:
         """使用指定 provider 执行压缩（内部方法）"""
         with self._lock:
             messages = self._store.get_session_messages(session_id)
@@ -229,7 +263,7 @@ class MemoryManager:
                 else self._build_history_text(messages)
             )
 
-            summary = self._summarize_with_llm(history_text, llm_provider)
+            summary = await self._summarize_with_llm_async(history_text, llm_provider)
             if not summary:
                 summary = self._summarize_fallback(messages)
 

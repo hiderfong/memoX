@@ -3,13 +3,18 @@ import asyncio
 import json as _json
 import re as _re
 import uuid
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, Request
+import httpx as _httpx
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import Annotated, Literal
 
+from agents.base_agent import create_provider
+from agents.worker_pool import get_worker_pool
 from auth import AuthUser, get_current_user
+from imaging import get_i2v_client, get_image_client, get_video_client
+from knowledge import SearchResult
 from web.state import get_store as _gs
 
 router = APIRouter(prefix="/api", tags=["chat"])
@@ -87,14 +92,14 @@ def parse_i2v_markers(text: str) -> list[tuple[str, str]]:
 def _get_globals():
     import web.api as _api_module
     return (
-        getattr(_api_module, "_rag_engine"),
-        getattr(_api_module, "_orchestrator"),
-        getattr(_api_module, "_task_planner"),
-        getattr(_api_module, "_memory_manager"),
-        getattr(_api_module, "_preference_learner"),
-        getattr(_api_module, "_memory_recall"),
-        getattr(_api_module, "_config"),
-        getattr(_api_module, "_task_results"),
+        _api_module._rag_engine,
+        _api_module._orchestrator,
+        _api_module._task_planner,
+        _api_module._memory_manager,
+        _api_module._preference_learner,
+        _api_module._memory_recall,
+        _api_module._config,
+        _api_module._task_results,
     )
 
 
@@ -171,8 +176,6 @@ def _inject_history(messages: list[dict], session_id: str) -> list[dict]:
 
 
 def _resolve_chat_llm(worker_id: str | None):
-    from agents.base_agent import create_provider
-    from fastapi import HTTPException
     (
         _rag_engine, _orchestrator, _task_planner,
         _memory_manager, _preference_learner, _memory_recall,
@@ -180,7 +183,6 @@ def _resolve_chat_llm(worker_id: str | None):
     ) = _get_globals()
 
     if worker_id:
-        from agents.worker_pool import get_worker_pool
         worker_pool = get_worker_pool()
         if worker_pool and worker_id in worker_pool._workers:
             w = worker_pool._workers[worker_id]
@@ -216,10 +218,6 @@ def _resolve_chat_llm(worker_id: str | None):
 
 @router.post("/chat")
 async def chat(request: Request, chat_req: ChatRequest) -> dict:
-    from fastapi import HTTPException
-    import httpx as _httpx
-    from knowledge import SearchResult
-
     (
         _rag_engine, _orchestrator, _task_planner,
         _memory_manager, _preference_learner, _memory_recall,
@@ -279,12 +277,12 @@ async def chat(request: Request, chat_req: ChatRequest) -> dict:
         if isinstance(e, _httpx.HTTPStatusError):
             status = e.response.status_code
             if status == 401:
-                raise HTTPException(status_code=502, detail="LLM API Key 无效或已过期")
+                raise HTTPException(status_code=502, detail="LLM API Key 无效或已过期") from e
             elif status == 429:
-                raise HTTPException(status_code=429, detail="LLM API 请求频率超限，请稍后重试")
+                raise HTTPException(status_code=429, detail="LLM API 请求频率超限，请稍后重试") from e
             else:
-                raise HTTPException(status_code=502, detail=f"LLM 服务返回错误 {status}")
-        raise HTTPException(status_code=502, detail=f"LLM 调用失败: {type(e).__name__}: {str(e)}")
+                raise HTTPException(status_code=502, detail=f"LLM 服务返回错误 {status}") from e
+        raise HTTPException(status_code=502, detail=f"LLM 调用失败: {type(e).__name__}: {str(e)}") from e
 
     raw_answer = response.content or "抱歉，我无法回答这个问题。"
 
@@ -354,7 +352,7 @@ async def chat(request: Request, chat_req: ChatRequest) -> dict:
             title = chat_req.message[:30].strip()
             store.update_session_title(session_id, title)
         if _memory_manager and _orchestrator:
-            _memory_manager.compress_if_needed(session_id, _orchestrator._provider)
+            await _memory_manager.compress_if_needed_async(session_id, _orchestrator._provider)
 
     cited_ref_ids = _rag_engine.extract_citations_from_text(answer)
     citations: list[dict] = []
@@ -460,7 +458,7 @@ async def compress_session(session_id: str, force: bool = False) -> dict:
     if not provider:
         raise HTTPException(status_code=503, detail="LLM provider 未就绪")
     try:
-        new_summary, archived_count = _memory_manager.compress_if_needed(session_id, provider, force=force)
+        new_summary, archived_count = await _memory_manager.compress_if_needed_async(session_id, provider, force=force)
         return {
             "success": True,
             "session_id": session_id,
@@ -700,7 +698,7 @@ async def extract_memories_from_session(session_id: str) -> dict:
     if not messages:
         raise HTTPException(status_code=404, detail="会话不存在或无消息")
     provider = _orchestrator._provider if _orchestrator else None
-    count = _memory_recall.save_from_conversation(
+    count = await _memory_recall.save_from_conversation_async(
         messages=messages,
         session_id=session_id,
         llm_provider=provider,
@@ -828,10 +826,6 @@ async def summarize_session_as_task(session_id: str, request: SummarizeTaskReque
 
 @router.post("/chat/stream")
 async def chat_stream(request: Request, chat_req: ChatRequest):
-    from fastapi import HTTPException
-    from imaging import get_image_client, get_video_client, get_i2v_client
-    from knowledge import SearchResult
-
     (
         _rag_engine, _orchestrator, _task_planner,
         _memory_manager, _preference_learner, _memory_recall,
@@ -976,7 +970,7 @@ async def chat_stream(request: Request, chat_req: ChatRequest):
                     title = _message[:30].strip()
                     store.update_session_title(_session_id, title)
                 if _memory_manager and _orchestrator:
-                    _memory_manager.compress_if_needed(_session_id, _orchestrator._provider)
+                    await _memory_manager.compress_if_needed_async(_session_id, _orchestrator._provider)
 
             cited_ref_ids = _rag_engine.extract_citations_from_text(answer)
             citations: list[dict] = []
