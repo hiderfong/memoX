@@ -108,16 +108,21 @@ cd frontend && npm run build
 
 ## API 接口
 
+完整接口清单见 [docs/API.md](docs/API.md)，后端启动后也可以访问 `http://localhost:8080/api/docs` 查看 Swagger UI。
+
 | 方法 | 路径 | 说明 |
 |------|------|------|
+| `POST` | `/api/auth/login` | 登录并获取 Bearer Token |
+| `GET` | `/api/health` | 健康检查 |
 | `GET` | `/api/documents` | 列出文档 |
 | `POST` | `/api/documents` | 上传文档 |
-| `DELETE` | `/api/documents/{id}` | 删除文档 |
+| `GET` | `/api/documents/search` | 搜索文档 |
 | `POST` | `/api/chat` | 聊天问答 |
 | `POST` | `/api/chat/stream` | 流式聊天 |
 | `POST` | `/api/tasks` | 创建并执行任务 |
 | `GET` | `/api/tasks` | 列出任务 |
 | `GET` | `/api/workers` | Worker 状态 |
+| `POST` | `/api/workflows/validate` | 校验 workflow YAML |
 | `WS` | `/ws` | WebSocket |
 
 ## 架构说明

@@ -74,7 +74,7 @@ server = [
 ]
 
 [project.scripts]
-memox = "main:run"
+memox = "src.main:main"
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
