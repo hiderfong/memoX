@@ -5,9 +5,11 @@ from __future__ import annotations
 import asyncio
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from src.knowledge.bm25_indexer import ChunkEntry
 from src.knowledge.document_parser import Document, TextChunk
 from src.knowledge.rag_engine import RAGEngine
 
@@ -89,6 +91,24 @@ class InMemoryVectorStore:
         return list(documents.values())
 
 
+class FailableBM25:
+    def __init__(self) -> None:
+        self.fail_on_add = False
+        self.entries: dict[str, ChunkEntry] = {}
+
+    def add_chunks(self, chunks: list[ChunkEntry]) -> None:
+        if self.fail_on_add:
+            raise RuntimeError("bm25 unavailable")
+        for chunk in chunks:
+            self.entries[chunk.chunk_id] = chunk
+
+    def delete_by_doc_id(self, doc_id: str) -> list[str]:
+        deleted = [chunk_id for chunk_id, chunk in self.entries.items() if chunk.doc_id == doc_id]
+        for chunk_id in deleted:
+            self.entries.pop(chunk_id)
+        return deleted
+
+
 @pytest.mark.asyncio
 async def test_concurrent_identical_uploads_are_serialized_and_deduplicated(tmp_path: Path) -> None:
     parser = SlowParser()
@@ -123,3 +143,91 @@ async def test_concurrent_identical_uploads_are_serialized_and_deduplicated(tmp_
     assert len(manifest["documents"]) == 1
     only_entry = next(iter(manifest["documents"].values()))
     assert only_entry["doc_id"] == first.doc_info.id
+
+
+@pytest.mark.asyncio
+async def test_new_upload_rolls_back_vector_chunks_when_bm25_fails(tmp_path: Path) -> None:
+    vector_store = InMemoryVectorStore()
+    bm25 = FailableBM25()
+    bm25.fail_on_add = True
+    engine = RAGEngine(
+        vector_store=vector_store,
+        document_parser=SlowParser(),
+        hybrid_search_enabled=False,
+        manifest_path=str(tmp_path / "documents_manifest.json"),
+    )
+    engine._hybrid_retriever = SimpleNamespace(bm25_indexer=bm25)
+    upload = tmp_path / "upload.md"
+    upload.write_text("# Failure\n\nthis should roll back", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="bm25 unavailable"):
+        await engine.add_document(upload, original_filename="rollback.md")
+
+    assert vector_store.list_documents() == []
+    assert bm25.entries == {}
+    assert not (tmp_path / "documents_manifest.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_new_upload_rolls_back_when_manifest_save_fails(tmp_path: Path) -> None:
+    vector_store = InMemoryVectorStore()
+    manifest_path = tmp_path / "documents_manifest.json"
+    engine = RAGEngine(
+        vector_store=vector_store,
+        document_parser=SlowParser(),
+        hybrid_search_enabled=False,
+        manifest_path=str(manifest_path),
+    )
+    upload = tmp_path / "upload.md"
+    content = "# Manifest Failure\n\nthis should not remain indexed"
+    upload.write_text(content, encoding="utf-8")
+
+    def fail_save() -> None:
+        raise OSError("disk full")
+
+    engine._manifest.save = fail_save
+
+    with pytest.raises(OSError, match="disk full"):
+        await engine.add_document(upload, original_filename="manifest-fail.md")
+
+    assert vector_store.list_documents() == []
+    assert engine._manifest.get("manifest-fail.md", len(content.encode("utf-8"))) is None
+    assert not manifest_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_failed_update_keeps_previous_document_and_manifest(tmp_path: Path) -> None:
+    vector_store = InMemoryVectorStore()
+    bm25 = FailableBM25()
+    manifest_path = tmp_path / "documents_manifest.json"
+    engine = RAGEngine(
+        vector_store=vector_store,
+        document_parser=SlowParser(),
+        hybrid_search_enabled=False,
+        manifest_path=str(manifest_path),
+    )
+    engine._hybrid_retriever = SimpleNamespace(bm25_indexer=bm25)
+    upload = tmp_path / "upload.md"
+    upload.write_text("version one", encoding="utf-8")
+
+    first = await engine.add_document(upload, original_filename="stable.md")
+    first_manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    bm25.fail_on_add = True
+    upload.write_text("version two", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="bm25 unavailable"):
+        await engine.add_document(upload, original_filename="stable.md")
+
+    assert vector_store.list_documents() == [
+        {
+            "doc_id": first.doc_info.id,
+            "filename": "stable.md",
+            "type": "markdown",
+            "created_at": first.doc_info.created_at,
+            "file_size": len("version one"),
+            "group_id": "ungrouped",
+            "chunk_count": 1,
+        }
+    ]
+    assert json.loads(manifest_path.read_text(encoding="utf-8")) == first_manifest
+    assert {entry.doc_id for entry in bm25.entries.values()} == {first.doc_info.id}

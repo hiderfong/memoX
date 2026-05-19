@@ -92,6 +92,16 @@ class _DocumentManifest:
                 tmp_path.unlink(missing_ok=True)
         self._dirty = False
 
+    def snapshot(self) -> tuple[dict[str, dict], bool]:
+        """Return a shallow-safe snapshot for in-memory rollback."""
+        return ({key: dict(value) for key, value in self._data.items()}, self._dirty)
+
+    def restore(self, snapshot: tuple[dict[str, dict], bool]) -> None:
+        """Restore an in-memory snapshot after a failed manifest save."""
+        data, dirty = snapshot
+        self._data = {key: dict(value) for key, value in data.items()}
+        self._dirty = dirty
+
     # ── lookup ───────────────────────────────────────────────────────────────
 
     def _make_key(self, filename: str, file_size: int) -> str:
@@ -360,12 +370,9 @@ class RAGEngine:
                     )
                 return UpsertResult(doc_info=doc_info, action="skipped")
 
-        # Content 变化或无记录：完整解析并索引
-        # 若有旧记录，先删除旧 chunks
-        if manifest_entry is not None:
-            old_doc_id = manifest_entry["doc_id"]
-            print(f"[RAG] Document '{display_name}' content changed — deleting old doc_id={old_doc_id}.")
-            await self._delete_document_unlocked(old_doc_id, collection_name)
+        old_doc_id = manifest_entry["doc_id"] if manifest_entry is not None else None
+        if old_doc_id is not None:
+            print(f"[RAG] Document '{display_name}' content changed — staging replacement for old doc_id={old_doc_id}.")
 
         doc_id = str(uuid.uuid4())[:8]
         print(f"[RAG] Starting to process document: {display_name}")
@@ -394,12 +401,6 @@ class RAGEngine:
             chunk.metadata["chunk_count"] = len(chunks)
             chunk.metadata["group_id"] = group_id
 
-        # 同步写入向量库 + BM25 索引
-        print(f"[RAG] Adding {len(chunks)} chunks to vector store and BM25 index...")
-        await self._index_document_chunks(chunks, collection_name)
-
-        print("[RAG] Successfully added all chunks")
-
         # 记录文档信息（内存缓存，同时 ChromaDB 已持久化）
         doc_info = DocumentInfo(
             id=doc_id,
@@ -410,19 +411,40 @@ class RAGEngine:
             size=file_size,
             group_id=group_id,
         )
-        self._documents[doc_id] = doc_info
 
-        # 更新 manifest（写入文件）
-        self._manifest.put(
-            filename=display_name,
-            file_size=file_size,
-            doc_id=doc_id,
-            content_hash=content_hash,
-            chunk_count=len(chunks),
-            created_at=created_at,
-            doc_type=document.metadata.get("type", "unknown"),
-        )
-        self._manifest.save()
+        # 同步写入向量库 + BM25 索引。任何后续步骤失败都应清理这个新 doc_id，
+        # 避免留下 manifest 不知道的半索引文档。
+        print(f"[RAG] Adding {len(chunks)} chunks to vector store and BM25 index...")
+        try:
+            await self._index_document_chunks(chunks, collection_name)
+        except Exception:
+            await self._discard_indexed_document(doc_id, collection_name)
+            raise
+
+        print("[RAG] Successfully added all chunks")
+
+        manifest_snapshot = self._manifest.snapshot()
+        try:
+            self._documents[doc_id] = doc_info
+
+            # 更新 manifest（写入文件）
+            self._manifest.put(
+                filename=display_name,
+                file_size=file_size,
+                doc_id=doc_id,
+                content_hash=content_hash,
+                chunk_count=len(chunks),
+                created_at=created_at,
+                doc_type=document.metadata.get("type", "unknown"),
+            )
+            self._manifest.save()
+        except Exception:
+            self._manifest.restore(manifest_snapshot)
+            await self._discard_indexed_document(doc_id, collection_name)
+            raise
+
+        if old_doc_id is not None:
+            await self._discard_indexed_document(old_doc_id, collection_name)
 
         print(f"[RAG] Document processing complete: {doc_info}")
         action = "updated" if manifest_entry is not None else "indexed"
@@ -473,8 +495,8 @@ class RAGEngine:
         async with self._document_mutation_lock:
             return await self._delete_document_unlocked(doc_id, collection_name)
 
-    async def _delete_document_unlocked(self, doc_id: str, collection_name: str = "documents") -> bool:
-        """从知识库删除文档，同时清理 manifest 记录"""
+    async def _discard_indexed_document(self, doc_id: str, collection_name: str = "documents") -> int:
+        """Remove indexed chunks/caches for a doc_id without touching manifest."""
         count = await self.vector_store.delete_by_document_id(doc_id, collection_name)
         if self._hybrid_retriever is not None:
             self._hybrid_retriever.bm25_indexer.delete_by_doc_id(doc_id)
@@ -482,6 +504,11 @@ class RAGEngine:
             self._knowledge_graph.remove_by_chunk_id(doc_id)
         if doc_id in self._documents:
             del self._documents[doc_id]
+        return count
+
+    async def _delete_document_unlocked(self, doc_id: str, collection_name: str = "documents") -> bool:
+        """从知识库删除文档，同时清理 manifest 记录"""
+        count = await self._discard_indexed_document(doc_id, collection_name)
         # 从 manifest 中移除
         self._manifest.remove_by_doc_id(doc_id)
         self._manifest.save()
