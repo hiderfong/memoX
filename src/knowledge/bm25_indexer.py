@@ -183,10 +183,11 @@ _indexer_lock = threading.Lock()
 def get_bm25_indexer(persist_path: str = "./data/bm25_index.pkl") -> BM25Indexer:
     """获取 BM25 索引全局单例"""
     global _bm25_indexer
-    if _bm25_indexer is None:
+    requested_path = Path(persist_path).expanduser().resolve()
+    if _bm25_indexer is None or _bm25_indexer.persist_path.expanduser().resolve() != requested_path:
         with _indexer_lock:
-            if _bm25_indexer is None:
-                _bm25_indexer = BM25Indexer(persist_path=Path(persist_path))
+            if _bm25_indexer is None or _bm25_indexer.persist_path.expanduser().resolve() != requested_path:
+                _bm25_indexer = BM25Indexer(persist_path=requested_path)
     return _bm25_indexer
 
 

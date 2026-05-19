@@ -119,6 +119,24 @@ docker compose up -d
 
 `--repair` rebuilds BM25 from Chroma and removes manifest entries that point to Chroma documents that no longer exist. It does not synthesize missing manifest entries for legacy/URL-imported documents because their original content hash may not be recoverable safely.
 
+## Operational Check
+
+Run a quick read-only operational check from the deployment root:
+
+```bash
+uv run --extra dev python scripts/ops_check.py
+```
+
+The default check loads `config.yaml`, checks configured persistent directories, audits Chroma/BM25/manifest consistency, and verifies the latest `backups/memox-backup-*.tar.gz` archive if one exists. Missing backups or fresh persistent directories are warnings; index corruption or an unreadable backup is an error.
+
+Use explicit flags for heavier actions:
+
+```bash
+uv run --extra dev python scripts/ops_check.py --create-backup
+uv run --extra dev python scripts/ops_check.py --smoke
+uv run --extra dev python scripts/ops_check.py --restore-drill
+```
+
 ## Upgrade
 
 ```bash

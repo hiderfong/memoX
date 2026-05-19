@@ -221,6 +221,18 @@ class TestBM25IndexerPersistence:
         assert retrieved.size == 1
         assert retrieved.get_chunk("s1").content == "单例测试"
 
+    def test_singleton_reinitializes_when_path_changes(self, tmp_path: Path):
+        first = init_bm25_indexer(str(tmp_path / "first.pkl"))
+        first.add_chunks([
+            ChunkEntry(chunk_id="s1", doc_id="sd1", content="单例测试", metadata={}),
+        ])
+
+        second = get_bm25_indexer(str(tmp_path / "second.pkl"))
+
+        assert second is not first
+        assert second.persist_path == (tmp_path / "second.pkl").resolve()
+        assert second.size == 0
+
 
 # ── HybridRetriever 单元测试 ────────────────────────────────────────────────
 

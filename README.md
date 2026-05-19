@@ -158,6 +158,12 @@ uv run --extra dev python scripts/restore_drill.py
 uv run --extra dev python scripts/index_consistency.py
 ```
 
+日常运维可以跑一键巡检，默认会读取配置、检查持久化路径、审计索引一致性并校验最近一次备份：
+
+```bash
+uv run --extra dev python scripts/ops_check.py
+```
+
 Docker 镜像默认不安装 `sentence-transformers`/Streamlit 这类重依赖。需要本地 embedding 时使用 `uv sync --extra local-embeddings`，需要旧的 Streamlit 管理界面时使用 `uv run --extra ui streamlit run src/ui/streamlit_app.py`。
 
 ## API 接口

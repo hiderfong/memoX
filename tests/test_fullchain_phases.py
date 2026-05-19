@@ -99,6 +99,7 @@ def client(test_dirs):
         chunk_size=200,
         chunk_overlap=20,
         top_k=5,
+        bm25_persist_path=os.path.join(test_dirs["base"], "bm25_index.pkl"),
         manifest_path=os.path.join(test_dirs["base"], "documents_manifest.json"),
     )
 
