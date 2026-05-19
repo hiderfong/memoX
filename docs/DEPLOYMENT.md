@@ -86,6 +86,14 @@ docker compose up -d
 
 Treat backup archives as sensitive. They may contain `.env`, API keys, uploaded documents, vector indexes, SQLite databases, and Worker artifacts.
 
+Run a complete local recovery drill after changing deployment code, backup tooling, or host storage:
+
+```bash
+uv run --extra dev python scripts/restore_drill.py
+```
+
+The drill creates a temporary source deployment, starts MemoX from its real `config.yaml`, uploads a searchable document, stops the service, creates and verifies a backup, restores it into a second directory, starts MemoX from the restored deployment root, then checks login, document listing, chunks, search, Worker configuration, and `workspace/` artifacts. It is intentionally offline and uses `embedding_provider: hash`, so it does not call external model providers.
+
 ## Upgrade
 
 ```bash

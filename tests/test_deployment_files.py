@@ -48,3 +48,4 @@ def test_backup_artifacts_are_documented_and_ignored() -> None:
     assert "backups" in dockerignore
     assert "scripts/backup_restore.py create" in deployment
     assert "scripts/backup_restore.py restore" in deployment
+    assert "scripts/restore_drill.py" in deployment
