@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from src.config import Config, ConfigError, validate_config
+from src.config import Config, ConfigError, default_config_path, validate_config
 
 
 def _base_config(auth: dict) -> Config:
@@ -71,3 +71,10 @@ def test_config_example_is_valid_with_required_env(monkeypatch: pytest.MonkeyPat
     cfg = Config.from_yaml(Path(__file__).parents[1] / "config.example.yaml")
 
     validate_config(cfg)
+
+
+def test_default_config_path_uses_env_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    config_path = tmp_path / "custom.yaml"
+    monkeypatch.setenv("MEMOX_CONFIG_PATH", str(config_path))
+
+    assert default_config_path() == config_path

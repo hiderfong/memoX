@@ -160,6 +160,7 @@ auth:
     - "/api/auth/login"
     - "/api/health"
     - "/api/docs"
+    - "/api/redoc"
     - "/api/openapi.json"
     - "/api/files/"
   # 开发测试用户（生产环境应改用数据库）

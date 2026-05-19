@@ -141,7 +141,7 @@ class AuthConfig:
     """认证配置"""
     enabled: bool = True
     public_paths: list[str] = field(default_factory=lambda: [
-        "/api/auth/login", "/api/health", "/api/docs", "/api/openapi.json"
+        "/api/auth/login", "/api/health", "/api/docs", "/api/redoc", "/api/openapi.json"
     ])
     users: list[AuthUserConfig] = field(default_factory=list)
 
@@ -245,7 +245,7 @@ class Config:
         auth = AuthConfig(
             enabled=auth_data.get("enabled", True),
             public_paths=auth_data.get("public_paths", [
-                "/api/auth/login", "/api/health", "/api/docs", "/api/openapi.json"
+                "/api/auth/login", "/api/health", "/api/docs", "/api/redoc", "/api/openapi.json"
             ]),
             users=auth_users,
         )
@@ -274,11 +274,16 @@ class Config:
 _config: Config | None = None
 
 
-def load_config(config_path: str | Path = "config.yaml") -> Config:
+def default_config_path() -> Path:
+    """返回默认配置文件路径，可通过 MEMOX_CONFIG_PATH 覆盖。"""
+    return Path(os.getenv("MEMOX_CONFIG_PATH", "config.yaml"))
+
+
+def load_config(config_path: str | Path | None = None) -> Config:
     """加载配置（单例）"""
     global _config
     if _config is None:
-        _config = Config.from_yaml(config_path)
+        _config = Config.from_yaml(config_path or default_config_path())
     return _config
 
 

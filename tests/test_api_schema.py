@@ -35,3 +35,9 @@ def test_openapi_schema_has_no_duplicate_operation_warnings() -> None:
     ]
     assert duplicate_warnings == []
     assert "/api/memories" in schema["paths"]
+
+
+def test_api_docs_are_served_under_api_prefix() -> None:
+    assert app.docs_url == "/api/docs"
+    assert app.redoc_url == "/api/redoc"
+    assert app.openapi_url == "/api/openapi.json"

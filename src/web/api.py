@@ -96,7 +96,14 @@ async def lifespan(app_: FastAPI):
     yield
 
 
-app = FastAPI(title="MemoX API", version="1.0.0", lifespan=lifespan)
+app = FastAPI(
+    title="MemoX API",
+    version="1.0.0",
+    lifespan=lifespan,
+    docs_url="/api/docs",
+    redoc_url="/api/redoc",
+    openapi_url="/api/openapi.json",
+)
 
 # CORS 配置：允许本地开发端口和公网 IP 直接访问
 app.add_middleware(
@@ -183,6 +190,7 @@ _PUBLIC_PATHS: set[str] = {
     "/api/auth/login",
     "/api/health",
     "/api/docs",
+    "/api/redoc",
     "/api/openapi.json",
     "/docs",
     "/openapi.json",

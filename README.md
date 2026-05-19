@@ -121,6 +121,18 @@ uv run --extra dev pytest tests --ignore=tests/e2e
 cd frontend && npm run build
 ```
 
+## 部署
+
+当前提供单节点 Docker Compose 部署入口，适合长期试用和小团队内网部署：
+
+```bash
+cp .env.example .env
+cp config.example.yaml config.yaml
+docker compose up -d --build
+```
+
+部署会把 `config.yaml`、`data/` 和 `workspace/` 挂载为持久化数据。更多说明见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)。
+
 ## API 接口
 
 完整接口清单见 [docs/API.md](docs/API.md)，后端启动后也可以访问 `http://localhost:8080/api/docs` 查看 Swagger UI。

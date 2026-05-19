@@ -1,0 +1,74 @@
+# MemoX Deployment
+
+This guide describes the current single-node deployment path for long-running user trials.
+
+## Prerequisites
+
+- Docker with the Compose plugin
+- A server with enough disk for uploaded documents, Chroma data, SQLite databases, and generated workspace files
+- Provider keys for the models enabled in `config.yaml`
+
+## First Start
+
+```bash
+cp .env.example .env
+cp config.example.yaml config.yaml
+```
+
+Edit `.env` and set at least:
+
+```bash
+MEMOX_ADMIN_PASSWORD=use-a-long-random-password
+DASHSCOPE_API_KEY=your-dashscope-key
+```
+
+If you change the default provider or Worker templates in `config.yaml`, also fill the matching provider keys.
+
+Start the service:
+
+```bash
+docker compose up -d --build
+docker compose ps
+docker compose logs -f memox
+```
+
+Open:
+
+- App: `http://localhost:8080`
+- Swagger UI: `http://localhost:8080/api/docs`
+- Health check: `http://localhost:8080/api/health`
+
+## Persistence
+
+The Compose file bind-mounts these host paths:
+
+| Host path | Container path | Purpose |
+|---|---|---|
+| `./config.yaml` | `/app/config.yaml` | Runtime configuration; Worker management APIs update `worker_templates` here |
+| `./data` | `/app/data` | Chroma, SQLite, uploads, BM25 index, groups, workflow state |
+| `./workspace` | `/app/workspace` | Worker task artifacts and shared files |
+
+Back up all three paths together before upgrades.
+
+## Upgrade
+
+```bash
+git pull
+docker compose build --pull
+docker compose up -d
+docker compose logs -f memox
+```
+
+Run a basic health check after the container becomes healthy:
+
+```bash
+curl -fsS http://localhost:8080/api/health
+```
+
+## Operational Notes
+
+- Keep `auth.enabled=true` for any shared deployment. Startup fails if the configured admin password resolves to an empty value.
+- Restrict access to Worker management APIs. Creating, updating, or deleting Workers persists changes into `config.yaml`.
+- Use a reverse proxy with TLS for internet-facing use. The bundled container exposes plain HTTP on port `8080`.
+- Treat `data/`, `workspace/`, `.env`, and `config.yaml` as sensitive. They may contain uploaded documents, task artifacts, API keys, or generated outputs.
+- This Compose file is a single-node deployment. It does not provide queue workers, multi-instance locking, or managed database backups.

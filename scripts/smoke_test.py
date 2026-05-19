@@ -317,6 +317,10 @@ workflow:
 
     with httpx.Client(timeout=180.0) as client:
         checks.record("health", client.get(f"{base_url}/api/health"), {200})
+        checks.record("swagger docs", client.get(f"{base_url}/api/docs"), {200})
+        openapi = checks.record("openapi json", client.get(f"{base_url}/api/openapi.json"), {200}).json()
+        if openapi.get("info", {}).get("title") != "MemoX API":
+            raise RuntimeError(f"unexpected OpenAPI title: {openapi.get('info')}")
         checks.record("documents require auth", client.get(f"{base_url}/api/documents"), {401})
 
         login = checks.record(
@@ -418,6 +422,8 @@ def run_frontend_checks(frontend_url: str) -> dict[str, Any]:
             raise RuntimeError("Vite module transform did not return main.tsx content")
 
         checks.record("proxy health", client.get(f"{frontend_url}/api/health"), {200})
+        checks.record("proxy swagger docs", client.get(f"{frontend_url}/api/docs"), {200})
+        checks.record("proxy openapi json", client.get(f"{frontend_url}/api/openapi.json"), {200})
         login = checks.record(
             "proxy login",
             client.post(f"{frontend_url}/api/auth/login", json={"username": USERNAME, "password": PASSWORD}),

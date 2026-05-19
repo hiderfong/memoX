@@ -3,6 +3,7 @@
 MemoX 后端基于 FastAPI，默认服务地址为 `http://localhost:8080`。交互式文档可在后端启动后访问：
 
 - Swagger UI: `http://localhost:8080/api/docs`
+- ReDoc: `http://localhost:8080/api/redoc`
 - OpenAPI JSON: `http://localhost:8080/api/openapi.json`
 
 除公开路径外，接口默认需要携带 Bearer Token：
@@ -11,7 +12,7 @@ MemoX 后端基于 FastAPI，默认服务地址为 `http://localhost:8080`。交
 Authorization: Bearer <token>
 ```
 
-公开路径由 `config.yaml` 的 `auth.public_paths` 控制，默认包含 `/api/auth/login`、`/api/health`、`/api/docs`、`/api/openapi.json` 和 `/api/files/`。
+公开路径由 `config.yaml` 的 `auth.public_paths` 控制，默认包含 `/api/auth/login`、`/api/health`、`/api/docs`、`/api/redoc`、`/api/openapi.json` 和 `/api/files/`。
 
 ## Auth
 
