@@ -50,3 +50,10 @@ def test_stderr_captured(tmp_path):
     result = asyncio.run(tool.execute({"command": "ls /nonexistent_path_xyz"}))
     # ls 失败，但 stderr 被捕获而不是抛出异常
     assert isinstance(result, str)
+
+
+def test_shell_control_chars_blocked(tmp_path):
+    tool = ShellTool(cwd=tmp_path)
+    result = asyncio.run(tool.execute({"command": "echo hello; touch pwned.txt"}))
+    assert "Error" in result
+    assert not (tmp_path / "pwned.txt").exists()

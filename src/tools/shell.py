@@ -1,6 +1,7 @@
 """Shell 工具 - 在沙箱内运行系统命令"""
 
 import re
+import shlex
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ BLOCKED_PATTERNS = [
     r"\bsudo\b",
     r"chmod\s+777",
 ]
+SHELL_CONTROL_PATTERN = re.compile(r"[|;&<>`$()]")
 
 
 class ShellTool(BaseTool):
@@ -55,13 +57,22 @@ class ShellTool(BaseTool):
         for pattern in BLOCKED_PATTERNS:
             if re.search(pattern, command):
                 return f"Error: 命令被安全策略阻止（规则: {pattern}）"
+        if SHELL_CONTROL_PATTERN.search(command):
+            return "Error: 不支持 shell 控制符、管道、重定向或命令替换"
+
+        try:
+            argv = shlex.split(command)
+        except ValueError as e:
+            return f"Error: 命令解析失败: {e}"
+        if not argv:
+            return "Error: 命令不能为空"
 
         self._cwd.mkdir(parents=True, exist_ok=True)
 
         try:
             result = subprocess.run(
-                command,
-                shell=True,
+                argv,
+                shell=False,
                 cwd=str(self._cwd),
                 capture_output=True,
                 text=True,
