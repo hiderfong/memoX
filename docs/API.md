@@ -69,6 +69,8 @@ Authorization: Bearer <token>
 
 ## 任务与 Worker
 
+Worker 创建、更新和删除接口会持久化修改 `config.yaml` 中的 `worker_templates`。生产环境建议限制管理员权限，并在变更前备份配置文件。
+
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | `GET` | `/api/tasks` | 列出任务 |

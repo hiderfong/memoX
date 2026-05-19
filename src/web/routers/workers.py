@@ -1,14 +1,18 @@
 """Workers router"""
+import os
 import re as _re
+import tempfile
 from pathlib import Path
 from typing import Annotated
 
+import yaml
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from agents.base_agent import ToolRegistry, create_provider
 from agents.worker_pool import WorkerAgent, WorkerConfig, get_worker_pool
 from auth import AuthUser, require_role
+from config import Config
 
 router = APIRouter(prefix="/api", tags=["workers"])
 
@@ -46,6 +50,149 @@ def _audit_log_from_api(request, user, action, resource, resource_id):
     fn = getattr(_api_module, "_audit_log", None)
     if fn:
         fn(request, user, action, resource, resource_id)
+
+
+class WorkerConfigPersistenceError(RuntimeError):
+    """Raised when worker template persistence fails."""
+
+
+def _config_path() -> Path:
+    return Path(os.getenv("MEMOX_CONFIG_PATH", "config.yaml"))
+
+
+def _worker_template_payload(body: WorkerConfigUpdate | WorkerCreateRequest) -> dict:
+    payload = {
+        "provider": body.provider,
+        "model": body.model,
+        "temperature": body.temperature,
+        "skills": list(body.skills),
+        "tools": list(body.tools),
+    }
+    if body.icon:
+        payload["icon"] = body.icon
+    if body.display_name:
+        payload["display_name"] = body.display_name
+    return payload
+
+
+def _read_config_document(config_path: Path) -> dict:
+    try:
+        text = config_path.read_text(encoding="utf-8")
+    except FileNotFoundError as e:
+        raise WorkerConfigPersistenceError(f"配置文件不存在: {config_path}") from e
+    try:
+        data = yaml.safe_load(text) or {}
+    except yaml.YAMLError as e:
+        raise WorkerConfigPersistenceError(f"配置文件 YAML 无法解析: {e}") from e
+    if not isinstance(data, dict):
+        raise WorkerConfigPersistenceError("配置文件顶层必须是 YAML mapping")
+    return data
+
+
+def _section_span(text: str, key: str) -> tuple[int, int] | None:
+    lines = text.splitlines(keepends=True)
+    start_line: int | None = None
+    for index, line in enumerate(lines):
+        if _re.match(rf"^{_re.escape(key)}:\s*(?:#.*)?$", line.rstrip("\n")):
+            start_line = index
+            break
+    if start_line is None:
+        return None
+
+    end_line = len(lines)
+    for index in range(start_line + 1, len(lines)):
+        if _re.match(r"^[A-Za-z_][A-Za-z0-9_-]*:\s*(?:#.*)?$", lines[index].rstrip("\n")):
+            end_line = index
+            break
+
+    while end_line > start_line + 1:
+        previous = lines[end_line - 1].strip()
+        if previous and not previous.startswith("#"):
+            break
+        end_line -= 1
+
+    start = sum(len(line) for line in lines[:start_line])
+    end = sum(len(line) for line in lines[:end_line])
+    return start, end
+
+
+def _dump_worker_templates_section(worker_templates: dict) -> str:
+    return yaml.safe_dump(
+        {"worker_templates": worker_templates},
+        allow_unicode=True,
+        default_flow_style=False,
+        sort_keys=False,
+    ).rstrip()
+
+
+def _replace_worker_templates_section(text: str, worker_templates: dict) -> str:
+    new_section = _dump_worker_templates_section(worker_templates)
+    span = _section_span(text, "worker_templates")
+    if span is None:
+        suffix = "" if text.endswith("\n") or not text else "\n"
+        return f"{text}{suffix}\n{new_section}\n"
+    start, end = span
+    return f"{text[:start]}{new_section}\n\n{text[end:].lstrip()}"
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as tmp:
+            tmp.write(text)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+            tmp_path = Path(tmp.name)
+        os.replace(tmp_path, path)
+    finally:
+        if tmp_path and tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+
+
+def _persist_worker_template(config_path: Path, worker_id: str, payload: dict) -> None:
+    data = _read_config_document(config_path)
+    templates = data.setdefault("worker_templates", {})
+    if not isinstance(templates, dict):
+        raise WorkerConfigPersistenceError("配置项 worker_templates 必须是 YAML mapping")
+    if worker_id not in templates:
+        raise WorkerConfigPersistenceError(f"配置文件中不存在 Worker 模板: {worker_id}")
+    templates[worker_id] = payload
+    Config._from_dict(data)
+    _atomic_write_text(config_path, _replace_worker_templates_section(config_path.read_text(encoding="utf-8"), templates))
+
+
+def _persist_new_worker_template(config_path: Path, worker_id: str, payload: dict) -> None:
+    data = _read_config_document(config_path)
+    templates = data.setdefault("worker_templates", {})
+    if not isinstance(templates, dict):
+        raise WorkerConfigPersistenceError("配置项 worker_templates 必须是 YAML mapping")
+    if worker_id in templates:
+        raise WorkerConfigPersistenceError(f"配置文件中已存在 Worker 模板: {worker_id}")
+    templates[worker_id] = payload
+    Config._from_dict(data)
+    _atomic_write_text(config_path, _replace_worker_templates_section(config_path.read_text(encoding="utf-8"), templates))
+
+
+def _delete_worker_template(config_path: Path, worker_id: str) -> None:
+    data = _read_config_document(config_path)
+    templates = data.get("worker_templates", {})
+    if not isinstance(templates, dict):
+        raise WorkerConfigPersistenceError("配置项 worker_templates 必须是 YAML mapping")
+    if worker_id in templates:
+        templates.pop(worker_id)
+        Config._from_dict(data)
+        _atomic_write_text(
+            config_path,
+            _replace_worker_templates_section(config_path.read_text(encoding="utf-8"), templates),
+        )
 
 
 @router.get("/workers")
@@ -134,6 +281,18 @@ async def update_worker_config(
     if not provider_config:
         raise HTTPException(status_code=400, detail=f"Provider '{body.provider}' 未配置")
 
+    try:
+        _persist_worker_template(_config_path(), worker_id, _worker_template_payload(body))
+    except WorkerConfigPersistenceError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
+    worker_provider = create_provider(
+        body.provider,
+        provider_config.resolve_api_key(),
+        base_url=provider_config.base_url,
+        headers=provider_config.headers,
+    )
+
     worker.config.provider_type = body.provider
     worker.config.model = body.model
     worker.config.skills = body.skills
@@ -149,12 +308,7 @@ async def update_worker_config(
     worker.config.max_tokens = body.max_tokens
     worker.config.icon = body.icon
     worker.config.display_name = body.display_name
-    worker.provider = create_provider(
-        body.provider,
-        provider_config.resolve_api_key(),
-        base_url=provider_config.base_url,
-        headers=provider_config.headers,
-    )
+    worker.provider = worker_provider
 
     if worker_id in _config.worker_templates:
         tpl = _config.worker_templates[worker_id]
@@ -165,33 +319,6 @@ async def update_worker_config(
         tpl.temperature = body.temperature
         tpl.icon = body.icon
         tpl.display_name = body.display_name
-
-    config_path = Path("config.yaml")
-    text = config_path.read_text(encoding="utf-8")
-
-    skills_yaml = "\n".join(f'    - "{s}"' for s in body.skills) if body.skills else "    []"
-    tools_yaml = "\n".join(f'    - "{t}"' for t in body.tools) if body.tools else "    []"
-    icon_line = f'    icon: "{body.icon}"\n' if body.icon else ""
-    name_line = f'    display_name: "{body.display_name}"\n' if body.display_name else ""
-    new_block = (
-        f"  {worker_id}:\n"
-        f'    model: "{body.model}"\n'
-        f'    provider: "{body.provider}"\n'
-        f"    temperature: {body.temperature}\n"
-        f"{icon_line}"
-        f"{name_line}"
-        f"    skills:\n{skills_yaml}\n"
-        f"    tools:\n{tools_yaml}\n"
-    )
-
-    pattern = _re.compile(
-        rf'^(  {_re.escape(worker_id)}:\n)'
-        rf'((?:    .*\n)*)',
-        _re.MULTILINE
-    )
-    new_text, count = pattern.subn(new_block, text, count=1)
-    if count > 0:
-        config_path.write_text(new_text, encoding="utf-8")
 
     return {"success": True, "message": f"Worker '{worker_id}' 配置已更新"}
 
@@ -238,7 +365,11 @@ async def create_worker(
         base_url=provider_config.base_url,
         headers=provider_config.headers,
     )
-    worker_pool.register_worker(WorkerAgent(worker_config, ToolRegistry(), worker_provider))
+
+    try:
+        _persist_new_worker_template(_config_path(), name, _worker_template_payload(body))
+    except WorkerConfigPersistenceError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
     from config import WorkerTemplate
     _config.worker_templates[name] = WorkerTemplate(
@@ -250,29 +381,7 @@ async def create_worker(
         icon=body.icon,
         display_name=body.display_name,
     )
-
-    config_path = Path("config.yaml")
-    text = config_path.read_text(encoding="utf-8")
-    skills_yaml = "\n".join(f'    - "{s}"' for s in body.skills) if body.skills else "    []"
-    tools_yaml = "\n".join(f'    - "{t}"' for t in body.tools) if body.tools else "    []"
-    icon_line = f'    icon: "{body.icon}"\n' if body.icon else ""
-    name_line = f'    display_name: "{body.display_name}"\n' if body.display_name else ""
-    new_block = (
-        f"\n  {name}:\n"
-        f'    model: "{body.model}"\n'
-        f'    provider: "{body.provider}"\n'
-        f"    temperature: {body.temperature}\n"
-        f"{icon_line}"
-        f"{name_line}"
-        f"    skills:\n{skills_yaml}\n"
-        f"    tools:\n{tools_yaml}\n"
-    )
-    pattern = _re.compile(r'(worker_templates:.*?)(\n\n# |\n[a-zA-Z_]+:|\Z)', _re.DOTALL)
-    match = pattern.search(text)
-    if match:
-        insert_pos = match.end(1)
-        new_text = text[:insert_pos] + new_block + text[insert_pos:]
-        config_path.write_text(new_text, encoding="utf-8")
+    worker_pool.register_worker(WorkerAgent(worker_config, ToolRegistry(), worker_provider))
 
     return {"success": True, "message": f"Worker '{name}' 已创建"}
 
@@ -299,19 +408,13 @@ async def delete_worker(
     if len(worker_pool._workers) <= 1:
         raise HTTPException(status_code=400, detail="至少需要保留一个 Worker")
 
+    try:
+        _delete_worker_template(_config_path(), worker_id)
+    except WorkerConfigPersistenceError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+
     worker_pool.unregister_worker(worker_id)
     _config.worker_templates.pop(worker_id, None)
-
-    config_path = Path("config.yaml")
-    text = config_path.read_text(encoding="utf-8")
-    pattern = _re.compile(
-        rf'^\n?  {_re.escape(worker_id)}:\n'
-        rf'((?:    .*\n)*)',
-        _re.MULTILINE
-    )
-    new_text = pattern.sub('', text, count=1)
-    if new_text != text:
-        config_path.write_text(new_text, encoding="utf-8")
 
     _audit_log_from_api(request, user, "delete", "worker", worker_id)
     return {"success": True, "message": f"Worker '{worker_id}' 已删除"}
