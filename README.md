@@ -152,6 +152,12 @@ uv run --extra dev python scripts/backup_restore.py verify backups/<backup-file>
 uv run --extra dev python scripts/restore_drill.py
 ```
 
+排查检索异常时可以巡检 Chroma、BM25 和 manifest 的一致性：
+
+```bash
+uv run --extra dev python scripts/index_consistency.py
+```
+
 Docker 镜像默认不安装 `sentence-transformers`/Streamlit 这类重依赖。需要本地 embedding 时使用 `uv sync --extra local-embeddings`，需要旧的 Streamlit 管理界面时使用 `uv run --extra ui streamlit run src/ui/streamlit_app.py`。
 
 ## API 接口

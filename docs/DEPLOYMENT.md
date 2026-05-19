@@ -94,6 +94,31 @@ uv run --extra dev python scripts/restore_drill.py
 
 The drill creates a temporary source deployment, starts MemoX from its real `config.yaml`, uploads a searchable document, stops the service, creates and verifies a backup, restores it into a second directory, starts MemoX from the restored deployment root, then checks login, document listing, chunks, search, Worker configuration, and `workspace/` artifacts. It is intentionally offline and uses `embedding_provider: hash`, so it does not call external model providers.
 
+## Index Consistency Checks
+
+If users report missing search results, duplicate documents, or failed uploads, run a read-only consistency audit from the deployment root:
+
+```bash
+uv run --extra dev python scripts/index_consistency.py
+```
+
+The audit compares:
+
+- Chroma documents and chunks
+- BM25 chunk IDs
+- `documents_manifest.json` entries used for duplicate/update detection
+
+To rebuild repairable state:
+
+```bash
+docker compose down
+uv run --extra dev python scripts/backup_restore.py create
+uv run --extra dev python scripts/index_consistency.py --repair
+docker compose up -d
+```
+
+`--repair` rebuilds BM25 from Chroma and removes manifest entries that point to Chroma documents that no longer exist. It does not synthesize missing manifest entries for legacy/URL-imported documents because their original content hash may not be recoverable safely.
+
 ## Upgrade
 
 ```bash
