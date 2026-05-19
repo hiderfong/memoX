@@ -248,11 +248,15 @@ class IterativeOrchestrator:
         if not self._rag_engine:
             return
         try:
-            results = await self._rag_engine.search_with_graph(
+            raw_results = await self._rag_engine.search_with_graph(
                 description,
                 group_ids=active_group_ids,
                 top_k=3,
             )
+            if isinstance(raw_results, dict):
+                results = raw_results.get("search_results") or []
+            else:
+                results = raw_results or []
             if results:
                 context["knowledge_context"] = "\n".join(
                     f"[{r.metadata.get('filename', 'doc')}] {r.content[:300]}"
@@ -325,14 +329,14 @@ class IterativeOrchestrator:
         self._sandbox_mgr.create_task_workspace(task.id)
         mail_bus = MailBus(task_id=task.id)
 
-        # 懒加载 MultiAgentExecutor
-        if self._multi_executor is None:
-            self._multi_executor = MultiAgentExecutor(
-                worker_pool=self._worker_pool,
-                provider=self._provider,
-                mail_bus=mail_bus,
-                model=self._model,
-            )
+        # 每个任务拥有独立 MailBus，executor 也按任务创建以避免复用旧通信上下文。
+        self._multi_executor = MultiAgentExecutor(
+            worker_pool=self._worker_pool,
+            provider=self._provider,
+            mail_bus=mail_bus,
+            model=self._model,
+            base_workspace=self._sandbox_mgr.base_workspace,
+        )
 
         # 注册任务
         current = asyncio.current_task()

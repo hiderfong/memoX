@@ -142,7 +142,11 @@ def test_rag_context_injected(tmp_path):
     rag_result.content = "相关知识"
     rag_result.metadata = {"filename": "doc.md"}
     rag.search = AsyncMock(return_value=[])
-    rag.search_with_graph = AsyncMock(return_value=[rag_result])
+    rag.search_with_graph = AsyncMock(return_value={
+        "search_results": [rag_result],
+        "graph_result": None,
+        "graph_boosted_ids": [],
+    })
 
     orchestrator = IterativeOrchestrator(
         planner=planner,
@@ -160,3 +164,6 @@ def test_rag_context_injected(tmp_path):
     assert call_kwargs.kwargs.get("group_ids") == ["g1"] or (
         len(call_kwargs.args) > 1 and call_kwargs.args[1] == ["g1"]
     )
+
+    plan_context = planner.plan_task.call_args.args[1]
+    assert "相关知识" in plan_context["knowledge_context"]
