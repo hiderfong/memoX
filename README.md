@@ -139,6 +139,13 @@ docker compose up -d --build
 uv run --extra dev python scripts/docker_smoke_test.py
 ```
 
+升级或迁移前创建并校验备份：
+
+```bash
+uv run --extra dev python scripts/backup_restore.py create
+uv run --extra dev python scripts/backup_restore.py verify backups/<backup-file>.tar.gz
+```
+
 Docker 镜像默认不安装 `sentence-transformers`/Streamlit 这类重依赖。需要本地 embedding 时使用 `uv sync --extra local-embeddings`，需要旧的 Streamlit 管理界面时使用 `uv run --extra ui streamlit run src/ui/streamlit_app.py`。
 
 ## API 接口

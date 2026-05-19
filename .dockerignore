@@ -29,3 +29,4 @@ node_modules
 .worktrees
 .playwright-mcp
 .docker-smoke
+backups

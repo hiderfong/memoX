@@ -60,6 +60,7 @@ ssl/
 
 # ---- Test / scratch artifacts ----
 .docker-smoke/
+backups/
 test_output.txt
 *.log
 tests/__pycache__/

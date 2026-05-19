@@ -37,3 +37,14 @@ def test_config_example_is_container_friendly() -> None:
     assert "/api/docs" in config["auth"]["public_paths"]
     assert "/api/redoc" in config["auth"]["public_paths"]
     assert "/api/openapi.json" in config["auth"]["public_paths"]
+
+
+def test_backup_artifacts_are_documented_and_ignored() -> None:
+    gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
+    dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
+    deployment = (ROOT / "docs" / "DEPLOYMENT.md").read_text(encoding="utf-8")
+
+    assert "backups/" in gitignore
+    assert "backups" in dockerignore
+    assert "scripts/backup_restore.py create" in deployment
+    assert "scripts/backup_restore.py restore" in deployment

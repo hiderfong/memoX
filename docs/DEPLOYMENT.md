@@ -50,6 +50,42 @@ The Compose file bind-mounts these host paths:
 
 Back up all three paths together before upgrades.
 
+## Backup and Restore
+
+For a consistent backup, pause writes first. On the single-node Compose deployment the simplest path is:
+
+```bash
+docker compose down
+uv run --extra dev python scripts/backup_restore.py create
+uv run --extra dev python scripts/backup_restore.py verify backups/<backup-file>.tar.gz
+docker compose up -d
+```
+
+The backup archive includes existing `config.yaml`, `.env`, `data/`, and `workspace/` paths. Missing paths are recorded in `memox-backup.json` inside the archive, so a fresh deployment without `.env` or `workspace/` can still be backed up if at least one persistent path exists.
+
+Inspect a backup before restoring:
+
+```bash
+uv run --extra dev python scripts/backup_restore.py inspect backups/<backup-file>.tar.gz
+```
+
+Restore into an empty directory for migration or disaster-recovery drills:
+
+```bash
+mkdir -p /tmp/memox-restore-check
+uv run --extra dev python scripts/backup_restore.py restore backups/<backup-file>.tar.gz --target /tmp/memox-restore-check
+```
+
+Restoring into an existing deployment refuses to overwrite files unless `--overwrite` is provided:
+
+```bash
+docker compose down
+uv run --extra dev python scripts/backup_restore.py restore backups/<backup-file>.tar.gz --target . --overwrite
+docker compose up -d
+```
+
+Treat backup archives as sensitive. They may contain `.env`, API keys, uploaded documents, vector indexes, SQLite databases, and Worker artifacts.
+
 ## Upgrade
 
 ```bash
