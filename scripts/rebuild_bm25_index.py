@@ -7,17 +7,16 @@
     .venv/bin/python scripts/rebuild_bm25_index.py
 """
 import asyncio
+import sys
 from pathlib import Path
 
 # 确保 src 在路径中
-import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.config import load_config
-from src.knowledge.vector_store import get_vector_store
-from src.knowledge.rag_engine import RAGEngine
 from src.knowledge.bm25_indexer import get_bm25_indexer
 from src.knowledge.hybrid_retriever import HybridRetriever
+from src.knowledge.vector_store import get_vector_store
 
 
 def init_hybrid_retriever() -> HybridRetriever | None:

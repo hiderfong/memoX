@@ -15,7 +15,7 @@
 ## 项目结构
 
 ```
-notebook-lm-pro/
+memoX/
 ├── src/
 │   ├── main.py                 # 入口文件
 │   ├── config/                 # 配置模块
@@ -31,8 +31,11 @@ notebook-lm-pro/
 │   └── web/                    # Web 服务
 │       └── api.py              # FastAPI 服务
 ├── frontend/                   # React 前端
+├── scripts/                    # 开发、验证脚本
+├── tests/                      # 后端测试
 ├── config.yaml                # 配置文件
-└── requirements.txt           # Python 依赖
+├── pyproject.toml             # Python 依赖与工具配置
+└── uv.lock                    # Python 锁文件
 ```
 
 ## 快速开始
@@ -41,10 +44,10 @@ notebook-lm-pro/
 
 ```bash
 # Python 依赖
-pip install -r requirements.txt
+uv sync --extra dev
 
 # 前端依赖
-cd frontend && npm install
+cd frontend && npm ci
 ```
 
 ### 2. 配置
@@ -53,22 +56,27 @@ cd frontend && npm install
 
 ```yaml
 providers:
-  anthropic:
-    api_key: "${ANTHROPIC_API_KEY}"  # 或直接填入 API Key
-  openai:
-    api_key: "${OPENAI_API_KEY}"
+  dashscope:
+    api_key: "${DASHSCOPE_API_KEY}"
 
 coordinator:
-  model: "claude-sonnet-4-20250514"
+  provider: "dashscope"
+  model: "qwen3.6-plus"
   max_workers: 5
+
+auth:
+  users:
+    - username: "admin"
+      password: "${MEMOX_ADMIN_PASSWORD}"
 ```
+
+本地启动前至少设置管理员密码；如果使用默认 DashScope 配置，还需要设置 `DASHSCOPE_API_KEY`。
 
 ### 3. 启动
 
 ```bash
 # 启动后端 (终端 1)
-cd notebook-lm-pro
-python -m src.main
+uv run python -m src.main
 
 # 启动前端 (终端 2)
 cd frontend
@@ -76,6 +84,27 @@ npm run dev
 ```
 
 访问 http://localhost:3000
+
+### 4. 冒烟验证
+
+```bash
+# 仅验证临时后端
+uv run --extra dev python scripts/smoke_test.py
+
+# 验证临时后端 + Vite 前端代理
+uv run --extra dev python scripts/smoke_test.py --frontend
+```
+
+冒烟脚本会使用临时数据目录和确定性的本地 embedding 替身，不需要真实模型 API Key；`--frontend` 模式要求已执行过 `cd frontend && npm ci`。
+
+### 5. 常用检查
+
+```bash
+uv run --extra dev ruff check src tests scripts
+uv run --extra dev python -m compileall -q src tests scripts
+uv run --extra dev pytest tests --ignore=tests/e2e
+cd frontend && npm run build
+```
 
 ## API 接口
 
