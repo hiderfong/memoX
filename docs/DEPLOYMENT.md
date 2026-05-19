@@ -69,6 +69,13 @@ Inspect a backup before restoring:
 uv run --extra dev python scripts/backup_restore.py inspect backups/<backup-file>.tar.gz
 ```
 
+Prune old local archives after confirming an external copy exists:
+
+```bash
+uv run --extra dev python scripts/backup_restore.py prune --keep 14 --dry-run
+uv run --extra dev python scripts/backup_restore.py prune --keep 14
+```
+
 Restore into an empty directory for migration or disaster-recovery drills:
 
 ```bash
@@ -127,7 +134,7 @@ Run a quick read-only operational check from the deployment root:
 uv run --extra dev python scripts/ops_check.py
 ```
 
-The default check loads `config.yaml`, checks configured persistent directories, audits Chroma/BM25/manifest consistency, runs SQLite quick checks, checks disk free space, and verifies the latest `backups/memox-backup-*.tar.gz` archive if one exists. Missing backups or fresh persistent directories are warnings; index corruption or an unreadable backup is an error.
+The default check loads `config.yaml`, checks configured persistent directories, audits Chroma/BM25/manifest consistency, runs SQLite quick checks, checks disk free space, and verifies the latest `backups/memox-backup-*.tar.gz` archive if one exists. It warns if the latest backup is older than 24 hours or more than 14 local backup archives exist. Missing backups or fresh persistent directories are warnings; index corruption or an unreadable backup is an error.
 
 If `config.yaml` references environment variables such as `${MEMOX_ADMIN_PASSWORD}`, run the check from a shell where those variables are exported.
 
@@ -135,6 +142,7 @@ Use explicit flags for heavier actions:
 
 ```bash
 uv run --extra dev python scripts/ops_check.py --create-backup
+uv run --extra dev python scripts/ops_check.py --max-backup-age-hours 12 --max-backups 30
 uv run --extra dev python scripts/ops_check.py --smoke
 uv run --extra dev python scripts/ops_check.py --restore-drill
 ```

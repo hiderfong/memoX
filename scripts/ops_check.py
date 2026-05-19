@@ -10,6 +10,7 @@ import sys
 import time
 from collections.abc import Callable
 from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -17,7 +18,13 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.backup_restore import BackupError, create_backup, read_backup_metadata, verify_backup  # noqa: E402
+from scripts.backup_restore import (  # noqa: E402
+    BackupError,
+    create_backup,
+    list_backup_archives,
+    read_backup_metadata,
+    verify_backup,
+)
 from src.config import default_config_path  # noqa: E402
 from src.ops.readiness import (  # noqa: E402
     CheckResult,
@@ -29,13 +36,22 @@ from src.ops.readiness import (  # noqa: E402
 
 
 def find_latest_backup(root: Path) -> Path | None:
-    backup_dir = root / "backups"
-    if not backup_dir.exists():
-        return None
-    archives = [path for path in backup_dir.glob("memox-backup-*.tar.gz") if path.is_file()]
+    archives = list_backup_archives(root)
     if not archives:
         return None
-    return max(archives, key=lambda path: (path.stat().st_mtime, path.name))
+    return archives[0]
+
+
+def _parse_backup_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def check_latest_backup(
@@ -43,10 +59,13 @@ def check_latest_backup(
     *,
     archive: Path | None = None,
     verify: bool = True,
+    max_age_hours: float = 24.0,
+    max_backups: int = 14,
     verifier: Callable[[Path], dict] = verify_backup,
     inspector: Callable[[Path], dict] = read_backup_metadata,
 ) -> CheckResult:
     start = time.monotonic()
+    archives = list_backup_archives(root)
     backup_path = archive or find_latest_backup(root)
     if backup_path is None:
         return CheckResult(
@@ -75,15 +94,36 @@ def check_latest_backup(
         )
 
     action = "verified" if verify else "inspected"
+    created_at = _parse_backup_timestamp(metadata.get("created_at"))
+    age_seconds = None
+    if created_at is not None:
+        age_seconds = max(0.0, (datetime.now(timezone.utc) - created_at).total_seconds())
+
+    warnings: list[str] = []
+    if age_seconds is not None and age_seconds > max_age_hours * 3600:
+        warnings.append(f"latest backup is older than {max_age_hours:g}h")
+    if not archive and len(archives) > max_backups:
+        warnings.append(f"backup archive count exceeds {max_backups}")
+
+    status = "warning" if warnings else "ok"
+    message = f"Latest backup {action}: {backup_path}"
+    if warnings:
+        message += " (" + "; ".join(warnings) + ")"
+
     return CheckResult(
         name="latest_backup",
-        status="ok",
-        message=f"Latest backup {action}: {backup_path}",
+        status=status,
+        message=message,
         details={
             "archive": str(Path(metadata.get("archive", backup_path)).resolve()),
             "created_at": metadata.get("created_at"),
+            "age_seconds": age_seconds,
+            "archive_count": len(archives) if not archive else None,
+            "max_age_hours": max_age_hours,
+            "max_backups": max_backups,
             "entries": len(metadata.get("entries", [])),
             "verified": bool(metadata.get("verified", False)),
+            "warnings": warnings,
         },
         duration_ms=duration_ms(start),
     )
@@ -160,6 +200,8 @@ def run_ops_check(
     collection_name: str,
     verify_latest_backup: bool,
     backup_archive: Path | None,
+    max_backup_age_hours: float,
+    max_backups: int,
     create_backup_first: bool,
     include_smoke: bool,
     include_frontend_smoke: bool,
@@ -172,7 +214,15 @@ def run_ops_check(
 
     readiness = run_readiness_checks(root=root, config_path=config_path, collection_name=collection_name)
     checks.extend(CheckResult(**check) for check in readiness["checks"])
-    checks.append(check_latest_backup(root, archive=backup_archive, verify=verify_latest_backup))
+    checks.append(
+        check_latest_backup(
+            root,
+            archive=backup_archive,
+            verify=verify_latest_backup,
+            max_age_hours=max_backup_age_hours,
+            max_backups=max_backups,
+        )
+    )
 
     if include_smoke or include_frontend_smoke:
         command = [sys.executable, str(ROOT / "scripts" / "smoke_test.py")]
@@ -217,6 +267,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--collection", default="documents", help="Chroma collection name.")
     parser.add_argument("--backup", help="Backup archive to inspect/verify instead of the latest backups/*.tar.gz.")
     parser.add_argument("--no-verify-backup", action="store_true", help="Inspect latest backup metadata without checksums.")
+    parser.add_argument("--max-backup-age-hours", type=float, default=24.0, help="Warn if the latest backup is older.")
+    parser.add_argument("--max-backups", type=int, default=14, help="Warn if backup archive count exceeds this value.")
     parser.add_argument("--create-backup", action="store_true", help="Create and verify a backup before other checks.")
     parser.add_argument("--smoke", action="store_true", help="Run isolated backend smoke test.")
     parser.add_argument("--frontend-smoke", action="store_true", help="Run isolated backend + Vite frontend smoke test.")
@@ -240,6 +292,8 @@ def main() -> int:
         collection_name=args.collection,
         verify_latest_backup=not args.no_verify_backup,
         backup_archive=backup_archive,
+        max_backup_age_hours=args.max_backup_age_hours,
+        max_backups=args.max_backups,
         create_backup_first=args.create_backup,
         include_smoke=args.smoke,
         include_frontend_smoke=args.frontend_smoke,

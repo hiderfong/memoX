@@ -144,6 +144,7 @@ uv run --extra dev python scripts/docker_smoke_test.py
 ```bash
 uv run --extra dev python scripts/backup_restore.py create
 uv run --extra dev python scripts/backup_restore.py verify backups/<backup-file>.tar.gz
+uv run --extra dev python scripts/backup_restore.py prune --keep 14 --dry-run
 ```
 
 也可以执行一次完整恢复演练，确认备份恢复后服务仍能启动并检索已恢复文档：

@@ -42,6 +42,15 @@ def _default_backup_path(root: Path) -> Path:
     return root / "backups" / f"memox-backup-{stamp}.tar.gz"
 
 
+def list_backup_archives(root: str | Path = ".") -> list[Path]:
+    """Return MemoX backup archives sorted from newest to oldest."""
+    backup_dir = Path(root).resolve() / "backups"
+    if not backup_dir.exists():
+        return []
+    archives = [path for path in backup_dir.glob("memox-backup-*.tar.gz") if path.is_file()]
+    return sorted(archives, key=lambda path: (path.stat().st_mtime, path.name), reverse=True)
+
+
 def _safe_include_path(value: str | Path) -> Path:
     rel = Path(value)
     if rel.is_absolute() or ".." in rel.parts:
@@ -366,6 +375,34 @@ def restore_backup(
     }
 
 
+def prune_backups(
+    *,
+    root: str | Path = ".",
+    keep: int = 14,
+    dry_run: bool = False,
+) -> dict:
+    """Delete old MemoX backup archives, keeping the newest N archives."""
+    if keep < 1:
+        raise BackupError("--keep must be at least 1")
+    root_path = Path(root).resolve()
+    archives = list_backup_archives(root_path)
+    to_delete = archives[keep:]
+    deleted: list[str] = []
+    for archive in to_delete:
+        if not dry_run:
+            archive.unlink()
+        deleted.append(str(archive))
+    return {
+        "root": str(root_path),
+        "keep": keep,
+        "dry_run": dry_run,
+        "archive_count_before": len(archives),
+        "archive_count_after": len(archives) if dry_run else len(archives) - len(to_delete),
+        "kept": [str(path) for path in archives[:keep]],
+        "deleted": deleted,
+    }
+
+
 def _print_result(result: dict, as_json: bool) -> None:
     if as_json:
         print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
@@ -375,6 +412,12 @@ def _print_result(result: dict, as_json: bool) -> None:
         print(f"Verified {result['archive']} ({len(result.get('entries', []))} entries)")
     elif "restored" in result:
         print(f"Restored {result['entry_count']} entries into {result['target']}")
+    elif "archive_count_before" in result:
+        action = "Would delete" if result.get("dry_run") else "Deleted"
+        print(
+            f"{action} {len(result.get('deleted', []))} backup archive(s); "
+            f"kept {len(result.get('kept', []))}"
+        )
     else:
         print(f"Created {result['archive']} ({len(result.get('entries', []))} entries)")
         if result.get("missing"):
@@ -408,6 +451,12 @@ def build_parser() -> argparse.ArgumentParser:
     restore.add_argument("--overwrite", action="store_true", help="Overwrite existing files")
     restore.add_argument("--json", action="store_true", help="Print JSON output")
 
+    prune = subparsers.add_parser("prune", help="Delete old backup archives")
+    prune.add_argument("--root", default=".", help="MemoX deployment root")
+    prune.add_argument("--keep", type=int, default=14, help="Number of newest backups to keep")
+    prune.add_argument("--dry-run", action="store_true", help="Show what would be deleted without deleting")
+    prune.add_argument("--json", action="store_true", help="Print JSON output")
+
     return parser
 
 
@@ -428,6 +477,9 @@ def main() -> int:
             _print_result(result, args.json)
         elif args.command == "restore":
             result = restore_backup(archive=args.archive, target=args.target, overwrite=args.overwrite)
+            _print_result(result, args.json)
+        elif args.command == "prune":
+            result = prune_backups(root=args.root, keep=args.keep, dry_run=args.dry_run)
             _print_result(result, args.json)
         else:
             parser.error(f"Unknown command: {args.command}")

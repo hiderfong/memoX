@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from scripts.backup_restore import BackupError
@@ -71,3 +72,32 @@ def test_latest_backup_reports_verifier_errors(tmp_path: Path) -> None:
 
     assert result.status == "error"
     assert "bad archive" in result.message
+
+
+def test_latest_backup_warns_when_stale_or_too_many(tmp_path: Path) -> None:
+    backup_dir = tmp_path / "backups"
+    backup_dir.mkdir()
+    for index in range(3):
+        archive = backup_dir / f"memox-backup-20260519-01010{index}.tar.gz"
+        archive.write_text("archive", encoding="utf-8")
+        os.utime(archive, (100 + index, 100 + index))
+
+    old_created_at = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat().replace("+00:00", "Z")
+
+    def verifier(path: Path) -> dict:
+        return {
+            "archive": str(path),
+            "created_at": old_created_at,
+            "entries": [{"path": "data", "type": "directory"}],
+            "verified": True,
+        }
+
+    result = check_latest_backup(tmp_path, verifier=verifier, max_age_hours=1, max_backups=2)
+
+    assert result.status == "warning"
+    assert result.details["archive_count"] == 3
+    assert result.details["age_seconds"] > 3600
+    assert result.details["warnings"] == [
+        "latest backup is older than 1h",
+        "backup archive count exceeds 2",
+    ]

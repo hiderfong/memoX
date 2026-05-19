@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import subprocess
 import sys
 import tarfile
@@ -11,7 +12,15 @@ from pathlib import Path
 
 import pytest
 
-from scripts.backup_restore import BackupError, create_backup, read_backup_metadata, restore_backup, verify_backup
+from scripts.backup_restore import (
+    BackupError,
+    create_backup,
+    list_backup_archives,
+    prune_backups,
+    read_backup_metadata,
+    restore_backup,
+    verify_backup,
+)
 
 ROOT = Path(__file__).parents[1]
 
@@ -82,6 +91,35 @@ def test_backup_records_missing_optional_paths(tmp_path: Path) -> None:
     assert ".env" in metadata["missing"]
     assert "workspace" in metadata["missing"]
     assert read_backup_metadata(archive)["format"] == "memox-backup-v1"
+
+
+def test_prune_backups_keeps_newest_archives(tmp_path: Path) -> None:
+    root = tmp_path / "deployment"
+    backup_dir = root / "backups"
+    backup_dir.mkdir(parents=True)
+    archives = [
+        backup_dir / "memox-backup-20260519-010101.tar.gz",
+        backup_dir / "memox-backup-20260519-020202.tar.gz",
+        backup_dir / "memox-backup-20260519-030303.tar.gz",
+    ]
+    for index, archive in enumerate(archives, start=1):
+        archive.write_text(str(index), encoding="utf-8")
+        os.utime(archive, (index, index))
+
+    dry_run = prune_backups(root=root, keep=2, dry_run=True)
+
+    assert dry_run["archive_count_after"] == 3
+    assert all(archive.exists() for archive in archives)
+
+    result = prune_backups(root=root, keep=2)
+
+    assert result["archive_count_before"] == 3
+    assert result["archive_count_after"] == 2
+    assert [path.name for path in list_backup_archives(root)] == [
+        "memox-backup-20260519-030303.tar.gz",
+        "memox-backup-20260519-020202.tar.gz",
+    ]
+    assert not archives[0].exists()
 
 
 def test_verify_rejects_unsafe_metadata_path(tmp_path: Path) -> None:
