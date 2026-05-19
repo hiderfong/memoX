@@ -3,12 +3,12 @@ import re as _re
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from auth import AuthUser, require_role
 from agents.base_agent import ToolRegistry, create_provider
 from agents.worker_pool import WorkerAgent, WorkerConfig, get_worker_pool
+from auth import AuthUser, require_role
 
 router = APIRouter(prefix="/api", tags=["workers"])
 

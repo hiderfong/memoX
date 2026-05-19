@@ -1,10 +1,10 @@
 """Auth router"""
-from fastapi import APIRouter, Request, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
-from auth import _get_auth_from_request, get_auth_manager
+from auth import AuthManager, _get_auth_from_request, get_auth_manager
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -20,7 +20,10 @@ class LoginRequest(BaseModel):
 @limiter.limit("10/minute")
 async def login(request: Request, login_req: LoginRequest) -> dict:
     """用户登录，返回 Bearer Token"""
-    auth = get_auth_manager()
+    auth = _get_auth_from_request(request)
+    if not isinstance(auth, AuthManager):
+        auth = get_auth_manager()
+        request.app.state._auth_manager = auth
     token = auth.login(login_req.username, login_req.password)
     if not token:
         raise HTTPException(status_code=401, detail="用户名或密码错误")

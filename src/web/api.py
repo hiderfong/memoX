@@ -16,21 +16,24 @@ _src_dir = Path(__file__).parent.parent
 if str(_src_dir) not in sys.path:
     sys.path.insert(0, str(_src_dir))
 
-from typing import Annotated, Literal  # noqa: E402, I001
+# The app can be imported as either ``src.web.api`` or ``web.api`` depending on
+# how uvicorn/tests are started. Keep both names bound to this module so routers
+# that lazily read globals do not see a second, uninitialized module instance.
+_this_module = sys.modules[__name__]
+sys.modules["web.api"] = _this_module
+sys.modules["src.web.api"] = _this_module
+
+from typing import Literal  # noqa: E402, I001
 
 from fastapi import (  # noqa: E402
-    Depends,
     FastAPI,
-    File,
-    Form,
     HTTPException,
     Request,
-    UploadFile,
     WebSocket,
     WebSocketDisconnect,
 )
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse  # noqa: E402
+from fastapi.responses import FileResponse, JSONResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 from slowapi import Limiter  # noqa: E402
@@ -39,19 +42,17 @@ from slowapi.util import get_remote_address  # noqa: E402
 
 from agents.base_agent import ToolRegistry, create_provider  # noqa: E402
 from agents.worker_pool import WorkerAgent, WorkerConfig, get_worker_pool, init_worker_pool  # noqa: E402
-from auth import AuthUser, _get_auth_from_request, get_auth_manager, get_current_user, init_auth, require_role  # noqa: E402
+from auth import AuthUser, _get_auth_from_request, init_auth  # noqa: E402
 from config import Config, load_config  # noqa: E402
-from memory import MemoryManager, MemoryRecall, PreferenceLearner  # noqa: E402
 from coordinator.iterative_orchestrator import IterativeOrchestrator  # noqa: E402
 from coordinator.task_planner import TaskPlanner, init_task_planner  # noqa: E402
+from memory import MemoryManager, MemoryRecall, PreferenceLearner  # noqa: E402
 from knowledge import (  # noqa: E402
-    DocumentInfo,
     RAGEngine,
-    SearchResult,
     init_rag_engine,
 )
-from knowledge.document_parser import WebPageParser  # noqa: E402
-from knowledge.group_store import UNGROUPED_ID, GroupStore  # noqa: E402
+from knowledge.document_parser import WebPageParser  # noqa: E402, F401
+from knowledge.group_store import GroupStore  # noqa: E402
 from knowledge.vector_store import (  # noqa: E402
     DashScopeEmbedding,
     OpenAIEmbedding,
@@ -61,7 +62,6 @@ from storage import get_store, init_store  # noqa: E402
 from workflow import (  # noqa: E402
     WorkflowEngine,
     WorkflowPersistence,
-    parse_workflow_yaml,
 )
 
 
@@ -90,7 +90,14 @@ def _audit_log(
 
 # ==================== 配置 ====================
 
-app = FastAPI(title="MemoX API", version="1.0.0")
+
+@contextlib.asynccontextmanager
+async def lifespan(app_: FastAPI):
+    await startup()
+    yield
+
+
+app = FastAPI(title="MemoX API", version="1.0.0", lifespan=lifespan)
 
 # CORS 配置：允许本地开发端口和公网 IP 直接访问
 app.add_middleware(
@@ -133,6 +140,8 @@ _memory_manager: MemoryManager | None = None
 _memory_recall: MemoryRecall | None = None
 _preference_learner: PreferenceLearner | None = None
 _group_store: GroupStore | None = None
+_workflow_engine: WorkflowEngine | None = None
+_workflow_persistence: WorkflowPersistence | None = None
 _task_results: dict[str, dict] = {}  # task_id -> full result dict (for later retrieval)
 _ws_connections: set[WebSocket] = set()
 
@@ -271,7 +280,6 @@ class MoveDocumentGroup(BaseModel):
 
 # ==================== 初始化 ====================
 
-@app.on_event("startup")
 async def startup():
     """启动时初始化"""
     global _config, _rag_engine, _task_planner
@@ -372,6 +380,9 @@ async def startup():
 
     # 初始化 Worker 池
     worker_pool = init_worker_pool(max_workers=_config.coordinator.max_workers)
+    workflow_db_path = Path(_config.knowledge_base.persist_directory).parent / "workflows.db"
+    global _workflow_persistence, _workflow_engine
+    _workflow_persistence = WorkflowPersistence(str(workflow_db_path))
 
     # 注册 Worker（从模板）
     for name, template in _config.worker_templates.items():
@@ -428,6 +439,7 @@ async def startup():
             base_workspace=str(Path(_config.knowledge_base.persist_directory).parent / "workspace"),
             broadcast=_ws_broadcast,
         )
+        _workflow_engine = WorkflowEngine(worker_pool, coordinator_provider, _workflow_persistence)
 
     # 初始化分组存储
     global _group_store
@@ -515,7 +527,7 @@ async def startup():
 
 
 # ── Router imports ─────────────────────────────────────────────────────────
-from web.routers import (
+from web.routers import (  # noqa: E402
     auth_router,
     chat_router,
     documents_router,

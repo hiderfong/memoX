@@ -1,9 +1,8 @@
 """Documents and groups router"""
-from typing import Annotated
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel
-from typing import Literal
 
 from auth import AuthUser, require_role
 
@@ -94,9 +93,8 @@ async def upload_document(
     """上传文档"""
     import asyncio
     import contextlib
-    import traceback
-    from pathlib import Path
     import uuid
+    from pathlib import Path
 
     from web.api import _config, _rag_engine
 
@@ -174,13 +172,12 @@ async def upload_document(
 @router.post("/documents/url")
 async def import_url(request: URLRequest) -> DocumentResponse:
     """从 URL 抓取网页并导入知识库"""
-    import re
     import asyncio
     import datetime
+    import re
     import uuid
 
-    from web.api import _rag_engine
-    from knowledge.document_parser import WebPageParser
+    from web.api import WebPageParser, _rag_engine
 
     url = request.url.strip()
     if not re.match(r"^https?://", url):
@@ -202,16 +199,19 @@ async def import_url(request: URLRequest) -> DocumentResponse:
         raise HTTPException(status_code=400, detail=f"网页抓取失败: {type(e).__name__}: {str(e)}") from e
 
     chunks = await parser.chunk(doc_info_raw, chunk_size=500, overlap=50)
+    created_at = datetime.datetime.now().isoformat()
+    file_size = len(doc_info_raw.content.encode())
     for chunk in chunks:
         chunk.metadata["doc_id"] = doc_id
         chunk.metadata["filename"] = url
         chunk.metadata["type"] = "webpage"
         chunk.metadata["group_id"] = "ungrouped"
+        chunk.metadata["created_at"] = created_at
+        chunk.metadata["file_size"] = file_size
+        chunk.metadata["chunk_count"] = len(chunks)
 
     if chunks:
-        BATCH_SIZE = 100
-        for i in range(0, len(chunks), BATCH_SIZE):
-            await _rag_engine.vector_store.add_chunks(chunks[i:i + BATCH_SIZE])
+        await _rag_engine._index_document_chunks(chunks, "documents")
 
     from knowledge import DocumentInfo
     doc_info = DocumentInfo(
@@ -219,8 +219,8 @@ async def import_url(request: URLRequest) -> DocumentResponse:
         filename=url,
         type="webpage",
         chunk_count=len(chunks),
-        created_at=datetime.datetime.now().isoformat(),
-        size=len(doc_info_raw.content.encode()),
+        created_at=created_at,
+        size=file_size,
     )
     _rag_engine._documents[doc_id] = doc_info
 
@@ -307,8 +307,8 @@ async def delete_group(
     user: Annotated[AuthUser, require_role("admin")],
 ) -> dict:
     """删除分组，其下文档自动归回未分组（仅管理员）"""
-    from web.api import _group_store, _rag_engine
     from knowledge.group_store import UNGROUPED_ID
+    from web.api import _group_store, _rag_engine
 
     try:
         docs = _rag_engine.list_documents()

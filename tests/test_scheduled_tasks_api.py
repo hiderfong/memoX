@@ -23,10 +23,10 @@ def _bypass_auth(monkeypatch):
     }
 
     # Middleware path: _get_auth_from_request(request) checks request.app.state._auth_manager
-    app.state._auth_manager = mock_mgr
+    monkeypatch.setattr(app.state, "_auth_manager", mock_mgr, raising=False)
 
     # Route path: FastAPI dependency_overrides
-    app.dependency_overrides[_get_auth_from_request] = lambda request: mock_mgr
+    monkeypatch.setitem(app.dependency_overrides, _get_auth_from_request, lambda request: mock_mgr)
 
     return app
 

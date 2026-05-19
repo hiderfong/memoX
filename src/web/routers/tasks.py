@@ -3,6 +3,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+
 from web.state import get_store as _gs
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
@@ -24,11 +25,12 @@ class FeedbackRequest(BaseModel):
 @router.post("")
 async def create_task(request: TaskRequest) -> dict:
     """创建并执行任务（迭代编排器）"""
+    import asyncio
+
     import web.api as _api_module
+
     _orchestrator = getattr(_api_module, "_orchestrator", None)
     _task_planner = getattr(_api_module, "_task_planner", None)
-    _rag_engine = getattr(_api_module, "_rag_engine", None)
-    import asyncio
 
     if not _orchestrator:
         raise HTTPException(status_code=500, detail="Orchestrator not initialized")

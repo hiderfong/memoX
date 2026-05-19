@@ -1,7 +1,9 @@
 """P8 工作流测试"""
 
+import asyncio
 import os
 import sys
+from types import SimpleNamespace
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
@@ -200,3 +202,57 @@ class TestResolveTemplate:
     def test_static_text(self):
         context = {}
         assert resolve_template("static text", context) == "static text"
+
+
+class TestWorkflowRouter:
+    def test_validate_accepts_json_body_model(self):
+        from web.routers.workflows import WorkflowContentRequest, validate_workflow
+
+        request = WorkflowContentRequest(yaml_content="""
+workflow:
+  name: "API 工作流"
+  steps:
+    - id: step1
+      worker: researcher
+      input: "hello"
+""")
+
+        result = asyncio.run(validate_workflow(request))
+
+        assert result["valid"] is True
+        assert result["step_count"] == 1
+
+    def test_run_uses_engine_from_api_globals(self, monkeypatch):
+        import web.routers.workflows as workflows
+
+        class FakeEngine:
+            def __init__(self):
+                self.context = None
+
+            async def execute(self, workflow, context):
+                self.context = context
+                return SimpleNamespace(
+                    id="run_1",
+                    status=SimpleNamespace(value="completed"),
+                    context={"answer": "ok"},
+                    step_records=[object()],
+                )
+
+        engine = FakeEngine()
+        monkeypatch.setattr(workflows, "_get_api_globals", lambda: (engine, None))
+
+        request = workflows.WorkflowRunRequest(yaml_content="""
+workflow:
+  name: "API 工作流"
+  steps:
+    - id: step1
+      worker: researcher
+      input: "${query}"
+""", context={"query": "hello"})
+
+        result = asyncio.run(workflows.run_workflow(request))
+
+        assert result["run_id"] == "run_1"
+        assert result["status"] == "completed"
+        assert result["step_count"] == 1
+        assert engine.context == {"query": "hello"}

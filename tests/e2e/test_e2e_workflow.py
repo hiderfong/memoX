@@ -22,7 +22,9 @@ pytestmark = pytest.mark.e2e
 
 def _client():
     from fastapi.testclient import TestClient
+
     from src.main import app as fastapi_app
+
     return TestClient(fastapi_app)
 
 

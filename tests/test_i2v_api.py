@@ -19,10 +19,10 @@ def anon_client(monkeypatch):
         "username": "test", "role": "admin", "display_name": "Test",
     })
     # Middleware path: _get_auth_from_request reads app.state._auth_manager
-    app.state._auth_manager = fake_auth
+    monkeypatch.setattr(app.state, "_auth_manager", fake_auth, raising=False)
     # Route path: dependency override for _get_auth_from_request
     from src.auth import _get_auth_from_request
-    app.dependency_overrides[_get_auth_from_request] = lambda request: fake_auth
+    monkeypatch.setitem(app.dependency_overrides, _get_auth_from_request, lambda request: fake_auth)
     return TestClient(app)
 
 

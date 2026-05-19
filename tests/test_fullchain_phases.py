@@ -19,6 +19,7 @@
     9. 多模态文档支持 (ImageParser)
 """
 import asyncio
+import contextlib
 import os
 import shutil
 import sys
@@ -69,13 +70,14 @@ def client(test_dirs):
     from knowledge.vector_store import ChromaVectorStore, SentenceTransformerEmbedding
     from storage import init_store
 
-    # 保存原始 startup，替换为空函数以阻止自动初始化
-    original_startup = api_module.startup
+    # 保存原始 lifespan，替换为空上下文以阻止自动初始化
+    original_lifespan = api_module.app.router.lifespan_context
 
-    async def noop_startup():
-        pass
+    @contextlib.asynccontextmanager
+    async def noop_lifespan(app):
+        yield
 
-    api_module.app.router.on_startup = [noop_startup]
+    api_module.app.router.lifespan_context = noop_lifespan
 
     # 初始化认证
     init_auth([
@@ -178,7 +180,7 @@ def client(test_dirs):
         yield c
 
     # 恢复
-    api_module.app.router.on_startup = [original_startup]
+    api_module.app.router.lifespan_context = original_lifespan
 
 
 @pytest.fixture(scope="module")
