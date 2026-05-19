@@ -551,7 +551,7 @@ const DocumentsPage: React.FC = () => {
       </Card>
 
       <Card
-        title="���识库管理"
+        title="知识库管理"
         extra={
           <Space>
             <Button icon={<LinkOutlined />} onClick={() => setUrlModalOpen(true)}>
