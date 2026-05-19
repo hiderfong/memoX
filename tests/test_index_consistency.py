@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from scripts.index_consistency import BM25Indexer, ChunkEntry, audit_indexes, repair_indexes
+from src.knowledge.bm25_indexer import BM25Indexer, ChunkEntry
+from src.ops.index_consistency import audit_indexes, repair_indexes
 
 
 class FakeVectorStore:

@@ -122,5 +122,6 @@ Worker 创建、更新和删除接口会持久化修改 `config.yaml` 中的 `wo
 | `POST` | `/api/videos/generate` | 文生视频 |
 | `POST` | `/api/videos/i2v` | 图生视频 |
 | `GET` | `/api/health` | 健康检查 |
+| `GET` | `/api/system/health` | 管理员系统巡检：配置、索引、SQLite、磁盘 |
 | `GET` | `/api/files/{name}` | 暴露上传目录中的单个文件 |
 | `WS` | `/ws` | WebSocket 实时通信，支持聊天和任务进度消息 |

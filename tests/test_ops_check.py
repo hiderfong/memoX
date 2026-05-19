@@ -6,13 +6,14 @@ import os
 from pathlib import Path
 
 from scripts.backup_restore import BackupError
-from scripts.ops_check import CheckResult, _overall_status, check_latest_backup, find_latest_backup
+from scripts.ops_check import check_latest_backup, find_latest_backup
+from src.ops.readiness import CheckResult, overall_status
 
 
 def test_overall_status_prefers_errors_then_warnings() -> None:
-    assert _overall_status([CheckResult("a", "ok", "done")]) == "ok"
-    assert _overall_status([CheckResult("a", "ok", "done"), CheckResult("b", "warning", "warn")]) == "warning"
-    assert _overall_status([CheckResult("a", "warning", "warn"), CheckResult("b", "error", "fail")]) == "error"
+    assert overall_status([CheckResult("a", "ok", "done")]) == "ok"
+    assert overall_status([CheckResult("a", "ok", "done"), CheckResult("b", "warning", "warn")]) == "warning"
+    assert overall_status([CheckResult("a", "warning", "warn"), CheckResult("b", "error", "fail")]) == "error"
 
 
 def test_find_latest_backup_prefers_newest_archive(tmp_path: Path) -> None:

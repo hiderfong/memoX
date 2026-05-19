@@ -307,6 +307,14 @@ workflow:
         if me.get("username") != USERNAME:
             raise RuntimeError(f"/api/auth/me returned unexpected user: {me}")
 
+        system_health = checks.record(
+            "system health",
+            client.get(f"{base_url}/api/system/health", headers=headers),
+            {200},
+        ).json()
+        if system_health.get("status") == "error":
+            raise RuntimeError(f"system health reported error: {system_health}")
+
         before_docs = checks.record(
             "list documents before upload",
             client.get(f"{base_url}/api/documents", headers=headers),
@@ -407,6 +415,14 @@ def run_frontend_checks(frontend_url: str) -> dict[str, Any]:
         me = checks.record("proxy me", client.get(f"{frontend_url}/api/auth/me", headers=headers), {200}).json()
         if me.get("username") != USERNAME:
             raise RuntimeError(f"proxy /api/auth/me returned unexpected user: {me}")
+
+        proxy_system_health = checks.record(
+            "proxy system health",
+            client.get(f"{frontend_url}/api/system/health", headers=headers),
+            {200},
+        ).json()
+        if proxy_system_health.get("status") == "error":
+            raise RuntimeError(f"proxy system health reported error: {proxy_system_health}")
 
         upload = checks.record(
             "proxy upload document",

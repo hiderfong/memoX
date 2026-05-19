@@ -4,67 +4,28 @@
 from __future__ import annotations
 
 import argparse
-import contextlib
 import json
-import os
 import subprocess
 import sys
 import time
 from collections.abc import Callable
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-if str(ROOT / "src") not in sys.path:
-    sys.path.insert(0, str(ROOT / "src"))
 
-from config import Config, default_config_path  # noqa: E402
 from scripts.backup_restore import BackupError, create_backup, read_backup_metadata, verify_backup  # noqa: E402
-from scripts.index_consistency import _build_runtime, audit_indexes  # noqa: E402
-
-Status = str
-
-
-@dataclass(frozen=True)
-class CheckResult:
-    name: str
-    status: Status
-    message: str
-    details: dict[str, Any] = field(default_factory=dict)
-    duration_ms: int = 0
-
-
-@contextlib.contextmanager
-def _working_dir(path: Path):
-    previous = Path.cwd()
-    os.chdir(path)
-    try:
-        yield
-    finally:
-        os.chdir(previous)
-
-
-def _resolve_from_root(root: Path, path: str | Path) -> Path:
-    candidate = Path(path)
-    if candidate.is_absolute():
-        return candidate
-    return (root / candidate).resolve()
-
-
-def _duration_ms(start: float) -> int:
-    return int((time.monotonic() - start) * 1000)
-
-
-def _overall_status(checks: list[CheckResult]) -> Status:
-    statuses = {check.status for check in checks}
-    if "error" in statuses:
-        return "error"
-    if "warning" in statuses:
-        return "warning"
-    return "ok"
+from src.config import default_config_path  # noqa: E402
+from src.ops.readiness import (  # noqa: E402
+    CheckResult,
+    duration_ms,
+    overall_status,
+    resolve_from_root,
+    run_readiness_checks,
+)
 
 
 def find_latest_backup(root: Path) -> Path | None:
@@ -75,123 +36,6 @@ def find_latest_backup(root: Path) -> Path | None:
     if not archives:
         return None
     return max(archives, key=lambda path: (path.stat().st_mtime, path.name))
-
-
-def check_config(config_path: Path) -> CheckResult:
-    start = time.monotonic()
-    if not config_path.exists():
-        return CheckResult(
-            name="config",
-            status="error",
-            message=f"Config file not found: {config_path}",
-            duration_ms=_duration_ms(start),
-        )
-
-    try:
-        cfg = Config.from_yaml(config_path)
-    except Exception as exc:
-        return CheckResult(
-            name="config",
-            status="error",
-            message=f"Config failed to load: {type(exc).__name__}: {exc}",
-            details={"config": str(config_path)},
-            duration_ms=_duration_ms(start),
-        )
-
-    return CheckResult(
-        name="config",
-        status="ok",
-        message=f"Loaded {config_path}",
-        details={
-            "server": {"host": cfg.server.host, "port": cfg.server.port},
-            "workspace": cfg.app.workspace,
-            "embedding_provider": cfg.knowledge_base.embedding_provider,
-            "auth_enabled": cfg.auth.enabled,
-        },
-        duration_ms=_duration_ms(start),
-    )
-
-
-def check_persistent_paths(root: Path, config_path: Path) -> CheckResult:
-    start = time.monotonic()
-    try:
-        cfg = Config.from_yaml(config_path)
-    except Exception as exc:
-        return CheckResult(
-            name="persistent_paths",
-            status="error",
-            message=f"Could not inspect configured paths: {type(exc).__name__}: {exc}",
-            duration_ms=_duration_ms(start),
-        )
-
-    kb = cfg.knowledge_base
-    hybrid_cfg = kb.hybrid_search or {}
-    configured = {
-        "workspace": cfg.app.workspace,
-        "chroma": kb.persist_directory,
-        "uploads": kb.upload_directory,
-        "skills": kb.skills_dir,
-        "bm25": hybrid_cfg.get("bm25_persist_path", "./data/bm25_index.pkl"),
-        "manifest": kb.manifest_path,
-    }
-    paths = {name: _resolve_from_root(root, value) for name, value in configured.items()}
-    directory_names = {"workspace", "chroma", "uploads", "skills"}
-    missing_directories = [name for name in sorted(directory_names) if not paths[name].exists()]
-
-    status = "warning" if missing_directories else "ok"
-    message = "Persistent directories are present"
-    if missing_directories:
-        message = "Some persistent directories are missing; this is normal for a fresh deployment"
-
-    return CheckResult(
-        name="persistent_paths",
-        status=status,
-        message=message,
-        details={
-            "paths": {name: str(path) for name, path in paths.items()},
-            "missing_directories": missing_directories,
-        },
-        duration_ms=_duration_ms(start),
-    )
-
-
-def check_index_consistency(root: Path, config_path: Path, collection_name: str) -> CheckResult:
-    start = time.monotonic()
-    try:
-        with _working_dir(root):
-            vector_store, bm25_indexer, manifest_path = _build_runtime(config_path)
-            report = audit_indexes(
-                vector_store=vector_store,
-                bm25_indexer=bm25_indexer,
-                manifest_path=manifest_path,
-                collection_name=collection_name,
-            )
-    except Exception as exc:
-        return CheckResult(
-            name="index_consistency",
-            status="error",
-            message=f"Index audit failed: {type(exc).__name__}: {exc}",
-            duration_ms=_duration_ms(start),
-        )
-
-    status = report["status"]
-    message = "Chroma, BM25, and manifest are consistent"
-    if status == "warning":
-        message = "Index audit found warnings"
-    elif status == "error":
-        message = "Index audit found repairable errors"
-
-    return CheckResult(
-        name="index_consistency",
-        status=status,
-        message=message,
-        details={
-            "summary": report["summary"],
-            "issue_counts": report["issue_counts"],
-            "collection": report["collection"],
-        },
-        duration_ms=_duration_ms(start),
-    )
 
 
 def check_latest_backup(
@@ -209,14 +53,14 @@ def check_latest_backup(
             name="latest_backup",
             status="warning",
             message="No backup archive found under backups/",
-            duration_ms=_duration_ms(start),
+            duration_ms=duration_ms(start),
         )
     if not backup_path.exists():
         return CheckResult(
             name="latest_backup",
             status="error",
             message=f"Backup archive does not exist: {backup_path}",
-            duration_ms=_duration_ms(start),
+            duration_ms=duration_ms(start),
         )
 
     try:
@@ -227,7 +71,7 @@ def check_latest_backup(
             status="error",
             message=f"Backup validation failed: {exc}",
             details={"archive": str(backup_path)},
-            duration_ms=_duration_ms(start),
+            duration_ms=duration_ms(start),
         )
 
     action = "verified" if verify else "inspected"
@@ -241,7 +85,7 @@ def check_latest_backup(
             "entries": len(metadata.get("entries", [])),
             "verified": bool(metadata.get("verified", False)),
         },
-        duration_ms=_duration_ms(start),
+        duration_ms=duration_ms(start),
     )
 
 
@@ -255,7 +99,7 @@ def check_create_backup(root: Path) -> CheckResult:
             name="create_backup",
             status="error",
             message=f"Backup create/verify failed: {exc}",
-            duration_ms=_duration_ms(start),
+            duration_ms=duration_ms(start),
         )
 
     return CheckResult(
@@ -267,7 +111,7 @@ def check_create_backup(root: Path) -> CheckResult:
             "entries": len(verified.get("entries", [])),
             "missing": created.get("missing", []),
         },
-        duration_ms=_duration_ms(start),
+        duration_ms=duration_ms(start),
     )
 
 
@@ -285,7 +129,7 @@ def run_script_check(name: str, command: list[str], *, cwd: Path, timeout: float
             status="error",
             message=f"{name} timed out after {timeout:g}s",
             details={"stdout": _tail_text(exc.stdout or ""), "stderr": _tail_text(exc.stderr or "")},
-            duration_ms=_duration_ms(start),
+            duration_ms=duration_ms(start),
         )
 
     details: dict[str, Any] = {
@@ -305,7 +149,7 @@ def run_script_check(name: str, command: list[str], *, cwd: Path, timeout: float
         status=status,
         message=f"{name} completed" if status == "ok" else f"{name} failed",
         details=details,
-        duration_ms=_duration_ms(start),
+        duration_ms=duration_ms(start),
     )
 
 
@@ -326,14 +170,9 @@ def run_ops_check(
     if create_backup_first:
         checks.append(check_create_backup(root))
 
-    checks.extend(
-        [
-            check_config(config_path),
-            check_persistent_paths(root, config_path),
-            check_index_consistency(root, config_path, collection_name),
-            check_latest_backup(root, archive=backup_archive, verify=verify_latest_backup),
-        ]
-    )
+    readiness = run_readiness_checks(root=root, config_path=config_path, collection_name=collection_name)
+    checks.extend(CheckResult(**check) for check in readiness["checks"])
+    checks.append(check_latest_backup(root, archive=backup_archive, verify=verify_latest_backup))
 
     if include_smoke or include_frontend_smoke:
         command = [sys.executable, str(ROOT / "scripts" / "smoke_test.py")]
@@ -345,7 +184,7 @@ def run_ops_check(
         command = [sys.executable, str(ROOT / "scripts" / "restore_drill.py"), "--timeout", str(int(timeout))]
         checks.append(run_script_check("restore_drill", command, cwd=root, timeout=timeout * 2))
 
-    status = _overall_status(checks)
+    status = overall_status(checks)
     return {
         "ok": status != "error",
         "status": status,
@@ -392,8 +231,8 @@ def main() -> int:
     args = build_parser().parse_args()
     root = Path(args.root).resolve()
     raw_config = Path(args.config) if args.config else default_config_path()
-    config_path = _resolve_from_root(root, raw_config)
-    backup_archive = _resolve_from_root(root, args.backup) if args.backup else None
+    config_path = resolve_from_root(root, raw_config)
+    backup_archive = resolve_from_root(root, args.backup) if args.backup else None
 
     result = run_ops_check(
         root=root,

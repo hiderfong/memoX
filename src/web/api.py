@@ -543,6 +543,7 @@ from web.routers import (  # noqa: E402
     memories_router,
     scheduled_router,
     skills_router,
+    system_router,
     tasks_router,
     workers_router,
     workflows_router,
@@ -555,6 +556,7 @@ app.include_router(imaging_router)
 app.include_router(memories_router)
 app.include_router(scheduled_router)
 app.include_router(skills_router)
+app.include_router(system_router)
 app.include_router(tasks_router)
 app.include_router(workers_router)
 app.include_router(workflows_router)

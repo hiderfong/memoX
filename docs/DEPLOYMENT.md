@@ -127,7 +127,9 @@ Run a quick read-only operational check from the deployment root:
 uv run --extra dev python scripts/ops_check.py
 ```
 
-The default check loads `config.yaml`, checks configured persistent directories, audits Chroma/BM25/manifest consistency, and verifies the latest `backups/memox-backup-*.tar.gz` archive if one exists. Missing backups or fresh persistent directories are warnings; index corruption or an unreadable backup is an error.
+The default check loads `config.yaml`, checks configured persistent directories, audits Chroma/BM25/manifest consistency, runs SQLite quick checks, checks disk free space, and verifies the latest `backups/memox-backup-*.tar.gz` archive if one exists. Missing backups or fresh persistent directories are warnings; index corruption or an unreadable backup is an error.
+
+If `config.yaml` references environment variables such as `${MEMOX_ADMIN_PASSWORD}`, run the check from a shell where those variables are exported.
 
 Use explicit flags for heavier actions:
 
@@ -150,6 +152,12 @@ Run a basic health check after the container becomes healthy:
 
 ```bash
 curl -fsS http://localhost:8080/api/health
+```
+
+Administrators can inspect the deeper runtime readiness report after logging in:
+
+```bash
+curl -fsS http://localhost:8080/api/system/health -H "Authorization: Bearer <token>"
 ```
 
 ## Deployment Smoke Test
