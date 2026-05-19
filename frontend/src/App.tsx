@@ -40,6 +40,60 @@ interface KnowledgeGroup {
   doc_count: number;
 }
 
+type ReadinessStatus = 'ok' | 'warning' | 'error' | string;
+
+interface SystemCheck {
+  name: string;
+  status: ReadinessStatus;
+  message: string;
+  details?: Record<string, any>;
+  duration_ms?: number;
+}
+
+interface SystemHealthReport {
+  ok: boolean;
+  status: ReadinessStatus;
+  root: string;
+  config: string;
+  checks: SystemCheck[];
+  runtime?: Record<string, any>;
+}
+
+const statusTagColor = (status?: ReadinessStatus) => {
+  if (status === 'ok') return 'green';
+  if (status === 'warning') return 'orange';
+  if (status === 'error') return 'red';
+  return 'default';
+};
+
+const statusBadge = (status?: ReadinessStatus): 'success' | 'warning' | 'error' | 'default' => {
+  if (status === 'ok') return 'success';
+  if (status === 'warning') return 'warning';
+  if (status === 'error') return 'error';
+  return 'default';
+};
+
+const statusLabel = (status?: ReadinessStatus) => {
+  if (status === 'ok') return '正常';
+  if (status === 'warning') return '警告';
+  if (status === 'error') return '错误';
+  return status || '未知';
+};
+
+const formatBytes = (bytes?: number) => {
+  if (typeof bytes !== 'number' || Number.isNaN(bytes)) return '-';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+};
+
+const formatDuration = (ms?: number) => {
+  if (typeof ms !== 'number') return '-';
+  if (ms < 1000) return `${ms} ms`;
+  return `${(ms / 1000).toFixed(1)} s`;
+};
+
 // ==================== 认证状态 ====================
 
 interface AuthUser {
@@ -141,6 +195,7 @@ const api = {
   
   // 系统
   health: () => axios.get(`${API_BASE}/health`),
+  systemHealth: () => axios.get<SystemHealthReport>(`${API_BASE}/system/health`),
 
   // 认证
   login: (username: string, password: string) =>
@@ -268,8 +323,10 @@ const LoginPage: React.FC = () => {
 const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [collapsed, setCollapsed] = useState(false);
   const navigate = useNavigate();
+  const location = useLocation();
   const { user, logout } = useContext(AuthContext);
   const isMobile = useIsMobile();
+  const selectedKey = location.pathname.split('/')[1] || 'documents';
 
   const handleLogout = async () => {
     await api.logout().catch(() => {});
@@ -313,7 +370,7 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
         >
           <Menu
             mode="inline"
-            defaultSelectedKeys={['documents']}
+            selectedKeys={[selectedKey]}
             onClick={({ key }) => { navigate(`/${key}`); if (isMobile) setCollapsed(true); }}
             style={{ height: '100%', borderRight: 0, fontSize: 16 }}
             items={[
@@ -322,6 +379,9 @@ const AppLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
               { key: 'tasks', icon: <RobotOutlined style={{ fontSize: 18 }} />, label: <span style={{ fontSize: 16, fontWeight: 500 }}>任务执行</span> },
               { key: 'scheduled-tasks', icon: <ClockCircleOutlined style={{ fontSize: 18 }} />, label: <span style={{ fontSize: 16, fontWeight: 500 }}>定时任务</span> },
               { key: 'workers', icon: <TeamOutlined style={{ fontSize: 18 }} />, label: <span style={{ fontSize: 16, fontWeight: 500 }}>Agent 监控</span> },
+              ...(user?.role === 'admin' ? [
+                { key: 'system', icon: <SafetyCertificateOutlined style={{ fontSize: 18 }} />, label: <span style={{ fontSize: 16, fontWeight: 500 }}>系统状态</span> },
+              ] : []),
               { key: 'settings', icon: <SettingOutlined style={{ fontSize: 18 }} />, label: <span style={{ fontSize: 16, fontWeight: 500 }}>设置</span> },
             ]}
           />
@@ -3511,6 +3571,229 @@ const WorkersPage: React.FC = () => {
   );
 };
 
+// ==================== 系统状态页面 ====================
+
+const SystemStatusPage: React.FC = () => {
+  const { user } = useContext(AuthContext);
+  const isMobile = useIsMobile();
+  const [report, setReport] = useState<SystemHealthReport | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [lastUpdated, setLastUpdated] = useState<string>('');
+
+  const fetchReport = async () => {
+    setLoading(true);
+    try {
+      const res = await api.systemHealth();
+      setReport(res.data);
+      setLastUpdated(dayjs().format('YYYY-MM-DD HH:mm:ss'));
+    } catch (err: any) {
+      const detail = err.response?.data?.detail;
+      message.error(typeof detail === 'string' ? detail : '获取系统状态失败');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (user?.role === 'admin') fetchReport();
+    else setLoading(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [user?.role]);
+
+  if (user?.role !== 'admin') {
+    return (
+      <Alert
+        type="warning"
+        showIcon
+        message="需要管理员权限"
+        description="当前账号没有查看系统状态的权限。"
+      />
+    );
+  }
+
+  const checks = report?.checks || [];
+  const getCheck = (name: string) => checks.find(check => check.name === name);
+  const indexSummary = (getCheck('index_consistency')?.details?.summary || {}) as Record<string, number>;
+  const issueCounts = (getCheck('index_consistency')?.details?.issue_counts || {}) as Record<string, number>;
+  const disk = (getCheck('disk')?.details || {}) as Record<string, number | string>;
+  const sqlite = (getCheck('sqlite')?.details?.databases || {}) as Record<string, any>;
+  const persistentPaths = (getCheck('persistent_paths')?.details || {}) as { missing_directories?: string[] };
+  const missingDirectories = persistentPaths.missing_directories || [];
+  const statusCounts = checks.reduce<Record<string, number>>((acc, check) => {
+    acc[check.status] = (acc[check.status] || 0) + 1;
+    return acc;
+  }, {});
+  const diskTotalBytes = typeof disk.total_bytes === 'number' ? disk.total_bytes : 0;
+  const diskUsedBytes = typeof disk.used_bytes === 'number' ? disk.used_bytes : 0;
+  const diskFreeBytes = typeof disk.free_bytes === 'number' ? disk.free_bytes : undefined;
+  const diskMinFreeBytes = typeof disk.min_free_bytes === 'number' ? disk.min_free_bytes : undefined;
+  const diskUsedPercent = diskTotalBytes ? Math.round((diskUsedBytes / diskTotalBytes) * 100) : 0;
+
+  const columns = [
+    {
+      title: '检查项',
+      dataIndex: 'name',
+      key: 'name',
+      render: (name: string) => <Text strong>{name}</Text>,
+    },
+    {
+      title: '状态',
+      dataIndex: 'status',
+      key: 'status',
+      width: 100,
+      render: (status: ReadinessStatus) => <Tag color={statusTagColor(status)}>{statusLabel(status)}</Tag>,
+    },
+    {
+      title: '说明',
+      dataIndex: 'message',
+      key: 'message',
+      render: (text: string) => <Text>{text}</Text>,
+    },
+    {
+      title: '耗时',
+      dataIndex: 'duration_ms',
+      key: 'duration_ms',
+      width: 100,
+      render: (ms: number) => <Text type="secondary">{formatDuration(ms)}</Text>,
+    },
+  ];
+
+  return (
+    <div>
+      <div style={{
+        display: 'flex',
+        alignItems: isMobile ? 'flex-start' : 'center',
+        justifyContent: 'space-between',
+        gap: 12,
+        flexDirection: isMobile ? 'column' : 'row',
+        marginBottom: 16,
+      }}>
+        <div>
+          <Title level={4} style={{ marginBottom: 4 }}>系统状态</Title>
+          {lastUpdated && <Text type="secondary">更新于 {lastUpdated}</Text>}
+        </div>
+        <Button icon={<ReloadOutlined />} onClick={fetchReport} loading={loading}>
+          刷新
+        </Button>
+      </div>
+
+      {report && report.status !== 'ok' && (
+        <Alert
+          type={report.status === 'error' ? 'error' : 'warning'}
+          showIcon
+          message={`当前系统状态：${statusLabel(report.status)}`}
+          description={checks.filter(check => check.status !== 'ok').map(check => `${check.name}: ${check.message}`).join(' / ')}
+          style={{ marginBottom: 16 }}
+        />
+      )}
+
+      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(4, minmax(0, 1fr))', gap: 16, marginBottom: 16 }}>
+        <Card size="small" loading={loading}>
+          <Text type="secondary">总体状态</Text>
+          <div style={{ marginTop: 8 }}>
+            <Badge status={statusBadge(report?.status)} text={<Text strong>{statusLabel(report?.status)}</Text>} />
+          </div>
+        </Card>
+        <Card size="small" loading={loading}>
+          <Text type="secondary">检查数量</Text>
+          <div style={{ marginTop: 8, fontSize: 24, fontWeight: 600 }}>{checks.length}</div>
+          <Space size={4} wrap>
+            <Tag color="green">{statusCounts.ok || 0} 正常</Tag>
+            <Tag color="orange">{statusCounts.warning || 0} 警告</Tag>
+            <Tag color="red">{statusCounts.error || 0} 错误</Tag>
+          </Space>
+        </Card>
+        <Card size="small" loading={loading}>
+          <Text type="secondary">索引块数</Text>
+          <div style={{ marginTop: 8, fontSize: 24, fontWeight: 600 }}>{indexSummary.chroma_chunks ?? '-'}</div>
+          <Text type="secondary">Chroma / BM25 {indexSummary.bm25_chunks ?? '-'}</Text>
+        </Card>
+        <Card size="small" loading={loading}>
+          <Text type="secondary">可用磁盘</Text>
+          <div style={{ marginTop: 8, fontSize: 24, fontWeight: 600 }}>{formatBytes(diskFreeBytes)}</div>
+          <Text type="secondary">阈值 {formatBytes(diskMinFreeBytes)}</Text>
+        </Card>
+      </div>
+
+      <Card title="运行检查" style={{ marginBottom: 16 }} loading={loading}>
+        <Table
+          size="small"
+          rowKey="name"
+          dataSource={checks}
+          columns={columns}
+          pagination={false}
+          scroll={{ x: 720 }}
+        />
+      </Card>
+
+      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'minmax(0, 1fr) minmax(0, 1fr)', gap: 16 }}>
+        <Card title="索引一致性" loading={loading}>
+          <Space direction="vertical" style={{ width: '100%' }}>
+            <Space wrap>
+              <Tag>Chroma 文档 {indexSummary.chroma_documents ?? '-'}</Tag>
+              <Tag>Chroma 块 {indexSummary.chroma_chunks ?? '-'}</Tag>
+              <Tag>BM25 块 {indexSummary.bm25_chunks ?? '-'}</Tag>
+              <Tag>Manifest {indexSummary.manifest_entries ?? '-'}</Tag>
+            </Space>
+            {Object.keys(issueCounts).length > 0 ? (
+              <List
+                size="small"
+                dataSource={Object.entries(issueCounts)}
+                renderItem={([name, count]) => (
+                  <List.Item>
+                    <Text>{name}</Text>
+                    <Tag color="orange">{count}</Tag>
+                  </List.Item>
+                )}
+              />
+            ) : (
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无索引问题" />
+            )}
+          </Space>
+        </Card>
+
+        <Card title="存储状态" loading={loading}>
+          <Space direction="vertical" style={{ width: '100%' }} size={12}>
+            <div>
+              <Space style={{ width: '100%', justifyContent: 'space-between' }}>
+                <Text strong>{disk.path || '-'}</Text>
+                <Text type="secondary">{diskUsedPercent}% 已用</Text>
+              </Space>
+              <Progress
+                percent={diskUsedPercent}
+                showInfo={false}
+                strokeColor={(diskFreeBytes ?? 0) < (diskMinFreeBytes ?? 0) ? '#faad14' : '#52c41a'}
+              />
+              <Text type="secondary">已用 {formatBytes(diskUsedBytes)} / 总计 {formatBytes(diskTotalBytes)}</Text>
+            </div>
+            <Divider style={{ margin: '4px 0' }} />
+            <Space direction="vertical" size={4}>
+              {Object.entries(sqlite).map(([name, item]: [string, any]) => (
+                <Space key={name} wrap>
+                  <Tag color={statusTagColor(item.status === 'missing' ? 'warning' : item.status)}>{name}</Tag>
+                  <Text type="secondary">{item.path}</Text>
+                </Space>
+              ))}
+              {missingDirectories.length > 0 && (
+                <Text type="warning">缺失目录：{missingDirectories.join(', ')}</Text>
+              )}
+            </Space>
+          </Space>
+        </Card>
+
+        <Card title="运行时" loading={loading}>
+          <Space direction="vertical">
+            <Text><Text strong>应用:</Text> {report?.runtime?.app || '-'}</Text>
+            <Text><Text strong>版本:</Text> {report?.runtime?.version || '-'}</Text>
+            <Text><Text strong>配置:</Text> {report?.config || '-'}</Text>
+            <Text><Text strong>根目录:</Text> {report?.root || '-'}</Text>
+          </Space>
+        </Card>
+      </div>
+    </div>
+  );
+};
+
 // ==================== 设置页面 ====================
 
 const SettingsPage: React.FC = () => {
@@ -3747,6 +4030,7 @@ const App: React.FC = () => {
                 <Route path="/tasks" element={<TasksPage />} />
                 <Route path="/scheduled-tasks" element={<ScheduledTasksPage />} />
                 <Route path="/workers" element={<WorkersPage />} />
+                <Route path="/system" element={<SystemStatusPage />} />
                 <Route path="/settings" element={<SettingsPage />} />
               </Routes>
             </AppLayout>
