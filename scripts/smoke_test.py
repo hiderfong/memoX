@@ -148,8 +148,6 @@ def _stop_process(managed: ManagedProcess | None) -> None:
 def _backend_launcher_code(root: Path, data_dir: Path, port: int) -> str:
     return textwrap.dedent(
         f"""
-        import hashlib
-        import math
         import sys
         from pathlib import Path
 
@@ -159,31 +157,6 @@ def _backend_launcher_code(root: Path, data_dir: Path, port: int) -> str:
 
         from config import Config
         import config as cfg
-        import knowledge.vector_store as vector_store
-
-
-        class SmokeEmbedding(vector_store.EmbeddingFunction):
-            def __init__(self, *args, **kwargs):
-                pass
-
-            def _embed_one(self, text):
-                dim = 32
-                vec = [0.0] * dim
-                tokens = text.lower().replace("-", " ").replace("_", " ").split()
-                if not tokens:
-                    tokens = [text.lower() or "empty"]
-                for token in tokens:
-                    digest = hashlib.sha256(token.encode("utf-8")).digest()
-                    vec[digest[0] % dim] += 1.0
-                    vec[digest[1] % dim] += 0.5
-                norm = math.sqrt(sum(v * v for v in vec)) or 1.0
-                return [v / norm for v in vec]
-
-            async def embed(self, texts):
-                return [self._embed_one(text) for text in texts]
-
-
-        vector_store.SentenceTransformerEmbedding = SmokeEmbedding
 
         cfg._config = Config._from_dict({{
             "app": {{
@@ -214,8 +187,8 @@ def _backend_launcher_code(root: Path, data_dir: Path, port: int) -> str:
                 "persist_directory": str(data_dir / "chroma"),
                 "upload_directory": str(data_dir / "uploads"),
                 "skills_dir": str(data_dir / "skills"),
-                "embedding_provider": "sentence-transformer",
-                "embedding_model": "smoke-embedding",
+                "embedding_provider": "hash",
+                "embedding_model": "hash-smoke",
                 "chunk_size": 200,
                 "chunk_overlap": 20,
                 "top_k": 3,

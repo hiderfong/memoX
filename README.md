@@ -133,6 +133,14 @@ docker compose up -d --build
 
 部署会把 `config.yaml`、`data/` 和 `workspace/` 挂载为持久化数据。更多说明见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)。
 
+部署前可以先跑离线容器冒烟检查：
+
+```bash
+uv run --extra dev python scripts/docker_smoke_test.py
+```
+
+Docker 镜像默认不安装 `sentence-transformers`/Streamlit 这类重依赖。需要本地 embedding 时使用 `uv sync --extra local-embeddings`，需要旧的 Streamlit 管理界面时使用 `uv run --extra ui streamlit run src/ui/streamlit_app.py`。
+
 ## API 接口
 
 完整接口清单见 [docs/API.md](docs/API.md)，后端启动后也可以访问 `http://localhost:8080/api/docs` 查看 Swagger UI。

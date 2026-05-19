@@ -108,8 +108,8 @@ class KnowledgeBaseConfig:
     persist_directory: str = "./data/chroma"
     upload_directory: str = "./data/uploads"
     skills_dir: str = "./data/skills"
-    embedding_provider: str = "sentence-transformer"  # 可选: sentence-transformer, openai, dashscope
-    embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    embedding_provider: str = "hash"  # 可选: hash, sentence-transformer, openai, dashscope
+    embedding_model: str = "hash"
     chunk_size: int = 500
     chunk_overlap: int = 50
     top_k: int = 5

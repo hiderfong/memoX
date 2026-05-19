@@ -21,9 +21,10 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml uv.lock README.md ./
+COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
+COPY README.md ./
 COPY src/ ./src/
 COPY config.example.yaml ./config.yaml
 COPY --from=frontend-build /app/frontend/dist ./frontend/dist

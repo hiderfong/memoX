@@ -11,8 +11,8 @@ from knowledge.document_parser import TextChunk
 
 @pytest.fixture
 def vector_store(tmp_path):
-    from knowledge.vector_store import ChromaVectorStore, SentenceTransformerEmbedding
-    embedding = SentenceTransformerEmbedding()
+    from knowledge.vector_store import ChromaVectorStore, HashEmbedding
+    embedding = HashEmbedding()
     store = ChromaVectorStore(persist_directory=str(tmp_path / "chroma"), embedding_function=embedding)
     return store
 

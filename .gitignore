@@ -59,6 +59,7 @@ ssl/
 .claude/settings.local.json
 
 # ---- Test / scratch artifacts ----
+.docker-smoke/
 test_output.txt
 *.log
 tests/__pycache__/

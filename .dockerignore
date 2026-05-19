@@ -28,3 +28,4 @@ node_modules
 .vscode
 .worktrees
 .playwright-mcp
+.docker-smoke

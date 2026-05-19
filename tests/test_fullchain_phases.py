@@ -67,7 +67,7 @@ def client(test_dirs):
     from knowledge.document_parser import DocumentParser
     from knowledge.group_store import GroupStore
     from knowledge.rag_engine import RAGEngine
-    from knowledge.vector_store import ChromaVectorStore, SentenceTransformerEmbedding
+    from knowledge.vector_store import ChromaVectorStore, HashEmbedding
     from storage import init_store
 
     # 保存原始 lifespan，替换为空上下文以阻止自动初始化
@@ -85,7 +85,7 @@ def client(test_dirs):
     ])
 
     # 嵌入函数
-    embedding = SentenceTransformerEmbedding()
+    embedding = HashEmbedding()
 
     # 向量存储 + RAG 引擎
     vector_store = ChromaVectorStore(

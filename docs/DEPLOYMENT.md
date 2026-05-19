@@ -65,6 +65,18 @@ Run a basic health check after the container becomes healthy:
 curl -fsS http://localhost:8080/api/health
 ```
 
+## Deployment Smoke Test
+
+Before changing a real deployment, run the offline Docker smoke test:
+
+```bash
+uv run --extra dev python scripts/docker_smoke_test.py
+```
+
+The script builds the Compose image, starts a temporary container with `embedding_provider: hash`, checks `/api/health`, API docs, OpenAPI, login and `/api/auth/me`, then shuts the container down. The `hash` embedding provider is deterministic and network-free; it is meant for smoke tests and demos, not production retrieval quality.
+
+The production Docker image intentionally skips heavy optional extras such as `sentence-transformers` and Streamlit. Prefer DashScope/OpenAI embeddings in container deployments, or build a custom image with `uv sync --extra local-embeddings` if you need local semantic embeddings.
+
 ## Operational Notes
 
 - Keep `auth.enabled=true` for any shared deployment. Startup fails if the configured admin password resolves to an empty value.

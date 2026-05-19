@@ -54,6 +54,7 @@ from knowledge.document_parser import WebPageParser  # noqa: E402, F401
 from knowledge.group_store import GroupStore  # noqa: E402
 from knowledge.vector_store import (  # noqa: E402
     DashScopeEmbedding,
+    HashEmbedding,
     OpenAIEmbedding,
     SentenceTransformerEmbedding,
 )
@@ -318,7 +319,10 @@ async def startup():
     kb_config = _config.knowledge_base
     embedding_provider = kb_config.embedding_provider
 
-    if embedding_provider == "dashscope":
+    if embedding_provider in ("hash", "local-hash"):
+        embedding_function = HashEmbedding()
+        logger.info("   - 使用本地 Hash Embedding（仅适合 smoke/demo）")
+    elif embedding_provider == "dashscope":
         # 阿里云 DashScope
         dashscope_config = _config.providers.get("dashscope")
         if dashscope_config and dashscope_config.resolve_api_key():

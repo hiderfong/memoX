@@ -9,4 +9,4 @@
 PORT=${1:-8501}
 
 cd "$(dirname "$0")"
-uv run streamlit run src/ui/streamlit_app.py --server.port "$PORT" --server.headless true
+uv run --extra ui streamlit run src/ui/streamlit_app.py --server.port "$PORT" --server.headless true

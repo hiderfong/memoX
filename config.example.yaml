@@ -95,6 +95,7 @@ knowledge_base:
   persist_directory: "./data/chroma"
   upload_directory: "./data/uploads"
   skills_dir: "./data/skills"
+  # 可选: "dashscope" (生产默认), "openai", "sentence-transformer", "hash" (仅 smoke/demo)
   embedding_provider: "dashscope"
   embedding_model: "text-embedding-v3"
   chunk_size: 500

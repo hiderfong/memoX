@@ -1,6 +1,9 @@
 """向量存储 - ChromaDB 集成"""
 
 import asyncio
+import hashlib
+import math
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -44,7 +47,7 @@ class SentenceTransformerEmbedding(EmbeddingFunction):
                 self._model = SentenceTransformer(self.model_name)
                 logger.info("[SentenceTransformer] Model loaded successfully")
             except ImportError:
-                raise ImportError("请安装 sentence-transformers: pip install sentence-transformers") from None
+                raise ImportError("请安装本地 embedding 依赖: uv sync --extra local-embeddings") from None
 
     def _get_executor(self):
         """获取线程池执行器"""
@@ -70,6 +73,40 @@ class SentenceTransformerEmbedding(EmbeddingFunction):
             texts
         )
         return embeddings.tolist()
+
+
+class HashEmbedding(EmbeddingFunction):
+    """Deterministic local embedding for smoke tests and offline deployments.
+
+    This is intentionally lightweight and has no external model or network
+    dependency. It is useful for health checks, demos, and CI smoke tests; use a
+    semantic embedding provider for production-quality retrieval.
+    """
+
+    def __init__(self, dimensions: int = 384):
+        if dimensions <= 0:
+            raise ValueError("dimensions must be positive")
+        self.dimensions = dimensions
+
+    def _tokens(self, text: str) -> list[str]:
+        tokens = re.findall(r"\w+", text.lower(), flags=re.UNICODE)
+        return tokens or [text.strip() or "<empty>"]
+
+    def _embed_one(self, text: str) -> list[float]:
+        vec = [0.0] * self.dimensions
+        for token in self._tokens(text):
+            digest = hashlib.blake2b(token.encode("utf-8"), digest_size=16).digest()
+            idx = int.from_bytes(digest[:4], "big") % self.dimensions
+            sign = 1.0 if digest[4] & 1 else -1.0
+            vec[idx] += sign
+
+        norm = math.sqrt(sum(v * v for v in vec))
+        if norm == 0:
+            return vec
+        return [v / norm for v in vec]
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        return [self._embed_one(text) for text in texts]
 
 
 class OpenAIEmbedding(EmbeddingFunction):
@@ -196,7 +233,7 @@ class ChromaVectorStore:
         self.persist_directory = Path(persist_directory)
         self.persist_directory.mkdir(parents=True, exist_ok=True)
 
-        self.embedding_function = embedding_function or SentenceTransformerEmbedding()
+        self.embedding_function = embedding_function or HashEmbedding()
         self._client = None
         self._collection = None
 
