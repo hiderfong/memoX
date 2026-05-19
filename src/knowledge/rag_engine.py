@@ -8,8 +8,11 @@
 - manifest 在 RAGEngine 实例化时加载，保持内存缓存 + 定期写回
 """
 
+import asyncio
 import hashlib
 import json
+import os
+import tempfile
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime
@@ -68,7 +71,25 @@ class _DocumentManifest:
             return
         self._path.parent.mkdir(parents=True, exist_ok=True)
         raw = {"version": self.MANIFEST_VERSION, "documents": self._data}
-        self._path.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        text = json.dumps(raw, ensure_ascii=False, indent=2) + "\n"
+        tmp_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=self._path.parent,
+                prefix=f".{self._path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as tmp:
+                tmp.write(text)
+                tmp.flush()
+                os.fsync(tmp.fileno())
+                tmp_path = Path(tmp.name)
+            os.replace(tmp_path, self._path)
+        finally:
+            if tmp_path and tmp_path.exists():
+                tmp_path.unlink(missing_ok=True)
         self._dirty = False
 
     # ── lookup ───────────────────────────────────────────────────────────────
@@ -282,8 +303,20 @@ class RAGEngine:
 
         # 文档增量更新 manifest
         self._manifest = _DocumentManifest(Path(manifest_path))
+        self._document_mutation_lock = asyncio.Lock()
 
     async def add_document(
+        self,
+        file_path: Path,
+        collection_name: str = "documents",
+        group_id: str = "ungrouped",
+        original_filename: str | None = None,
+    ) -> UpsertResult:
+        """添加文档到知识库，同一进程内串行化索引写操作。"""
+        async with self._document_mutation_lock:
+            return await self._add_document_unlocked(file_path, collection_name, group_id, original_filename)
+
+    async def _add_document_unlocked(
         self,
         file_path: Path,
         collection_name: str = "documents",
@@ -332,7 +365,7 @@ class RAGEngine:
         if manifest_entry is not None:
             old_doc_id = manifest_entry["doc_id"]
             print(f"[RAG] Document '{display_name}' content changed — deleting old doc_id={old_doc_id}.")
-            await self.delete_document(old_doc_id, collection_name)
+            await self._delete_document_unlocked(old_doc_id, collection_name)
 
         doc_id = str(uuid.uuid4())[:8]
         print(f"[RAG] Starting to process document: {display_name}")
@@ -436,6 +469,11 @@ class RAGEngine:
             self._knowledge_graph.save()
 
     async def delete_document(self, doc_id: str, collection_name: str = "documents") -> bool:
+        """从知识库删除文档，同时串行化索引/manifest 写操作。"""
+        async with self._document_mutation_lock:
+            return await self._delete_document_unlocked(doc_id, collection_name)
+
+    async def _delete_document_unlocked(self, doc_id: str, collection_name: str = "documents") -> bool:
         """从知识库删除文档，同时清理 manifest 记录"""
         count = await self.vector_store.delete_by_document_id(doc_id, collection_name)
         if self._hybrid_retriever is not None:
