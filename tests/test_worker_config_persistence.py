@@ -123,6 +123,63 @@ def test_atomic_write_keeps_original_when_replace_fails(tmp_path: Path, monkeypa
 
 
 @pytest.mark.asyncio
+async def test_list_providers_exposes_server_side_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+    monkeypatch.delenv("KIMI_API_KEY", raising=False)
+
+    from config import Config
+
+    runtime_config = Config._from_dict(
+        {
+            "app": {},
+            "server": {},
+            "coordinator": {"provider": "openai", "model": "gpt-4o"},
+            "providers": {
+                "openai": {
+                    "api_key": "${OPENAI_API_KEY}",
+                    "base_url": "https://api.openai.com/v1",
+                },
+                "kimi": {
+                    "api_key": "${KIMI_API_KEY}",
+                    "base_url": "https://api.kimi.com/coding/v1",
+                },
+                "google": {
+                    "api_key": "google-key",
+                    "base_url": "https://generativelanguage.googleapis.com",
+                },
+            },
+            "worker_templates": {
+                "coder": {
+                    "provider": "kimi",
+                    "model": "kimi-latest",
+                    "temperature": 0.7,
+                }
+            },
+            "knowledge_base": {"embedding_provider": "sentence-transformer"},
+            "auth": {"enabled": False},
+        }
+    )
+    monkeypatch.setattr(workers, "_get_config", lambda: runtime_config)
+
+    result = {item["name"]: item for item in await workers.list_providers()}
+
+    assert result["openai"]["configured"] is True
+    assert result["openai"]["env_var"] == "OPENAI_API_KEY"
+    assert "coordinator" in result["openai"]["used_by"]
+
+    assert result["kimi"]["configured"] is False
+    assert result["kimi"]["env_var"] == "KIMI_API_KEY"
+    assert "worker:coder" in result["kimi"]["used_by"]
+    assert "API Key 未配置" in result["kimi"]["warnings"][0]
+
+    assert result["google"]["configured"] is True
+    assert result["google"]["supported"] is False
+    assert "后端未支持" in result["google"]["warnings"][0]
+
+
+@pytest.mark.asyncio
 async def test_update_worker_config_does_not_mutate_runtime_when_persist_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -179,3 +236,65 @@ async def test_update_worker_config_does_not_mutate_runtime_when_persist_fails(
     assert worker.config.skills == ["old-skill"]
     assert worker.config.tools == ["shell"]
     assert worker.config.temperature == 0.3
+
+
+@pytest.mark.asyncio
+async def test_update_worker_config_rejects_missing_provider_key_before_persist(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker_config = SimpleNamespace(
+        provider_type="openai",
+        model="old-model",
+        skills=[],
+        tools=[],
+        temperature=0.3,
+        max_tokens=1024,
+        icon="",
+        display_name="",
+    )
+    worker = SimpleNamespace(
+        is_busy=False,
+        config=worker_config,
+        tools=SimpleNamespace(register=lambda *args, **kwargs: None, unregister=lambda *args, **kwargs: None),
+        provider=object(),
+    )
+    worker_pool = SimpleNamespace(_workers={"alpha": worker})
+    runtime_config = SimpleNamespace(
+        providers={
+            "openai": SimpleNamespace(
+                resolve_api_key=lambda: "",
+                api_key="${OPENAI_API_KEY}",
+                base_url="https://api.openai.com/v1",
+                headers={},
+            )
+        },
+        worker_templates={"alpha": SimpleNamespace(model="old-model")},
+        knowledge_base=SimpleNamespace(skills_dir=str(tmp_path / "skills")),
+    )
+    persisted = False
+
+    def fail_if_persisted(*args, **kwargs):
+        nonlocal persisted
+        persisted = True
+
+    monkeypatch.setattr(workers, "_get_config", lambda: runtime_config)
+    monkeypatch.setattr(workers, "get_worker_pool", lambda: worker_pool)
+    monkeypatch.setattr(workers, "_persist_worker_template", fail_if_persisted)
+
+    body = workers.WorkerConfigUpdate(
+        provider="openai",
+        model="new-model",
+        skills=[],
+        tools=[],
+        temperature=0.8,
+        max_tokens=2048,
+    )
+
+    with pytest.raises(HTTPException) as exc:
+        await workers.update_worker_config("alpha", body, SimpleNamespace())
+
+    assert exc.value.status_code == 400
+    assert "API Key 未配置" in str(exc.value.detail)
+    assert persisted is False
+    assert worker.config.model == "old-model"

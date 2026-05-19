@@ -3167,8 +3167,17 @@ const WorkerCard: React.FC<{
             <div>
               <Text type="secondary" style={{ fontSize: 12 }}>Provider</Text>
               <Select value={provider} onChange={handleProviderChange} style={{ width: '100%', marginTop: 4 }} size="small">
-                {providers.map((p: any) => <Select.Option key={p.name} value={p.name}>{p.name}</Select.Option>)}
+                {providers.map((p: any) => (
+                  <Select.Option key={p.name} value={p.name}>
+                    {p.name}{p.configured === false ? '（未配置）' : ''}{p.supported === false ? '（未支持）' : ''}
+                  </Select.Option>
+                ))}
               </Select>
+              {currentProvider?.warnings?.length > 0 && (
+                <Text type="danger" style={{ display: 'block', fontSize: 12, marginTop: 4 }}>
+                  {currentProvider.warnings.join('；')}
+                </Text>
+              )}
             </div>
 
             {/* Model */}
@@ -3374,6 +3383,7 @@ const WorkersPage: React.FC = () => {
 
   // 新建弹窗中 provider 变化时联动 model
   const createProviderModels = providers.find(p => p.name === newProvider)?.models || [];
+  const providerWarnings = providers.filter((p: any) => (p.used_by || []).length > 0 && (p.warnings || []).length > 0);
 
   return (
     <Card
@@ -3390,6 +3400,15 @@ const WorkersPage: React.FC = () => {
         type="info"
         style={{ marginBottom: 16 }}
       />
+      {providerWarnings.length > 0 && (
+        <Alert
+          message="部分 Provider 需要处理"
+          description={providerWarnings.map((p: any) => `${p.name}: ${(p.warnings || []).join('；')}`).join(' / ')}
+          type="warning"
+          showIcon
+          style={{ marginBottom: 16 }}
+        />
+      )}
 
       <Tabs
         defaultActiveKey="cards"
@@ -3458,7 +3477,13 @@ const WorkersPage: React.FC = () => {
               style={{ width: '100%', marginTop: 4 }}
             >
               {providers.map((p: any) => (
-                <Select.Option key={p.name} value={p.name}>{p.name}</Select.Option>
+                <Select.Option
+                  key={p.name}
+                  value={p.name}
+                  disabled={p.configured === false || p.supported === false}
+                >
+                  {p.name}{p.configured === false ? '（未配置）' : ''}{p.supported === false ? '（未支持）' : ''}
+                </Select.Option>
               ))}
             </Select>
           </div>
@@ -3491,10 +3516,9 @@ const WorkersPage: React.FC = () => {
 const SettingsPage: React.FC = () => {
   const isMobile = useIsMobile();
   const [memoryConfig, setMemoryConfig] = useState<any>(null);
+  const [providerStatuses, setProviderStatuses] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [apiKeys, setApiKeys] = useState<Record<string, string>>({});
-  const [showKeys, setShowKeys] = useState<Record<string, boolean>>({});
 
   const fetchConfig = async () => {
     setLoading(true);
@@ -3503,6 +3527,12 @@ const SettingsPage: React.FC = () => {
       setMemoryConfig(res.data);
     } catch {
       message.error('获取配置失败');
+    }
+    try {
+      const res = await api.listProviders();
+      setProviderStatuses(res.data || []);
+    } catch {
+      message.error('获取 Provider 状态失败');
     } finally {
       setLoading(false);
     }
@@ -3510,8 +3540,6 @@ const SettingsPage: React.FC = () => {
 
   useEffect(() => {
     fetchConfig();
-    // 从环境变量中读取 API Key 状态（前端无法直接读 .env，这里显示配置状态）
-    setApiKeys({});
   }, []);
 
   const handleSaveMemory = async (updates: any) => {
@@ -3591,40 +3619,50 @@ const SettingsPage: React.FC = () => {
       <Card title="🔑 Provider API Key 状态" style={{ marginBottom: 16, maxWidth: 720 }}>
         <Alert
           message="API Key 安全说明"
-          description="API Key 配置在 config.yaml 或环境变量中，服务端持有，不暴露到前端。以下显示各 Provider 的配置状态（已配置 / 未配置），不显示实际密钥。"
+          description="API Key 配置在 config.yaml 或环境变量中，服务端只返回是否已解析到密钥，不暴露实际密钥。"
           type="info"
           style={{ marginBottom: 16 }}
         />
-        <List
-          size="small"
-          dataSource={[
-            { provider: 'DashScope（阿里云）', env: 'DASHSCOPE_API_KEY' },
-            { provider: 'OpenAI', env: 'OPENAI_API_KEY' },
-            { provider: 'Anthropic', env: 'ANTHROPIC_API_KEY' },
-            { provider: 'Google', env: 'GOOGLE_API_KEY' },
-            { provider: 'MiniMax', env: 'MINIMAX_API_KEY' },
-            { provider: 'Kimi', env: 'KIMI_API_KEY' },
-          ]}
-          renderItem={(item: any) => {
-            const configured = !!import.meta.env[`VITE_${item.env}`];
-            return (
-              <List.Item>
-                <Space>
-                  {configured ? (
-                    <CheckCircleOutlined style={{ color: '#52c41a' }} />
-                  ) : (
-                    <CloseCircleOutlined style={{ color: '#ff4d4f' }} />
-                  )}
-                  <Text>{item.provider}</Text>
-                  <Text type="secondary" style={{ fontSize: 11 }}>（环境变量: {item.env}）</Text>
-                  <Tag color={configured ? 'green' : 'red'} style={{ fontSize: 11 }}>
-                    {configured ? '已配置' : '未配置'}
-                  </Tag>
-                </Space>
-              </List.Item>
-            );
-          }}
-        />
+        {providerStatuses.length === 0 ? (
+          <Empty description="暂无 Provider 配置" />
+        ) : (
+          <List
+            size="small"
+            dataSource={providerStatuses}
+            renderItem={(item: any) => {
+              const configured = !!item.configured;
+              const supported = item.supported !== false;
+              const usedBy = item.used_by || [];
+              return (
+                <List.Item>
+                  <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                    <Space wrap>
+                      {configured ? (
+                        <CheckCircleOutlined style={{ color: '#52c41a' }} />
+                      ) : (
+                        <CloseCircleOutlined style={{ color: '#ff4d4f' }} />
+                      )}
+                      <Text strong>{item.name}</Text>
+                      {item.env_var && <Text type="secondary" style={{ fontSize: 11 }}>环境变量: {item.env_var}</Text>}
+                      <Tag color={configured ? 'green' : 'red'} style={{ fontSize: 11 }}>
+                        {configured ? '已配置' : '未配置'}
+                      </Tag>
+                      {!supported && <Tag color="orange" style={{ fontSize: 11 }}>后端未支持</Tag>}
+                    </Space>
+                    <Space wrap size={[4, 4]}>
+                      {usedBy.length > 0 ? usedBy.map((u: string) => (
+                        <Tag key={u} style={{ fontSize: 11 }}>{u}</Tag>
+                      )) : <Text type="secondary" style={{ fontSize: 11 }}>当前未被功能引用</Text>}
+                    </Space>
+                    {(item.warnings || []).map((w: string) => (
+                      <Text key={w} type="danger" style={{ fontSize: 12 }}>{w}</Text>
+                    ))}
+                  </Space>
+                </List.Item>
+              );
+            }}
+          />
+        )}
       </Card>
 
       {/* 关于 */}

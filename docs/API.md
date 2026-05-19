@@ -87,7 +87,7 @@ Worker 创建、更新和删除接口会持久化修改 `config.yaml` 中的 `wo
 | `DELETE` | `/api/workers/{worker_id}/logs` | 清空 Worker 日志，仅管理员 |
 | `PUT` | `/api/workers/{worker_id}/config` | 更新 Worker 配置，仅管理员 |
 | `DELETE` | `/api/workers/{worker_id}` | 删除 Worker，仅管理员 |
-| `GET` | `/api/providers` | 列出 Provider 配置摘要 |
+| `GET` | `/api/providers` | 列出 Provider 配置摘要、模型、服务端密钥状态与引用位置 |
 
 ## Skills、工作流与定时任务
 

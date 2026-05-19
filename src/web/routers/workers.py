@@ -9,7 +9,7 @@ import yaml
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from agents.base_agent import ToolRegistry, create_provider
+from agents.base_agent import SUPPORTED_PROVIDER_TYPES, ToolRegistry, create_provider
 from agents.worker_pool import WorkerAgent, WorkerConfig, get_worker_pool
 from auth import AuthUser, require_role
 from config import Config
@@ -73,6 +73,61 @@ def _worker_template_payload(body: WorkerConfigUpdate | WorkerCreateRequest) -> 
     if body.display_name:
         payload["display_name"] = body.display_name
     return payload
+
+
+def _provider_env_var(provider_config) -> str | None:
+    raw_api_key = getattr(provider_config, "api_key", "")
+    if not isinstance(raw_api_key, str):
+        return None
+    match = _re.fullmatch(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}", raw_api_key.strip())
+    return match.group(1) if match else None
+
+
+def _provider_has_api_key(provider_config) -> bool:
+    resolve = getattr(provider_config, "resolve_api_key", None)
+    if callable(resolve):
+        return bool(str(resolve()).strip())
+    return bool(str(getattr(provider_config, "api_key", "")).strip())
+
+
+def _provider_usage(config, provider_name: str) -> list[str]:
+    usage: list[str] = []
+
+    coordinator = getattr(config, "coordinator", None)
+    if coordinator and getattr(coordinator, "provider", None) == provider_name:
+        usage.append("coordinator")
+
+    knowledge_base = getattr(config, "knowledge_base", None)
+    if knowledge_base:
+        if getattr(knowledge_base, "embedding_provider", None) == provider_name:
+            usage.append("embedding")
+        if (
+            getattr(knowledge_base, "enable_graph", False)
+            and getattr(knowledge_base, "graph_llm_provider", None) == provider_name
+        ):
+            usage.append("knowledge_graph")
+
+    for feature_name in ("image_generation", "video_generation", "image_to_video"):
+        feature = getattr(config, feature_name, None)
+        if (
+            feature
+            and getattr(feature, "enabled", False)
+            and getattr(feature, "provider", None) == provider_name
+        ):
+            usage.append(feature_name)
+
+    for worker_name, template in getattr(config, "worker_templates", {}).items():
+        if getattr(template, "provider", None) == provider_name:
+            usage.append(f"worker:{worker_name}")
+
+    return usage
+
+
+def _validate_runtime_provider(provider_name: str, provider_config) -> None:
+    if provider_name.lower() not in SUPPORTED_PROVIDER_TYPES:
+        raise HTTPException(status_code=400, detail=f"Provider '{provider_name}' 当前后端未支持")
+    if not _provider_has_api_key(provider_config):
+        raise HTTPException(status_code=400, detail=f"Provider '{provider_name}' API Key 未配置")
 
 
 def _read_config_document(config_path: Path) -> dict:
@@ -250,11 +305,28 @@ async def list_providers() -> list[dict]:
     }
 
     result = []
-    for name in _config.providers:
+    for name, provider_config in _config.providers.items():
         models = provider_models.get(name, set())
         for m in well_known.get(name, []):
             models.add(m)
-        result.append({"name": name, "models": sorted(models)})
+        configured = _provider_has_api_key(provider_config)
+        supported = name.lower() in SUPPORTED_PROVIDER_TYPES
+        used_by = _provider_usage(_config, name)
+        warnings: list[str] = []
+        if not supported:
+            warnings.append("当前后端未支持该 Provider 类型")
+        if used_by and not configured:
+            warnings.append("该 Provider 正被功能引用，但 API Key 未配置")
+        result.append({
+            "name": name,
+            "models": sorted(models),
+            "configured": configured,
+            "supported": supported,
+            "env_var": _provider_env_var(provider_config),
+            "base_url": getattr(provider_config, "base_url", ""),
+            "used_by": used_by,
+            "warnings": warnings,
+        })
     return result
 
 
@@ -280,6 +352,7 @@ async def update_worker_config(
     provider_config = _config.providers.get(body.provider)
     if not provider_config:
         raise HTTPException(status_code=400, detail=f"Provider '{body.provider}' 未配置")
+    _validate_runtime_provider(body.provider, provider_config)
 
     try:
         _persist_worker_template(_config_path(), worker_id, _worker_template_payload(body))
@@ -346,6 +419,7 @@ async def create_worker(
     provider_config = _config.providers.get(body.provider)
     if not provider_config:
         raise HTTPException(status_code=400, detail=f"Provider '{body.provider}' 未配置")
+    _validate_runtime_provider(body.provider, provider_config)
 
     worker_config = WorkerConfig(
         name=name,

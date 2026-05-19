@@ -518,6 +518,15 @@ class MiniMaxProvider(LLMProvider):
         )
 
 
+SUPPORTED_PROVIDER_TYPES = frozenset({
+    "anthropic",
+    "openai",
+    "minimax",
+    "kimi",
+    "dashscope",
+})
+
+
 def create_provider(
     provider_type: str,
     api_key: str,
@@ -539,9 +548,9 @@ def create_provider(
     }
 
     ptype = provider_type.lower()
-    provider_class = providers.get(ptype)
-    if not provider_class:
+    if ptype not in SUPPORTED_PROVIDER_TYPES:
         raise ValueError(f"Unknown provider: {provider_type}")
+    provider_class = providers.get(ptype)
 
     call_kwargs = dict(kwargs)
     if base_url:
