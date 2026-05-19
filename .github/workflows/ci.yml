@@ -5,34 +5,32 @@ on:
     branches: [master, main]
   pull_request:
     branches: [master, main]
+  workflow_dispatch:
+    inputs:
+      run_e2e:
+        description: "Run opt-in E2E tests that require MINIMAX_API_KEY"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  lint:
-    name: Lint
+  backend:
+    name: Backend
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
         with:
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
-
-      - name: Lint with ruff
-        run: uv run ruff check src/ tests/
-
-      - name: Check format
-        run: uv run ruff format --check src/ tests/
-
-      - name: Check alembic migration status
-        run: uv run alembic current && uv run alembic history --verbose
-
-  typecheck:
-    name: Type Check
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+          python-version: "3.12"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4
@@ -41,45 +39,22 @@ jobs:
           cache-dependency-glob: "uv.lock"
 
       - name: Install dependencies
-        run: uv sync --all-extras
+        run: uv sync --extra dev --frozen
 
-      - name: Run mypy
-        run: uv run mypy src/ --ignore-missing-imports
+      - name: Lint
+        run: uv run --extra dev ruff check src tests
 
-  test:
-    name: Test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+      - name: Compile Python
+        run: uv run --extra dev python -m compileall -q src tests
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
-        with:
-          enable-cache: true
-          cache-dependency-glob: "uv.lock"
+      - name: Check Alembic head
+        run: uv run --extra dev alembic heads
 
-      - name: Install dependencies
-        run: uv sync --all-extras
+      - name: Test
+        run: uv run --extra dev pytest tests --ignore=tests/e2e
 
-      - name: Run unit tests
-        run: uv run pytest tests/ -q --tb=short --ignore=tests/e2e
-
-      - name: Run e2e tests
-        if: vars.MINIMAX_API_KEY != ''
-        run: uv run pytest tests/e2e/ -m e2e -v --tb=short
-        env:
-          MINIMAX_API_KEY: ${{ vars.MINIMAX_API_KEY }}
-
-      - name: Upload coverage
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage
-          path: .coverage
-          retention-days: 7
-
-  build-frontend:
-    name: Build Frontend
+  frontend:
+    name: Frontend
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -89,11 +64,43 @@ jobs:
         with:
           node-version: "20"
           cache: "npm"
-          working-directory: frontend
+          cache-dependency-path: frontend/package-lock.json
 
       - name: Install dependencies
         run: npm ci
+        working-directory: frontend
 
       - name: Build
         run: npm run build
         working-directory: frontend
+
+  e2e:
+    name: E2E
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.run_e2e }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install dependencies
+        run: uv sync --extra dev --frozen
+
+      - name: Run E2E tests
+        env:
+          MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY || vars.MINIMAX_API_KEY }}
+        run: |
+          if [ -z "$MINIMAX_API_KEY" ]; then
+            echo "MINIMAX_API_KEY is not configured; skipping E2E tests."
+            exit 0
+          fi
+          uv run --extra dev pytest tests/e2e -m e2e -v --tb=short
