@@ -105,3 +105,5 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
     assert checks["index_consistency"]["status"] == "ok"
     assert checks["sqlite"]["status"] == "warning"
     assert checks["disk"]["status"] == "ok"
+    assert checks["latest_backup"]["status"] == "warning"
+    assert checks["latest_backup"]["details"]["archive_count"] == 0

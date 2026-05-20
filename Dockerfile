@@ -30,7 +30,7 @@ COPY config.example.yaml ./config.yaml
 COPY --from=frontend-build /app/frontend/dist ./frontend/dist
 
 RUN uv sync --frozen --no-dev \
-    && mkdir -p /app/data /app/workspace
+    && mkdir -p /app/data /app/workspace /app/backups
 
 EXPOSE 8080
 

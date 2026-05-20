@@ -47,8 +47,9 @@ The Compose file bind-mounts these host paths:
 | `./config.yaml` | `/app/config.yaml` | Runtime configuration; Worker management APIs update `worker_templates` here |
 | `./data` | `/app/data` | Chroma, SQLite, uploads, BM25 index, groups, workflow state |
 | `./workspace` | `/app/workspace` | Worker task artifacts and shared files |
+| `./backups` | `/app/backups` | Local backup archives visible to the admin readiness report |
 
-Back up all three paths together before upgrades.
+Back up `config.yaml`, `.env`, `data/`, and `workspace/` together before upgrades, then copy backup archives off the host.
 
 ## Backup and Restore
 
@@ -162,7 +163,7 @@ Run a basic health check after the container becomes healthy:
 curl -fsS http://localhost:8080/api/health
 ```
 
-Administrators can inspect the deeper runtime readiness report after logging in:
+Administrators can inspect the deeper runtime readiness report after logging in. The API report includes config, persistent paths, index consistency, SQLite, disk space, and lightweight backup metadata checks; use `scripts/ops_check.py` when a full backup checksum verification is needed.
 
 ```bash
 curl -fsS http://localhost:8080/api/system/health -H "Authorization: Bearer <token>"

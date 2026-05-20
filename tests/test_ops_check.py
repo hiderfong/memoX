@@ -6,9 +6,15 @@ import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from scripts.backup_restore import BackupError
+from scripts.backup_restore import BackupError, create_backup
 from scripts.ops_check import check_latest_backup, find_latest_backup
-from src.ops.readiness import CheckResult, overall_status
+from src.ops.readiness import (
+    CheckResult,
+    overall_status,
+)
+from src.ops.readiness import (
+    check_latest_backup as check_readiness_latest_backup,
+)
 
 
 def test_overall_status_prefers_errors_then_warnings() -> None:
@@ -48,7 +54,7 @@ def test_latest_backup_uses_verifier(tmp_path: Path) -> None:
     def verifier(path: Path) -> dict:
         return {
             "archive": str(path),
-            "created_at": "2026-05-19T00:00:00Z",
+            "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
             "entries": [{"path": "data", "type": "directory"}],
             "verified": True,
         }
@@ -101,3 +107,16 @@ def test_latest_backup_warns_when_stale_or_too_many(tmp_path: Path) -> None:
         "latest backup is older than 1h",
         "backup archive count exceeds 2",
     ]
+
+
+def test_readiness_latest_backup_inspects_metadata_without_checksum(tmp_path: Path) -> None:
+    (tmp_path / "config.yaml").write_text("app:\n  name: MemoX\n", encoding="utf-8")
+    (tmp_path / "data").mkdir()
+    create_backup(root=tmp_path)
+
+    result = check_readiness_latest_backup(tmp_path, max_age_hours=999)
+
+    assert result.status == "ok"
+    assert result.details["archive_count"] == 1
+    assert result.details["entries"] > 0
+    assert result.details["verified"] is False

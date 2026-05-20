@@ -3618,6 +3618,9 @@ const SystemStatusPage: React.FC = () => {
   const disk = (getCheck('disk')?.details || {}) as Record<string, number | string>;
   const sqlite = (getCheck('sqlite')?.details?.databases || {}) as Record<string, any>;
   const persistentPaths = (getCheck('persistent_paths')?.details || {}) as { missing_directories?: string[] };
+  const backupCheck = getCheck('latest_backup');
+  const backupDetails = (backupCheck?.details || {}) as Record<string, any>;
+  const backupWarnings = Array.isArray(backupDetails.warnings) ? backupDetails.warnings : [];
   const missingDirectories = persistentPaths.missing_directories || [];
   const statusCounts = checks.reduce<Record<string, number>>((acc, check) => {
     acc[check.status] = (acc[check.status] || 0) + 1;
@@ -3628,6 +3631,12 @@ const SystemStatusPage: React.FC = () => {
   const diskFreeBytes = typeof disk.free_bytes === 'number' ? disk.free_bytes : undefined;
   const diskMinFreeBytes = typeof disk.min_free_bytes === 'number' ? disk.min_free_bytes : undefined;
   const diskUsedPercent = diskTotalBytes ? Math.round((diskUsedBytes / diskTotalBytes) * 100) : 0;
+  const backupAgeSeconds = typeof backupDetails.age_seconds === 'number' ? backupDetails.age_seconds : undefined;
+  const backupAgeText = backupAgeSeconds === undefined
+    ? '-'
+    : backupAgeSeconds < 3600
+      ? `${Math.round(backupAgeSeconds / 60)} 分钟`
+      : `${(backupAgeSeconds / 3600).toFixed(1)} 小时`;
 
   const columns = [
     {
@@ -3687,7 +3696,7 @@ const SystemStatusPage: React.FC = () => {
         />
       )}
 
-      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(4, minmax(0, 1fr))', gap: 16, marginBottom: 16 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fit, minmax(180px, 1fr))', gap: 16, marginBottom: 16 }}>
         <Card size="small" loading={loading}>
           <Text type="secondary">总体状态</Text>
           <div style={{ marginTop: 8 }}>
@@ -3712,6 +3721,13 @@ const SystemStatusPage: React.FC = () => {
           <Text type="secondary">可用磁盘</Text>
           <div style={{ marginTop: 8, fontSize: 24, fontWeight: 600 }}>{formatBytes(diskFreeBytes)}</div>
           <Text type="secondary">阈值 {formatBytes(diskMinFreeBytes)}</Text>
+        </Card>
+        <Card size="small" loading={loading}>
+          <Text type="secondary">最近备份</Text>
+          <div style={{ marginTop: 8 }}>
+            <Tag color={statusTagColor(backupCheck?.status)}>{statusLabel(backupCheck?.status)}</Tag>
+          </div>
+          <Text type="secondary">距今 {backupAgeText}</Text>
         </Card>
       </div>
 
@@ -3778,6 +3794,30 @@ const SystemStatusPage: React.FC = () => {
                 <Text type="warning">缺失目录：{missingDirectories.join(', ')}</Text>
               )}
             </Space>
+          </Space>
+        </Card>
+
+        <Card title="备份状态" loading={loading}>
+          <Space direction="vertical" style={{ width: '100%' }} size={8}>
+            <Space wrap>
+              <Tag color={statusTagColor(backupCheck?.status)}>{statusLabel(backupCheck?.status)}</Tag>
+              <Text>{backupCheck?.message || '-'}</Text>
+            </Space>
+            <Text><Text strong>归档数:</Text> {backupDetails.archive_count ?? 0}</Text>
+            <Text><Text strong>最新时间:</Text> {backupDetails.created_at || '-'}</Text>
+            <Text><Text strong>距今:</Text> {backupAgeText}</Text>
+            <Text><Text strong>条目数:</Text> {backupDetails.entries ?? '-'}</Text>
+            <Text style={{ wordBreak: 'break-all' }}><Text strong>目录:</Text> {backupDetails.backup_dir || '-'}</Text>
+            {backupDetails.archive && (
+              <Text style={{ wordBreak: 'break-all' }}><Text strong>最新归档:</Text> {backupDetails.archive}</Text>
+            )}
+            {backupWarnings.length > 0 && (
+              <Space wrap>
+                {backupWarnings.map((warning: string) => (
+                  <Tag key={warning} color="orange">{warning}</Tag>
+                ))}
+              </Space>
+            )}
           </Space>
         </Card>
 

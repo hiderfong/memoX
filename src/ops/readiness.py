@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import sqlite3
+import tarfile
 import time
 from dataclasses import asdict, dataclass, field
-from pathlib import Path
+from datetime import datetime, timezone
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from src.config import Config, validate_config
@@ -14,6 +17,10 @@ from src.ops.index_consistency import audit_indexes, build_runtime
 
 Status = str
 DEFAULT_MIN_FREE_BYTES = 512 * 1024 * 1024
+DEFAULT_MAX_BACKUP_AGE_HOURS = 24.0
+DEFAULT_MAX_BACKUP_ARCHIVES = 14
+BACKUP_FORMAT = "memox-backup-v1"
+BACKUP_METADATA_NAME = "memox-backup.json"
 
 
 @dataclass(frozen=True)
@@ -269,6 +276,132 @@ def check_disk_space(root: Path, config: Config, *, min_free_bytes: int = DEFAUL
     )
 
 
+def list_backup_archives(root: str | Path = ".") -> list[Path]:
+    """Return MemoX backup archives sorted from newest to oldest."""
+    backup_dir = Path(root).resolve() / "backups"
+    if not backup_dir.exists():
+        return []
+    archives = [path for path in backup_dir.glob("memox-backup-*.tar.gz") if path.is_file()]
+    return sorted(archives, key=lambda path: (path.stat().st_mtime, path.name), reverse=True)
+
+
+def _safe_backup_member(value: str) -> PurePosixPath:
+    rel = PurePosixPath(value)
+    if rel.is_absolute() or ".." in rel.parts or not rel.parts:
+        raise ValueError(f"Unsafe archive path: {value}")
+    return rel
+
+
+def _read_backup_metadata(archive: Path) -> dict[str, Any]:
+    with tarfile.open(archive, "r:gz") as tar:
+        for member in tar.getmembers():
+            _safe_backup_member(member.name)
+        try:
+            member = tar.getmember(BACKUP_METADATA_NAME)
+        except KeyError as exc:
+            raise ValueError(f"Missing {BACKUP_METADATA_NAME}") from exc
+        extracted = tar.extractfile(member)
+        if extracted is None:
+            raise ValueError(f"Cannot read {BACKUP_METADATA_NAME}")
+        metadata = json.loads(extracted.read().decode("utf-8"))
+
+    if metadata.get("format") != BACKUP_FORMAT:
+        raise ValueError(f"Unsupported backup format: {metadata.get('format')}")
+    entries = metadata.get("entries", [])
+    if not isinstance(entries, list):
+        raise ValueError("Backup metadata entries must be a list")
+    return metadata
+
+
+def _parse_backup_timestamp(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def check_latest_backup(
+    root: Path,
+    *,
+    max_age_hours: float = DEFAULT_MAX_BACKUP_AGE_HOURS,
+    max_backups: int = DEFAULT_MAX_BACKUP_ARCHIVES,
+) -> CheckResult:
+    start = time.monotonic()
+    backup_dir = root.resolve() / "backups"
+    archives = list_backup_archives(root)
+    if not archives:
+        return CheckResult(
+            name="latest_backup",
+            status="warning",
+            message="No backup archive found under backups/",
+            details={
+                "backup_dir": str(backup_dir),
+                "archive_count": 0,
+                "max_age_hours": max_age_hours,
+                "max_backups": max_backups,
+                "warnings": ["no backup archive found"],
+            },
+            duration_ms=duration_ms(start),
+        )
+
+    backup_path = archives[0]
+    try:
+        metadata = _read_backup_metadata(backup_path)
+    except (OSError, tarfile.TarError, json.JSONDecodeError, ValueError) as exc:
+        return CheckResult(
+            name="latest_backup",
+            status="error",
+            message=f"Backup metadata inspection failed: {type(exc).__name__}: {exc}",
+            details={
+                "backup_dir": str(backup_dir),
+                "archive": str(backup_path),
+                "archive_count": len(archives),
+            },
+            duration_ms=duration_ms(start),
+        )
+
+    created_at = _parse_backup_timestamp(metadata.get("created_at"))
+    age_seconds = None
+    warnings: list[str] = []
+    if created_at is None:
+        warnings.append("created_at is missing or invalid")
+    else:
+        age_seconds = max(0.0, (datetime.now(timezone.utc) - created_at).total_seconds())
+        if age_seconds > max_age_hours * 3600:
+            warnings.append(f"latest backup is older than {max_age_hours:g}h")
+    if len(archives) > max_backups:
+        warnings.append(f"backup archive count exceeds {max_backups}")
+
+    status = "warning" if warnings else "ok"
+    message = f"Latest backup metadata inspected: {backup_path}"
+    if warnings:
+        message += " (" + "; ".join(warnings) + ")"
+
+    return CheckResult(
+        name="latest_backup",
+        status=status,
+        message=message,
+        details={
+            "backup_dir": str(backup_dir),
+            "archive": str(backup_path),
+            "created_at": metadata.get("created_at"),
+            "age_seconds": age_seconds,
+            "archive_count": len(archives),
+            "max_age_hours": max_age_hours,
+            "max_backups": max_backups,
+            "entries": len(metadata.get("entries", [])),
+            "verified": False,
+            "warnings": warnings,
+        },
+        duration_ms=duration_ms(start),
+    )
+
+
 def run_readiness_checks(
     *,
     root: Path,
@@ -278,6 +411,9 @@ def run_readiness_checks(
     vector_store: Any | None = None,
     bm25_indexer: Any | None = None,
     min_free_bytes: int = DEFAULT_MIN_FREE_BYTES,
+    include_backup: bool = False,
+    max_backup_age_hours: float = DEFAULT_MAX_BACKUP_AGE_HOURS,
+    max_backups: int = DEFAULT_MAX_BACKUP_ARCHIVES,
 ) -> dict[str, Any]:
     if config is None:
         checks: list[CheckResult] = [check_config(config_path)]
@@ -320,6 +456,14 @@ def run_readiness_checks(
             check_disk_space(root, config, min_free_bytes=min_free_bytes),
         ]
     )
+    if include_backup:
+        checks.append(
+            check_latest_backup(
+                root,
+                max_age_hours=max_backup_age_hours,
+                max_backups=max_backups,
+            )
+        )
 
     status = overall_status(checks)
     return {

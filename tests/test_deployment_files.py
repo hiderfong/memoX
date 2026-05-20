@@ -17,6 +17,7 @@ def test_docker_compose_mounts_persistent_paths() -> None:
     assert "./config.yaml:/app/config.yaml:rw" in service["volumes"]
     assert "./data:/app/data" in service["volumes"]
     assert "./workspace:/app/workspace" in service["volumes"]
+    assert "./backups:/app/backups" in service["volumes"]
     assert service["healthcheck"]["test"] == ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/api/health"]
 
 
@@ -26,6 +27,7 @@ def test_dockerfile_builds_frontend_and_runs_memox() -> None:
     assert "AS frontend-build" in dockerfile
     assert "npm run build" in dockerfile
     assert "COPY --from=frontend-build /app/frontend/dist ./frontend/dist" in dockerfile
+    assert "mkdir -p /app/data /app/workspace /app/backups" in dockerfile
     assert 'CMD ["memox"]' in dockerfile
 
 

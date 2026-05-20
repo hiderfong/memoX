@@ -17,6 +17,7 @@ services:
       - ./config.yaml:/app/config.yaml:rw
       - ./data:/app/data
       - ./workspace:/app/workspace
+      - ./backups:/app/backups
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/api/health"]
       interval: 30s
