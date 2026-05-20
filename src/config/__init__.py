@@ -49,6 +49,14 @@ def validate_config(config: "Config") -> None:
             errors.append("ops.max_backups 必须至少为 1")
         if not config.ops.auto_backup_include:
             errors.append("ops.auto_backup_include 不能为空")
+    if config.ops.ops_event_retention_days < 0:
+        errors.append("ops.ops_event_retention_days 不能为负数")
+    if config.ops.audit_log_retention_days < 0:
+        errors.append("ops.audit_log_retention_days 不能为负数")
+    if config.ops.diagnostic_retention_days < 0:
+        errors.append("ops.diagnostic_retention_days 不能为负数")
+    if config.ops.max_diagnostic_bundles < 1:
+        errors.append("ops.max_diagnostic_bundles 必须至少为 1")
 
     if errors:
         raise ConfigError("MemoX 配置无效:\n- " + "\n- ".join(errors))
@@ -217,6 +225,10 @@ class OpsConfig:
     auto_backup_include: list[str] = field(default_factory=lambda: ["config.yaml", "data", "workspace"])
     max_backups: int = 14
     archive_mirror_dir: str = ""
+    ops_event_retention_days: int = 90
+    audit_log_retention_days: int = 180
+    diagnostic_retention_days: int = 30
+    max_diagnostic_bundles: int = 20
 
 
 @dataclass

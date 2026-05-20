@@ -17,6 +17,7 @@ from src.ops.archive_mirror import mirror_archive_bytes
 from src.ops.backup import BackupError, list_backup_archives, read_backup_metadata, verify_backup
 from src.ops.diagnostics import build_diagnostic_bundle
 from src.ops.index_consistency import audit_indexes, run_index_repair
+from src.ops.lifecycle import LifecyclePolicy, run_lifecycle_cleanup
 from src.ops.readiness import resolve_from_root, run_readiness_checks
 from src.ops.recovery import run_restore_drill, run_restore_execute, run_restore_preflight
 
@@ -120,6 +121,15 @@ def _runtime_index_context() -> tuple[object | None, object | None]:
     return vector_store, bm25_indexer
 
 
+def _lifecycle_policy_from_config(config) -> LifecyclePolicy:
+    return LifecyclePolicy(
+        ops_event_retention_days=config.ops.ops_event_retention_days,
+        audit_log_retention_days=config.ops.audit_log_retention_days,
+        diagnostic_retention_days=config.ops.diagnostic_retention_days,
+        max_diagnostic_bundles=config.ops.max_diagnostic_bundles,
+    )
+
+
 def _system_health_report(request: Request) -> dict:
     from web.api import _config, _rag_engine
 
@@ -148,6 +158,7 @@ def _system_health_report(request: Request) -> dict:
     latest_restore_execute = None
     latest_index_repair = None
     latest_diagnostics_export = None
+    latest_lifecycle_cleanup = None
     try:
         from storage import get_store
 
@@ -158,12 +169,14 @@ def _system_health_report(request: Request) -> dict:
             latest_restore_execute = store.get_latest_ops_event("restore_execute")
             latest_index_repair = store.get_latest_ops_event("index_repair")
             latest_diagnostics_export = store.get_latest_ops_event("diagnostics_export")
+            latest_lifecycle_cleanup = store.get_latest_ops_event("lifecycle_cleanup")
     except Exception:
         latest_event = None
         latest_restore_drill = None
         latest_restore_execute = None
         latest_index_repair = None
         latest_diagnostics_export = None
+        latest_lifecycle_cleanup = None
 
     try:
         from ops.maintenance import get_maintenance_runner
@@ -179,12 +192,19 @@ def _system_health_report(request: Request) -> dict:
         "max_backups": _config.ops.max_backups,
         "archive_mirror_enabled": bool(_config.ops.archive_mirror_dir),
         "archive_mirror_dir": _config.ops.archive_mirror_dir,
+        "retention": {
+            "ops_event_retention_days": _config.ops.ops_event_retention_days,
+            "audit_log_retention_days": _config.ops.audit_log_retention_days,
+            "diagnostic_retention_days": _config.ops.diagnostic_retention_days,
+            "max_diagnostic_bundles": _config.ops.max_diagnostic_bundles,
+        },
         "maintenance_runner_active": bool(getattr(maintenance_runner, "running", False)),
         "last_backup_maintenance": latest_event,
         "last_restore_drill": latest_restore_drill,
         "last_restore_execute": latest_restore_execute,
         "last_index_repair": latest_index_repair,
         "last_diagnostics_export": latest_diagnostics_export,
+        "last_lifecycle_cleanup": latest_lifecycle_cleanup,
     }
     return result
 
@@ -427,4 +447,26 @@ async def run_backup_maintenance_now(
         archive_mirror_dir=_config.ops.archive_mirror_dir,
     )
     record_maintenance_event(get_store(), result)
+    return result
+
+
+@router.post("/maintenance/lifecycle")
+async def run_lifecycle_cleanup_now(
+    _: Annotated[AuthUser, require_role("admin")],
+    dry_run: bool = Query(default=True),
+) -> dict:
+    """Plan or execute conservative lifecycle cleanup for operational data."""
+    from storage import get_store
+    from web.api import _config
+
+    result = await asyncio.to_thread(
+        run_lifecycle_cleanup,
+        root=_deployment_root(),
+        store=get_store(),
+        policy=_lifecycle_policy_from_config(_config),
+        archive_mirror_dir=_config.ops.archive_mirror_dir,
+        dry_run=dry_run,
+    )
+    if not dry_run:
+        _record_ops_event("lifecycle_cleanup", result)
     return result

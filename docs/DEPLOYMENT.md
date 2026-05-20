@@ -172,6 +172,8 @@ curl -fsS http://localhost:8080/api/health
 
 Administrators can inspect the deeper runtime readiness report after logging in. The API report includes config, persistent paths, index consistency, SQLite, disk space, backup metadata checks, archive mirror configuration, and SQLite schema version/migration records. The diagnostics export endpoint creates a zip package with the health report, backup list, recent operational events, index consistency report, redacted config, and redacted tails of common local log files; use it when escalating a production issue. JSON reports and log tails redact common API keys, bearer tokens, passwords, secrets, cookies, and private keys, but diagnostics bundles should still be treated as sensitive operational artifacts. When `ops.archive_mirror_dir` is set, the exported zip is also mirrored to `<mirror>/diagnostics/`. Use `scripts/ops_check.py` when a full backup checksum verification is needed.
 
+Lifecycle cleanup is intentionally conservative. `POST /api/system/maintenance/lifecycle?dry_run=true` reports expired operational events, audit log rows, and diagnostic bundles according to `ops.ops_event_retention_days`, `ops.audit_log_retention_days`, `ops.diagnostic_retention_days`, and `ops.max_diagnostic_bundles`; `dry_run=false` executes that cleanup and records a `lifecycle_cleanup` operational event. It does not delete chats, memories, uploaded documents, or workspace files.
+
 ```bash
 curl -fsS http://localhost:8080/api/system/health -H "Authorization: Bearer <token>"
 curl -fsS http://localhost:8080/api/system/backups -H "Authorization: Bearer <token>"
@@ -182,6 +184,7 @@ curl -fsS -X POST "http://localhost:8080/api/system/backups/<backup-file>.tar.gz
 curl -fsS -X POST "http://localhost:8080/api/system/backups/<backup-file>.tar.gz/restore-preflight" -H "Authorization: Bearer <token>"
 curl -fsS -X POST "http://localhost:8080/api/system/backups/<backup-file>.tar.gz/restore-drill" -H "Authorization: Bearer <token>"
 curl -fsS -X POST "http://localhost:8080/api/system/maintenance/backup?force=true" -H "Authorization: Bearer <token>"
+curl -fsS -X POST "http://localhost:8080/api/system/maintenance/lifecycle?dry_run=true" -H "Authorization: Bearer <token>"
 ```
 
 Only run a real restore during a maintenance window and after reviewing `restore-preflight`. The API requires the archive name to be typed back exactly, requires overwrite and maintenance acknowledgements, and creates a verified safety backup before writing restored files. After a real restore, run `/api/system/indexes/repair`, restart the service so restored config/SQLite/vector-store state is loaded cleanly, then check `/api/system/health`.

@@ -37,6 +37,10 @@ def test_config_example_is_container_friendly() -> None:
     assert config["app"]["debug"] is False
     assert config["server"]["host"] == "0.0.0.0"
     assert config["ops"]["archive_mirror_dir"] == ""
+    assert config["ops"]["ops_event_retention_days"] == 90
+    assert config["ops"]["audit_log_retention_days"] == 180
+    assert config["ops"]["diagnostic_retention_days"] == 30
+    assert config["ops"]["max_diagnostic_bundles"] == 20
     assert "/api/docs" in config["auth"]["public_paths"]
     assert "/api/redoc" in config["auth"]["public_paths"]
     assert "/api/openapi.json" in config["auth"]["public_paths"]
@@ -63,6 +67,9 @@ def test_backup_artifacts_are_documented_and_ignored() -> None:
     assert "/api/system/events" in deployment
     assert "/api/system/diagnostics/export" in deployment
     assert "/api/system/indexes/repair" in deployment
+    assert "/api/system/maintenance/lifecycle" in deployment
+    assert "dry_run=true" in deployment
+    assert "lifecycle_cleanup" in deployment
     assert "SQLite schema version/migration records" in deployment
     assert "redacted config" in deployment
     assert "redacted tails" in deployment

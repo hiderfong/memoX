@@ -98,6 +98,7 @@ def test_public_and_protected_auth_boundaries(permission_client) -> None:
         ("PATCH", "/api/memory/config", {"enabled": False}),
         ("GET", "/api/system/health", None),
         ("POST", "/api/system/maintenance/backup?force=true", None),
+        ("POST", "/api/system/maintenance/lifecycle?dry_run=true", None),
     ],
 )
 def test_regular_user_cannot_access_admin_operations(

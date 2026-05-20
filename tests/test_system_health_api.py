@@ -137,6 +137,11 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
                 headers={"Authorization": f"Bearer {user_token}"},
             )
             assert diagnostics_forbidden.status_code == 403
+            lifecycle_forbidden = client.post(
+                "/api/system/maintenance/lifecycle?dry_run=true",
+                headers={"Authorization": f"Bearer {user_token}"},
+            )
+            assert lifecycle_forbidden.status_code == 403
 
             response = client.get("/api/system/health", headers={"Authorization": f"Bearer {admin_token}"})
             assert response.status_code == 200
@@ -199,6 +204,19 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
             diagnostics_content_type = diagnostics.headers.get("content-type")
             diagnostics_disposition = diagnostics.headers.get("content-disposition", "")
             diagnostics_zip = diagnostics.content
+
+            lifecycle_dry_run = client.post(
+                "/api/system/maintenance/lifecycle?dry_run=true",
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+            assert lifecycle_dry_run.status_code == 200
+            lifecycle_dry_run_payload = lifecycle_dry_run.json()
+            lifecycle_execute = client.post(
+                "/api/system/maintenance/lifecycle?dry_run=false",
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+            assert lifecycle_execute.status_code == 200
+            lifecycle_execute_payload = lifecycle_execute.json()
 
             events = client.get("/api/system/events?limit=10", headers={"Authorization": f"Bearer {admin_token}"})
             assert events.status_code == 200
@@ -314,9 +332,15 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
         redacted_config = json.loads(bundle.read("config/redacted_config.json"))
     assert manifest["log_count"] >= 0
     assert redacted_config["auth"]["users"][0]["password"] == "***REDACTED***"
+    assert lifecycle_dry_run_payload["dry_run"] is True
+    assert lifecycle_dry_run_payload["summary"]["core_user_data_deleted"] is False
+    assert lifecycle_execute_payload["dry_run"] is False
+    assert lifecycle_execute_payload["event_id"]
     assert refreshed_payload["ops"]["last_backup_maintenance"]["details"]["forced"] is True
     assert refreshed_payload["ops"]["last_diagnostics_export"]["details"]["filename"].endswith(".zip")
     assert refreshed_payload["ops"]["last_diagnostics_export"]["details"]["mirror"]["ok"] is True
+    assert refreshed_payload["ops"]["retention"]["ops_event_retention_days"] == 90
+    assert refreshed_payload["ops"]["last_lifecycle_cleanup"]["details"]["action"] == "executed"
     assert Path(refreshed_payload["ops"]["last_diagnostics_export"]["details"]["mirror"]["destination"]).exists()
     assert refreshed_payload["ops"]["last_index_repair"]["details"]["action"] == "index_repair"
     assert refreshed_payload["ops"]["last_restore_drill"]["details"]["name"] == Path(manual_payload["archive"]).name
@@ -329,6 +353,7 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
         "restore_preflight",
         "restore_execute",
         "restore_drill",
+        "lifecycle_cleanup",
     }
     assert restore_events_payload["count"] == 1
     assert restore_events_payload["events"][0]["event_type"] == "restore_drill"

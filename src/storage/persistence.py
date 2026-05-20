@@ -693,6 +693,18 @@ class PersistenceStore:
         rows = self._conn.execute(query, params).fetchall()
         return [dict(r) for r in rows]
 
+    def count_audit_events_before(self, cutoff_iso: str) -> int:
+        row = self._conn.execute(
+            "SELECT COUNT(*) FROM audit_log WHERE timestamp < ?",
+            (cutoff_iso,),
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+    def delete_audit_events_before(self, cutoff_iso: str) -> int:
+        cursor = self._conn.execute("DELETE FROM audit_log WHERE timestamp < ?", (cutoff_iso,))
+        self._conn.commit()
+        return cursor.rowcount
+
     # ── 运维事件 ──────────────────────────────────────────────
 
     @staticmethod
@@ -741,6 +753,18 @@ class PersistenceStore:
     def get_latest_ops_event(self, event_type: str | None = None) -> dict | None:
         events = self.list_ops_events(event_type=event_type, limit=1)
         return events[0] if events else None
+
+    def count_ops_events_before(self, cutoff_iso: str) -> int:
+        row = self._conn.execute(
+            "SELECT COUNT(*) FROM ops_events WHERE created_at < ?",
+            (cutoff_iso,),
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+    def delete_ops_events_before(self, cutoff_iso: str) -> int:
+        cursor = self._conn.execute("DELETE FROM ops_events WHERE created_at < ?", (cutoff_iso,))
+        self._conn.commit()
+        return cursor.rowcount
 
     # ==================== 跨会话记忆（memories）====================
 

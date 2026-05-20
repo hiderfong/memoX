@@ -132,5 +132,6 @@ Worker 创建、更新和删除接口会持久化修改 `config.yaml` 中的 `wo
 | `POST` | `/api/system/backups/{name}/restore` | 管理员强确认后执行真实恢复；请求体需提供 `confirm_archive_name`、`acknowledge_overwrite`、`acknowledge_maintenance_mode` |
 | `POST` | `/api/system/backups/{name}/restore-drill` | 管理员执行临时目录恢复演练 |
 | `POST` | `/api/system/maintenance/backup` | 管理员手动触发备份维护；设置 `ops.archive_mirror_dir` 后会将归档镜像到外部目录 |
+| `POST` | `/api/system/maintenance/lifecycle` | 管理员执行保守生命周期清理；默认 `dry_run=true` 只预检，`dry_run=false` 清理过期运维事件、审计日志和诊断包，不删除聊天、记忆、上传或工作区文件 |
 | `GET` | `/api/files/{name}` | 暴露上传目录中的单个文件 |
 | `WS` | `/ws` | WebSocket 实时通信，支持聊天和任务进度消息 |

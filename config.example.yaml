@@ -129,6 +129,12 @@ ops:
   # Optional: mirror backups and diagnostics to an external or mounted directory.
   # Relative paths are resolved from the deployment root; leave empty to disable.
   archive_mirror_dir: ""
+  # Lifecycle cleanup is conservative: it never deletes chats, memories, uploads,
+  # or workspace files. Use the admin dry-run endpoint before executing cleanup.
+  ops_event_retention_days: 90
+  audit_log_retention_days: 180
+  diagnostic_retention_days: 30
+  max_diagnostic_bundles: 20
 
 auth:
   enabled: true
