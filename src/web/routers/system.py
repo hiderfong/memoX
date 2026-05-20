@@ -8,14 +8,21 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from pydantic import BaseModel
 
 from auth import AuthUser, require_role
 from config import default_config_path
 from src.ops.backup import BackupError, list_backup_archives, read_backup_metadata, verify_backup
 from src.ops.readiness import run_readiness_checks
-from src.ops.recovery import run_restore_drill, run_restore_preflight
+from src.ops.recovery import run_restore_drill, run_restore_execute, run_restore_preflight
 
 router = APIRouter(prefix="/api/system", tags=["system"])
+
+
+class RestoreBackupRequest(BaseModel):
+    confirm_archive_name: str
+    acknowledge_overwrite: bool = False
+    acknowledge_maintenance_mode: bool = False
 
 
 def _config_path_from_runtime() -> Path:
@@ -133,6 +140,7 @@ async def system_health(
     store = None
     latest_event = None
     latest_restore_drill = None
+    latest_restore_execute = None
     try:
         from storage import get_store
 
@@ -140,9 +148,11 @@ async def system_health(
         if store is not None:
             latest_event = store.get_latest_ops_event("backup_maintenance")
             latest_restore_drill = store.get_latest_ops_event("restore_drill")
+            latest_restore_execute = store.get_latest_ops_event("restore_execute")
     except Exception:
         latest_event = None
         latest_restore_drill = None
+        latest_restore_execute = None
 
     try:
         from ops.maintenance import get_maintenance_runner
@@ -159,6 +169,7 @@ async def system_health(
         "maintenance_runner_active": bool(getattr(maintenance_runner, "running", False)),
         "last_backup_maintenance": latest_event,
         "last_restore_drill": latest_restore_drill,
+        "last_restore_execute": latest_restore_execute,
     }
     return result
 
@@ -262,6 +273,30 @@ async def run_system_backup_restore_preflight(
     archive = _resolve_backup_archive(_deployment_root(), archive_name)
     result = await asyncio.to_thread(run_restore_preflight, archive, _deployment_root())
     _record_ops_event("restore_preflight", result)
+    return result
+
+
+@router.post("/backups/{archive_name}/restore")
+async def run_system_backup_restore(
+    archive_name: str,
+    request: RestoreBackupRequest,
+    _: Annotated[AuthUser, require_role("admin")],
+) -> dict:
+    """Restore a local backup archive into the current deployment root after explicit confirmations."""
+    from web.api import _config
+
+    archive = _resolve_backup_archive(_deployment_root(), archive_name)
+    include = tuple(_config.ops.auto_backup_include) if _config is not None else ("config.yaml", "data", "workspace")
+    result = await asyncio.to_thread(
+        run_restore_execute,
+        archive,
+        _deployment_root(),
+        confirm_archive_name=request.confirm_archive_name,
+        acknowledge_overwrite=request.acknowledge_overwrite,
+        acknowledge_maintenance_mode=request.acknowledge_maintenance_mode,
+        safety_include=include,
+    )
+    _record_ops_event("restore_execute", result)
     return result
 
 

@@ -277,6 +277,26 @@ def _run_operational_checks(base_url: str, token: str, checks: list[dict]) -> di
         status=preflight_status,
     )
 
+    restore_status, restore_rejected = _request(
+        "POST",
+        f"{base_url}/api/system/backups/{archive_name}/restore",
+        token=token,
+        body={
+            "confirm_archive_name": "wrong.tar.gz",
+            "acknowledge_overwrite": True,
+            "acknowledge_maintenance_mode": True,
+        },
+    )
+    _append_check(
+        checks,
+        "restore rejects mismatched confirmation",
+        restore_status == 200
+        and isinstance(restore_rejected, dict)
+        and restore_rejected.get("ok") is False
+        and restore_rejected.get("action") == "rejected",
+        status=restore_status,
+    )
+
     drill_status, drill = _request(
         "POST",
         f"{base_url}/api/system/backups/{archive_name}/restore-drill",
@@ -298,7 +318,8 @@ def _run_operational_checks(base_url: str, token: str, checks: list[dict]) -> di
     _append_check(
         checks,
         "system events after restore drill",
-        events_after_status == 200 and {"backup_maintenance", "restore_preflight", "restore_drill"}.issubset(event_types),
+        events_after_status == 200
+        and {"backup_maintenance", "restore_preflight", "restore_execute", "restore_drill"}.issubset(event_types),
         status=events_after_status,
     )
 

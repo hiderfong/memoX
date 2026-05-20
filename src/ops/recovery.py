@@ -7,7 +7,9 @@ from pathlib import Path
 from typing import Any
 
 from src.ops.backup import (
+    DEFAULT_INCLUDE,
     BackupError,
+    create_backup,
     read_backup_metadata,
     restore_backup,
     target_path,
@@ -157,6 +159,128 @@ def run_restore_preflight(archive: str | Path, target: str | Path) -> dict[str, 
             "message": f"Restore preflight failed: {type(exc).__name__}: {exc}",
             "verified": False,
             "safe_without_overwrite": False,
+        }
+
+
+def run_restore_execute(
+    archive: str | Path,
+    target: str | Path,
+    *,
+    confirm_archive_name: str,
+    acknowledge_overwrite: bool,
+    acknowledge_maintenance_mode: bool,
+    safety_include: tuple[str, ...] = DEFAULT_INCLUDE,
+) -> dict[str, Any]:
+    """Restore a backup into a deployment root after explicit safety gates."""
+    archive_path = Path(archive).resolve()
+    target_root = Path(target).resolve()
+    result: dict[str, Any] = {
+        "ok": False,
+        "status": "error",
+        "action": "restore_execute",
+        "archive": str(archive_path),
+        "name": archive_path.name,
+        "target": str(target_root),
+        "writes_performed": False,
+        "requires_maintenance_mode": True,
+        "safety_backup_created": False,
+    }
+
+    if confirm_archive_name != archive_path.name:
+        return {
+            **result,
+            "status": "warning",
+            "action": "rejected",
+            "message": "Restore confirmation did not match the archive name",
+            "requires_confirmation": True,
+        }
+
+    if not acknowledge_maintenance_mode:
+        return {
+            **result,
+            "status": "warning",
+            "action": "rejected",
+            "message": "Restore requires explicit maintenance mode acknowledgement",
+            "requires_confirmation": True,
+        }
+
+    restore_started = False
+    safety_summary: dict[str, Any] | None = None
+
+    try:
+        preflight = run_restore_preflight(archive_path, target_root)
+        if not preflight.get("ok"):
+            return {
+                **result,
+                "message": "Restore preflight failed; restore was not started",
+                "preflight": preflight,
+            }
+
+        if preflight.get("requires_overwrite") and not acknowledge_overwrite:
+            return {
+                **result,
+                "status": "warning",
+                "action": "rejected",
+                "message": "Restore would overwrite existing paths and requires overwrite acknowledgement",
+                "requires_confirmation": True,
+                "preflight": preflight,
+            }
+
+        safety = create_backup(root=target_root, include=safety_include)
+        verified_safety = verify_backup(safety["archive"])
+        safety_summary = {
+            "archive": verified_safety["archive"],
+            "verified": True,
+            "entry_count": len(verified_safety.get("entries", [])),
+            "created_at": verified_safety.get("created_at"),
+        }
+        restore_started = True
+        restored = restore_backup(archive=archive_path, target=target_root, overwrite=True)
+        metadata = read_backup_metadata(archive_path)
+        checks = _critical_path_checks(target_root, metadata)
+        has_errors = any(check["status"] == "error" for check in checks)
+        has_warnings = any(check["status"] == "warning" for check in checks)
+        status = "error" if has_errors else "warning" if has_warnings else "ok"
+
+        return {
+            **result,
+            "ok": not has_errors,
+            "status": status,
+            "action": "restored",
+            "message": "Restore completed" if not has_errors else "Restore completed with errors",
+            "verified": True,
+            "writes_performed": True,
+            "preflight": preflight,
+            "safety_backup_created": True,
+            "safety_backup": safety_summary,
+            "created_at": metadata.get("created_at"),
+            "included": metadata.get("included", []),
+            "missing": metadata.get("missing", []),
+            "skipped": metadata.get("skipped", []),
+            "entry_count": restored["entry_count"],
+            "restored_preview": restored["restored"][:MAX_PREFLIGHT_ITEMS],
+            "truncated": len(restored["restored"]) > MAX_PREFLIGHT_ITEMS,
+            "checks": checks,
+        }
+    except BackupError as exc:
+        return {
+            **result,
+            "message": str(exc),
+            "verified": False,
+            "writes_performed": restore_started,
+            "partial_restore_possible": restore_started,
+            "safety_backup_created": safety_summary is not None,
+            "safety_backup": safety_summary,
+        }
+    except Exception as exc:
+        return {
+            **result,
+            "message": f"Restore failed: {type(exc).__name__}: {exc}",
+            "verified": False,
+            "writes_performed": restore_started,
+            "partial_restore_possible": restore_started,
+            "safety_backup_created": safety_summary is not None,
+            "safety_backup": safety_summary,
         }
 
 

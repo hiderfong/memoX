@@ -338,6 +338,22 @@ def run_operational_checks(
     if not preflight.get("ok") or preflight.get("writes_performed") is not False:
         raise RuntimeError(f"restore preflight failed: {preflight}")
 
+    restore_rejected = checks.record(
+        check_name("restore rejects mismatched confirmation"),
+        client.post(
+            f"{base_url}/api/system/backups/{archive_name}/restore",
+            headers=headers,
+            json={
+                "confirm_archive_name": "wrong.tar.gz",
+                "acknowledge_overwrite": True,
+                "acknowledge_maintenance_mode": True,
+            },
+        ),
+        {200},
+    ).json()
+    if restore_rejected.get("ok") or restore_rejected.get("action") != "rejected":
+        raise RuntimeError(f"restore confirmation guard failed: {restore_rejected}")
+
     drill = checks.record(
         check_name("restore drill"),
         client.post(f"{base_url}/api/system/backups/{archive_name}/restore-drill", headers=headers),
@@ -352,7 +368,7 @@ def run_operational_checks(
         {200},
     ).json()
     event_types = {event.get("event_type") for event in events.get("events", [])}
-    if not {"backup_maintenance", "restore_preflight", "restore_drill"}.issubset(event_types):
+    if not {"backup_maintenance", "restore_preflight", "restore_execute", "restore_drill"}.issubset(event_types):
         raise RuntimeError(f"operational events missing expected types: {events}")
 
     return {

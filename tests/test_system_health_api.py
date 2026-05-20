@@ -114,6 +114,16 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
                 headers={"Authorization": f"Bearer {user_token}"},
             )
             assert preflight_forbidden.status_code == 403
+            restore_forbidden = client.post(
+                "/api/system/backups/memox-backup-missing.tar.gz/restore",
+                headers={"Authorization": f"Bearer {user_token}"},
+                json={
+                    "confirm_archive_name": "memox-backup-missing.tar.gz",
+                    "acknowledge_overwrite": True,
+                    "acknowledge_maintenance_mode": True,
+                },
+            )
+            assert restore_forbidden.status_code == 403
             events_forbidden = client.get("/api/system/events", headers={"Authorization": f"Bearer {user_token}"})
             assert events_forbidden.status_code == 403
 
@@ -147,6 +157,18 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
             assert preflight.status_code == 200
             preflight_payload = preflight.json()
 
+            restore_rejected = client.post(
+                f"/api/system/backups/{backup_name}/restore",
+                headers={"Authorization": f"Bearer {admin_token}"},
+                json={
+                    "confirm_archive_name": "wrong.tar.gz",
+                    "acknowledge_overwrite": True,
+                    "acknowledge_maintenance_mode": True,
+                },
+            )
+            assert restore_rejected.status_code == 200
+            restore_rejected_payload = restore_rejected.json()
+
             drill = client.post(
                 f"/api/system/backups/{backup_name}/restore-drill",
                 headers={"Authorization": f"Bearer {admin_token}"},
@@ -179,6 +201,16 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
                 headers={"Authorization": f"Bearer {admin_token}"},
             )
             assert missing_preflight.status_code == 404
+            missing_restore = client.post(
+                "/api/system/backups/memox-backup-missing.tar.gz/restore",
+                headers={"Authorization": f"Bearer {admin_token}"},
+                json={
+                    "confirm_archive_name": "memox-backup-missing.tar.gz",
+                    "acknowledge_overwrite": True,
+                    "acknowledge_maintenance_mode": True,
+                },
+            )
+            assert missing_restore.status_code == 404
 
             refreshed = client.get("/api/system/health", headers={"Authorization": f"Bearer {admin_token}"})
             assert refreshed.status_code == 200
@@ -221,6 +253,10 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
     assert preflight_payload["requires_overwrite"] is True
     assert preflight_payload["conflict_count"] > 0
     assert preflight_payload["writes_performed"] is False
+    assert restore_rejected_payload["ok"] is False
+    assert restore_rejected_payload["status"] == "warning"
+    assert restore_rejected_payload["action"] == "rejected"
+    assert restore_rejected_payload["writes_performed"] is False
     assert drill_payload["ok"] is True
     assert drill_payload["status"] == "ok"
     assert drill_payload["name"] == Path(manual_payload["archive"]).name
@@ -231,10 +267,12 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
     }
     assert refreshed_payload["ops"]["last_backup_maintenance"]["details"]["forced"] is True
     assert refreshed_payload["ops"]["last_restore_drill"]["details"]["name"] == Path(manual_payload["archive"]).name
-    assert events_payload["count"] >= 3
+    assert refreshed_payload["ops"]["last_restore_execute"]["details"]["action"] == "rejected"
+    assert events_payload["count"] >= 4
     assert {event["event_type"] for event in events_payload["events"]} >= {
         "backup_maintenance",
         "restore_preflight",
+        "restore_execute",
         "restore_drill",
     }
     assert restore_events_payload["count"] == 1

@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, createContext, useContext } from 'react';
 import { Layout, Menu, Typography, Card, Button, Upload, List, Space, Avatar, Input, message, Spin, Tag, Progress, Badge, Drawer, Timeline, Alert, Empty, Tooltip, Form, Divider, Checkbox, Modal, Tabs, Table, Select, Slider, InputNumber, AutoComplete, Switch } from 'antd';
-import { UploadOutlined, FileTextOutlined, RobotOutlined, MessageOutlined, TeamOutlined, SettingOutlined, CloudUploadOutlined, DeleteOutlined, SendOutlined, LoadingOutlined, BulbOutlined, ThunderboltOutlined, ClockCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, InboxOutlined, UserOutlined, LockOutlined, LogoutOutlined, SafetyCertificateOutlined, LinkOutlined, FolderOpenOutlined, MailOutlined, LineChartOutlined, FileSearchOutlined, EyeOutlined, SaveOutlined, DownOutlined, UpOutlined, PlusOutlined, EditOutlined, DownloadOutlined, BgColorsOutlined, ReloadOutlined } from '@ant-design/icons';
+import { UploadOutlined, FileTextOutlined, RobotOutlined, MessageOutlined, TeamOutlined, SettingOutlined, CloudUploadOutlined, DeleteOutlined, SendOutlined, LoadingOutlined, BulbOutlined, ThunderboltOutlined, ClockCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, InboxOutlined, UserOutlined, LockOutlined, LogoutOutlined, SafetyCertificateOutlined, LinkOutlined, FolderOpenOutlined, MailOutlined, LineChartOutlined, FileSearchOutlined, EyeOutlined, SaveOutlined, DownOutlined, UpOutlined, PlusOutlined, EditOutlined, DownloadOutlined, BgColorsOutlined, ReloadOutlined, RollbackOutlined, ExclamationCircleOutlined } from '@ant-design/icons';
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip as RTooltip, Legend, ResponsiveContainer } from 'recharts';
 import { useNavigate, useLocation, Routes, Route, Link, Navigate } from 'react-router-dom';
 import axios from 'axios';
@@ -106,6 +106,7 @@ const statusLabel = (status?: ReadinessStatus) => {
 const opsEventLabel = (eventType?: string) => {
   if (eventType === 'backup_maintenance') return '备份维护';
   if (eventType === 'restore_preflight') return '恢复预检';
+  if (eventType === 'restore_execute') return '真实恢复';
   if (eventType === 'restore_drill') return '恢复演练';
   return eventType || '运维事件';
 };
@@ -235,6 +236,14 @@ const api = {
     axios.post(`${API_BASE}/system/backups/${encodeURIComponent(archiveName)}/verify`),
   runRestorePreflight: (archiveName: string) =>
     axios.post(`${API_BASE}/system/backups/${encodeURIComponent(archiveName)}/restore-preflight`),
+  runRestoreBackup: (
+    archiveName: string,
+    payload: {
+      confirm_archive_name: string;
+      acknowledge_overwrite: boolean;
+      acknowledge_maintenance_mode: boolean;
+    },
+  ) => axios.post(`${API_BASE}/system/backups/${encodeURIComponent(archiveName)}/restore`, payload),
   runRestoreDrill: (archiveName: string) =>
     axios.post(`${API_BASE}/system/backups/${encodeURIComponent(archiveName)}/restore-drill`),
   runBackupMaintenance: (force: boolean = true) =>
@@ -3629,6 +3638,7 @@ const SystemStatusPage: React.FC = () => {
   const [verifyingBackup, setVerifyingBackup] = useState('');
   const [preflightingBackup, setPreflightingBackup] = useState('');
   const [drillingBackup, setDrillingBackup] = useState('');
+  const [restoringBackup, setRestoringBackup] = useState('');
   const [lastUpdated, setLastUpdated] = useState<string>('');
 
   const fetchReport = async () => {
@@ -3741,6 +3751,65 @@ const SystemStatusPage: React.FC = () => {
     }
   };
 
+  const handleRunRestoreBackup = (archiveName: string) => {
+    let confirmation = '';
+    Modal.confirm({
+      title: '执行真实恢复',
+      icon: <ExclamationCircleOutlined />,
+      okText: '确认恢复',
+      cancelText: '取消',
+      okButtonProps: { danger: true },
+      width: 560,
+      content: (
+        <Space direction="vertical" style={{ width: '100%' }} size={12}>
+          <Alert
+            type="warning"
+            showIcon
+            message="恢复会覆盖当前部署中的同名配置、数据和工作区文件。"
+            description="请确认服务已进入维护窗口。系统会在恢复前自动创建并校验一份当前状态的安全备份。"
+          />
+          <Text style={{ wordBreak: 'break-all' }}>
+            输入完整归档名以确认：<Text code>{archiveName}</Text>
+          </Text>
+          <Input
+            placeholder={archiveName}
+            onChange={(event) => {
+              confirmation = event.target.value.trim();
+            }}
+          />
+        </Space>
+      ),
+      onOk: async () => {
+        if (confirmation !== archiveName) {
+          message.error('请输入完整归档名以确认恢复');
+          return Promise.reject(new Error('confirmation mismatch'));
+        }
+        setRestoringBackup(archiveName);
+        try {
+          const res = await api.runRestoreBackup(archiveName, {
+            confirm_archive_name: confirmation,
+            acknowledge_overwrite: true,
+            acknowledge_maintenance_mode: true,
+          });
+          if (res.data?.ok) {
+            message.success('真实恢复已完成');
+          } else if (res.data?.action === 'rejected') {
+            message.warning(res.data?.message || '真实恢复已被安全闸门拒绝');
+          } else {
+            message.error(res.data?.message || '真实恢复失败');
+          }
+          await fetchReport();
+        } catch (err: any) {
+          const detail = err.response?.data?.detail;
+          message.error(typeof detail === 'string' ? detail : '真实恢复失败');
+          throw err;
+        } finally {
+          setRestoringBackup('');
+        }
+      },
+    });
+  };
+
   if (user?.role !== 'admin') {
     return (
       <Alert
@@ -3768,6 +3837,8 @@ const SystemStatusPage: React.FC = () => {
   const restoreDrillEvent = (ops.last_restore_drill || {}) as Record<string, any>;
   const restoreDrillDetails = (restoreDrillEvent.details || {}) as Record<string, any>;
   const restoreDrillChecks = Array.isArray(restoreDrillDetails.checks) ? restoreDrillDetails.checks : [];
+  const restoreExecuteEvent = (ops.last_restore_execute || {}) as Record<string, any>;
+  const restoreExecuteDetails = (restoreExecuteEvent.details || {}) as Record<string, any>;
   const missingDirectories = persistentPaths.missing_directories || [];
   const statusCounts = checks.reduce<Record<string, number>>((acc, check) => {
     acc[check.status] = (acc[check.status] || 0) + 1;
@@ -3856,7 +3927,7 @@ const SystemStatusPage: React.FC = () => {
     {
       title: '操作',
       key: 'action',
-      width: 240,
+      width: 330,
       render: (_: any, item: BackupArchiveSummary) => (
         <Space>
           <Button
@@ -3882,6 +3953,15 @@ const SystemStatusPage: React.FC = () => {
             loading={drillingBackup === item.name}
           >
             演练
+          </Button>
+          <Button
+            size="small"
+            danger
+            icon={<RollbackOutlined />}
+            onClick={() => handleRunRestoreBackup(item.name)}
+            loading={restoringBackup === item.name}
+          >
+            恢复
           </Button>
         </Space>
       ),
@@ -4128,6 +4208,25 @@ const SystemStatusPage: React.FC = () => {
               </>
             ) : (
               <Text type="secondary">暂无恢复演练记录</Text>
+            )}
+            <Divider style={{ margin: '4px 0' }} />
+            <Text strong>最近真实恢复</Text>
+            {restoreExecuteEvent.id ? (
+              <>
+                <Space wrap>
+                  <Tag color={statusTagColor(restoreExecuteEvent.status)}>{statusLabel(restoreExecuteEvent.status)}</Tag>
+                  <Tag>{restoreExecuteDetails.action || restoreExecuteEvent.action || '-'}</Tag>
+                  <Text type="secondary">{restoreExecuteEvent.created_at}</Text>
+                </Space>
+                <Text>{restoreExecuteEvent.message || '-'}</Text>
+                {restoreExecuteDetails.safety_backup?.archive && (
+                  <Text type="secondary" style={{ wordBreak: 'break-all' }}>
+                    安全备份：{restoreExecuteDetails.safety_backup.archive}
+                  </Text>
+                )}
+              </>
+            ) : (
+              <Text type="secondary">暂无真实恢复记录</Text>
             )}
           </Space>
         </Card>

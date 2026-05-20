@@ -58,6 +58,8 @@ def test_backup_artifacts_are_documented_and_ignored() -> None:
     assert "/api/system/backups" in deployment
     assert "/api/system/events" in deployment
     assert "restore-preflight" in deployment
+    assert "/restore" in deployment
+    assert "confirm_archive_name" in deployment
     assert "backup verification" in deployment
     assert "temporary restore drill" in deployment
     assert "ops.auto_backup_enabled" in deployment

@@ -177,6 +177,15 @@ curl -fsS -X POST "http://localhost:8080/api/system/backups/<backup-file>.tar.gz
 curl -fsS -X POST "http://localhost:8080/api/system/maintenance/backup?force=true" -H "Authorization: Bearer <token>"
 ```
 
+Only run a real restore during a maintenance window and after reviewing `restore-preflight`. The API requires the archive name to be typed back exactly, requires overwrite and maintenance acknowledgements, and creates a verified safety backup before writing restored files:
+
+```bash
+curl -fsS -X POST "http://localhost:8080/api/system/backups/<backup-file>.tar.gz/restore" \
+  -H "Authorization: Bearer <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"confirm_archive_name":"<backup-file>.tar.gz","acknowledge_overwrite":true,"acknowledge_maintenance_mode":true}'
+```
+
 ## Deployment Smoke Test
 
 Before changing a real deployment, run the offline Docker smoke test:
@@ -185,7 +194,7 @@ Before changing a real deployment, run the offline Docker smoke test:
 uv run --extra dev python scripts/docker_smoke_test.py
 ```
 
-The script builds the Compose image, starts a temporary container with `embedding_provider: hash`, checks `/api/health`, API docs, OpenAPI, login, `/api/auth/me`, authenticated system health, backup listing, operational events, backup verification, restore preflight, and a temporary restore drill, then shuts the container down. The `hash` embedding provider is deterministic and network-free; it is meant for smoke tests and demos, not production retrieval quality.
+The script builds the Compose image, starts a temporary container with `embedding_provider: hash`, checks `/api/health`, API docs, OpenAPI, login, `/api/auth/me`, authenticated system health, backup listing, operational events, backup verification, restore preflight, true-restore rejection guards, and a temporary restore drill, then shuts the container down. The `hash` embedding provider is deterministic and network-free; it is meant for smoke tests and demos, not production retrieval quality.
 
 For a faster local process smoke test without rebuilding the image, `scripts/smoke_test.py` covers the same operational API path against disposable data.
 
