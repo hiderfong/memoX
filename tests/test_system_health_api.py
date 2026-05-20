@@ -227,6 +227,12 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
             )
             assert restore_events.status_code == 200
             restore_events_payload = restore_events.json()
+            paged_events = client.get(
+                "/api/system/events?status=ok&limit=2&offset=1",
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+            assert paged_events.status_code == 200
+            paged_events_payload = paged_events.json()
 
             missing = client.post(
                 "/api/system/backups/memox-backup-missing.tar.gz/verify",
@@ -336,8 +342,11 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
     assert lifecycle_dry_run_payload["summary"]["core_user_data_deleted"] is False
     assert lifecycle_execute_payload["dry_run"] is False
     assert lifecycle_execute_payload["event_id"]
+    assert lifecycle_execute_payload["actor"]["username"] == "admin"
     assert refreshed_payload["ops"]["last_backup_maintenance"]["details"]["forced"] is True
+    assert refreshed_payload["ops"]["last_backup_maintenance"]["details"]["actor"]["username"] == "admin"
     assert refreshed_payload["ops"]["last_diagnostics_export"]["details"]["filename"].endswith(".zip")
+    assert refreshed_payload["ops"]["last_diagnostics_export"]["details"]["actor"]["username"] == "admin"
     assert refreshed_payload["ops"]["last_diagnostics_export"]["details"]["mirror"]["ok"] is True
     assert refreshed_payload["ops"]["retention"]["ops_event_retention_days"] == 90
     assert refreshed_payload["ops"]["last_lifecycle_cleanup"]["details"]["action"] == "executed"
@@ -346,6 +355,8 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
     assert refreshed_payload["ops"]["last_restore_drill"]["details"]["name"] == Path(manual_payload["archive"]).name
     assert refreshed_payload["ops"]["last_restore_execute"]["details"]["action"] == "rejected"
     assert events_payload["count"] >= 6
+    assert events_payload["total"] >= events_payload["count"]
+    assert events_payload["offset"] == 0
     assert {event["event_type"] for event in events_payload["events"]} >= {
         "backup_maintenance",
         "diagnostics_export",
@@ -356,5 +367,12 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
         "lifecycle_cleanup",
     }
     assert restore_events_payload["count"] == 1
+    assert restore_events_payload["total"] == 1
     assert restore_events_payload["events"][0]["event_type"] == "restore_drill"
     assert restore_events_payload["events"][0]["details"]["name"] == Path(manual_payload["archive"]).name
+    assert restore_events_payload["events"][0]["details"]["actor"]["username"] == "admin"
+    assert paged_events_payload["status"] == "ok"
+    assert paged_events_payload["limit"] == 2
+    assert paged_events_payload["offset"] == 1
+    assert paged_events_payload["total"] >= paged_events_payload["count"]
+    assert all(event["status"] == "ok" for event in paged_events_payload["events"])

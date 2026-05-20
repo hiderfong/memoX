@@ -90,13 +90,26 @@ def _resolve_backup_archive(root: Path, archive_name: str) -> Path:
     return archive
 
 
-def _record_ops_event(event_type: str, result: dict) -> None:
+def _actor_payload(user: AuthUser | None) -> dict[str, str] | None:
+    if user is None:
+        return None
+    return {
+        "username": user.username,
+        "role": user.role,
+        "display_name": user.display_name,
+    }
+
+
+def _record_ops_event(event_type: str, result: dict, actor: AuthUser | None = None) -> None:
     try:
         from storage import get_store
 
         store = get_store()
         if store is None:
             return
+        actor_details = _actor_payload(actor)
+        if actor_details:
+            result["actor"] = actor_details
         event = store.record_ops_event(
             event_type=event_type,
             status=result.get("status", "error"),
@@ -253,7 +266,7 @@ async def list_system_backups(
 @router.get("/diagnostics/export")
 async def export_system_diagnostics(
     request: Request,
-    _: Annotated[AuthUser, require_role("admin")],
+    user: Annotated[AuthUser, require_role("admin")],
 ) -> Response:
     """Export a zip bundle with structured operational diagnostics."""
     from storage import get_store
@@ -292,7 +305,7 @@ async def export_system_diagnostics(
     if mirror_warning:
         details["status"] = "warning"
         details["message"] = f"{details.get('message', 'Diagnostic bundle exported')}; {mirror['message']}"
-    _record_ops_event("diagnostics_export", details)
+    _record_ops_event("diagnostics_export", details, user)
     return Response(
         content=bundle,
         media_type="application/zip",
@@ -304,20 +317,31 @@ async def export_system_diagnostics(
 async def list_system_events(
     _: Annotated[AuthUser, require_role("admin")],
     event_type: str | None = Query(default=None),
+    status: str | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
 ) -> dict:
     """Return recent operational events for administrators."""
     try:
         from storage import get_store
 
         store = get_store()
-        events = store.list_ops_events(event_type=event_type, limit=limit) if store is not None else []
+        if store is not None:
+            events = store.list_ops_events(event_type=event_type, status=status, limit=limit, offset=offset)
+            total = store.count_ops_events(event_type=event_type, status=status)
+        else:
+            events = []
+            total = 0
     except Exception:
         events = []
+        total = 0
     return {
         "event_type": event_type,
+        "status": status,
         "limit": limit,
+        "offset": offset,
         "count": len(events),
+        "total": total,
         "events": events,
     }
 
@@ -366,24 +390,24 @@ async def verify_system_backup(
 @router.post("/backups/{archive_name}/restore-drill")
 async def run_system_backup_restore_drill(
     archive_name: str,
-    _: Annotated[AuthUser, require_role("admin")],
+    user: Annotated[AuthUser, require_role("admin")],
 ) -> dict:
     """Restore a local backup archive into a disposable directory and check key paths."""
     archive = _resolve_backup_archive(_deployment_root(), archive_name)
     result = await asyncio.to_thread(run_restore_drill, archive)
-    _record_ops_event("restore_drill", result)
+    _record_ops_event("restore_drill", result, user)
     return result
 
 
 @router.post("/backups/{archive_name}/restore-preflight")
 async def run_system_backup_restore_preflight(
     archive_name: str,
-    _: Annotated[AuthUser, require_role("admin")],
+    user: Annotated[AuthUser, require_role("admin")],
 ) -> dict:
     """Analyze a restore against the current deployment root without writing files."""
     archive = _resolve_backup_archive(_deployment_root(), archive_name)
     result = await asyncio.to_thread(run_restore_preflight, archive, _deployment_root())
-    _record_ops_event("restore_preflight", result)
+    _record_ops_event("restore_preflight", result, user)
     return result
 
 
@@ -391,7 +415,7 @@ async def run_system_backup_restore_preflight(
 async def run_system_backup_restore(
     archive_name: str,
     request: RestoreBackupRequest,
-    _: Annotated[AuthUser, require_role("admin")],
+    user: Annotated[AuthUser, require_role("admin")],
 ) -> dict:
     """Restore a local backup archive into the current deployment root after explicit confirmations."""
     from web.api import _config
@@ -407,24 +431,24 @@ async def run_system_backup_restore(
         acknowledge_maintenance_mode=request.acknowledge_maintenance_mode,
         safety_include=include,
     )
-    _record_ops_event("restore_execute", result)
+    _record_ops_event("restore_execute", result, user)
     return result
 
 
 @router.post("/indexes/repair")
 async def run_system_index_repair(
-    _: Annotated[AuthUser, require_role("admin")],
+    user: Annotated[AuthUser, require_role("admin")],
     collection: str = Query(default="documents", min_length=1, max_length=64),
 ) -> dict:
     """Repair disk-backed Chroma/BM25/manifest consistency for the configured collection."""
     result = await asyncio.to_thread(run_index_repair, _config_path_from_runtime().resolve(), collection)
-    _record_ops_event("index_repair", result)
+    _record_ops_event("index_repair", result, user)
     return result
 
 
 @router.post("/maintenance/backup")
 async def run_backup_maintenance_now(
-    _: Annotated[AuthUser, require_role("admin")],
+    user: Annotated[AuthUser, require_role("admin")],
     force: bool = Query(default=True),
 ) -> dict:
     """Run backup maintenance on demand for administrators."""
@@ -434,7 +458,7 @@ async def run_backup_maintenance_now(
 
     runner = get_maintenance_runner()
     if runner is not None:
-        return await runner.run_once(force=force)
+        return await runner.run_once(force=force, actor=_actor_payload(user))
 
     config_path = _config_path_from_runtime().resolve()
     result = await asyncio.to_thread(
@@ -446,13 +470,13 @@ async def run_backup_maintenance_now(
         force=force,
         archive_mirror_dir=_config.ops.archive_mirror_dir,
     )
-    record_maintenance_event(get_store(), result)
+    record_maintenance_event(get_store(), result, actor=_actor_payload(user))
     return result
 
 
 @router.post("/maintenance/lifecycle")
 async def run_lifecycle_cleanup_now(
-    _: Annotated[AuthUser, require_role("admin")],
+    user: Annotated[AuthUser, require_role("admin")],
     dry_run: bool = Query(default=True),
 ) -> dict:
     """Plan or execute conservative lifecycle cleanup for operational data."""
@@ -468,5 +492,5 @@ async def run_lifecycle_cleanup_now(
         dry_run=dry_run,
     )
     if not dry_run:
-        _record_ops_event("lifecycle_cleanup", result)
+        _record_ops_event("lifecycle_cleanup", result, user)
     return result

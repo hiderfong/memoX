@@ -247,6 +247,21 @@ def test_ops_event_record_and_latest(tmp_path):
     events = store.list_ops_events("backup_maintenance")
     assert [event["message"] for event in events] == ["backup failed", "created backup"]
     assert events[0]["details"]["reason"] == "disk full"
+    store.record_ops_event(
+        event_type="restore_drill",
+        status="ok",
+        action="verified",
+        message="restore drill passed",
+        details={"name": "memox-backup-test.tar.gz"},
+    )
+    assert store.count_ops_events() == 3
+    assert store.count_ops_events(event_type="backup_maintenance", status="ok") == 1
+    assert [event["event_type"] for event in store.list_ops_events(limit=2)] == [
+        "restore_drill",
+        "backup_maintenance",
+    ]
+    assert store.list_ops_events(limit=1, offset=1)[0]["message"] == "backup failed"
+    assert store.list_ops_events(event_type="backup_maintenance", status="error")[0]["message"] == "backup failed"
     store.close()
 
 

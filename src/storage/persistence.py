@@ -739,14 +739,44 @@ class PersistenceStore:
         row = self._conn.execute("SELECT * FROM ops_events WHERE id=?", (cursor.lastrowid,)).fetchone()
         return self._ops_event_row_to_dict(row)
 
-    def list_ops_events(self, event_type: str | None = None, limit: int = 20) -> list[dict]:
-        query = "SELECT * FROM ops_events"
+    def _ops_event_where_clause(
+        self,
+        *,
+        event_type: str | None = None,
+        status: str | None = None,
+    ) -> tuple[str, list]:
+        filters = []
         params: list = []
         if event_type:
-            query += " WHERE event_type=?"
+            filters.append("event_type=?")
             params.append(event_type)
+        if status:
+            filters.append("status=?")
+            params.append(status)
+        if not filters:
+            return "", params
+        return " WHERE " + " AND ".join(filters), params
+
+    def count_ops_events(self, event_type: str | None = None, status: str | None = None) -> int:
+        where, params = self._ops_event_where_clause(event_type=event_type, status=status)
+        row = self._conn.execute(f"SELECT COUNT(*) FROM ops_events{where}", params).fetchone()
+        return int(row[0]) if row else 0
+
+    def list_ops_events(
+        self,
+        event_type: str | None = None,
+        limit: int = 20,
+        offset: int = 0,
+        status: str | None = None,
+    ) -> list[dict]:
+        query = "SELECT * FROM ops_events"
+        where, params = self._ops_event_where_clause(event_type=event_type, status=status)
+        query += where
         query += " ORDER BY created_at DESC, id DESC LIMIT ?"
         params.append(limit)
+        if offset > 0:
+            query += " OFFSET ?"
+            params.append(offset)
         rows = self._conn.execute(query, params).fetchall()
         return [self._ops_event_row_to_dict(row) for row in rows]
 

@@ -82,6 +82,16 @@ interface OpsEvent {
   created_at: string;
 }
 
+interface OpsEventsResponse {
+  event_type?: string | null;
+  status?: string | null;
+  limit: number;
+  offset: number;
+  count: number;
+  total: number;
+  events: OpsEvent[];
+}
+
 interface LifecycleCleanupResult {
   ok: boolean;
   status: ReadinessStatus;
@@ -158,6 +168,27 @@ const opsEventLabel = (eventType?: string) => {
   if (eventType === 'restore_drill') return '恢复演练';
   if (eventType === 'lifecycle_cleanup') return '生命周期清理';
   return eventType || '运维事件';
+};
+
+const opsEventTypeOptions = [
+  'backup_maintenance',
+  'diagnostics_export',
+  'index_repair',
+  'restore_preflight',
+  'restore_execute',
+  'restore_drill',
+  'lifecycle_cleanup',
+];
+
+const opsEventStatusOptions: ReadinessStatus[] = ['ok', 'warning', 'error'];
+
+const opsEventActorLabel = (event: OpsEvent) => {
+  const actor = event.details?.actor;
+  if (!actor) return '-';
+  if (actor.display_name && actor.username && actor.display_name !== actor.username) {
+    return `${actor.display_name} (${actor.username})`;
+  }
+  return actor.username || actor.display_name || '-';
 };
 
 const formatBytes = (bytes?: number) => {
@@ -277,9 +308,14 @@ const api = {
   health: () => axios.get(`${API_BASE}/health`),
   systemHealth: () => axios.get<SystemHealthReport>(`${API_BASE}/system/health`),
   listBackups: () => axios.get<{ backups: BackupArchiveSummary[] }>(`${API_BASE}/system/backups`),
-  listOpsEvents: (limit: number = 12, eventType?: string) =>
-    axios.get<{ events: OpsEvent[] }>(`${API_BASE}/system/events`, {
-      params: { limit, event_type: eventType || undefined },
+  listOpsEvents: (options: { limit?: number; offset?: number; eventType?: string; status?: string } = {}) =>
+    axios.get<OpsEventsResponse>(`${API_BASE}/system/events`, {
+      params: {
+        limit: options.limit ?? 12,
+        offset: options.offset ?? 0,
+        event_type: options.eventType || undefined,
+        status: options.status || undefined,
+      },
     }),
   verifyBackup: (archiveName: string) =>
     axios.post(`${API_BASE}/system/backups/${encodeURIComponent(archiveName)}/verify`),
@@ -3684,6 +3720,12 @@ const SystemStatusPage: React.FC = () => {
   const [report, setReport] = useState<SystemHealthReport | null>(null);
   const [backups, setBackups] = useState<BackupArchiveSummary[]>([]);
   const [opsEvents, setOpsEvents] = useState<OpsEvent[]>([]);
+  const [opsEventsTotal, setOpsEventsTotal] = useState(0);
+  const [opsEventsPage, setOpsEventsPage] = useState(1);
+  const [opsEventsPageSize, setOpsEventsPageSize] = useState(8);
+  const [opsEventTypeFilter, setOpsEventTypeFilter] = useState<string | undefined>();
+  const [opsEventStatusFilter, setOpsEventStatusFilter] = useState<string | undefined>();
+  const [selectedOpsEvent, setSelectedOpsEvent] = useState<OpsEvent | null>(null);
   const [loading, setLoading] = useState(true);
   const [backupsLoading, setBackupsLoading] = useState(true);
   const [eventsLoading, setEventsLoading] = useState(true);
@@ -3699,6 +3741,32 @@ const SystemStatusPage: React.FC = () => {
   const [restoringBackup, setRestoringBackup] = useState('');
   const [lastUpdated, setLastUpdated] = useState<string>('');
 
+  const fetchOpsEvents = async (
+    page: number = opsEventsPage,
+    pageSize: number = opsEventsPageSize,
+    eventType: string | undefined = opsEventTypeFilter,
+    status: string | undefined = opsEventStatusFilter,
+  ) => {
+    setEventsLoading(true);
+    try {
+      const res = await api.listOpsEvents({
+        limit: pageSize,
+        offset: (page - 1) * pageSize,
+        eventType,
+        status,
+      });
+      setOpsEvents(res.data?.events || []);
+      setOpsEventsTotal(res.data?.total ?? res.data?.count ?? 0);
+      setOpsEventsPage(page);
+      setOpsEventsPageSize(pageSize);
+    } catch (err: any) {
+      const detail = err.response?.data?.detail;
+      message.error(typeof detail === 'string' ? detail : '获取运维事件失败');
+    } finally {
+      setEventsLoading(false);
+    }
+  };
+
   const fetchReport = async () => {
     setLoading(true);
     setBackupsLoading(true);
@@ -3707,11 +3775,17 @@ const SystemStatusPage: React.FC = () => {
       const [healthRes, backupsRes, eventsRes] = await Promise.all([
         api.systemHealth(),
         api.listBackups(),
-        api.listOpsEvents(12),
+        api.listOpsEvents({
+          limit: opsEventsPageSize,
+          offset: (opsEventsPage - 1) * opsEventsPageSize,
+          eventType: opsEventTypeFilter,
+          status: opsEventStatusFilter,
+        }),
       ]);
       setReport(healthRes.data);
       setBackups(backupsRes.data?.backups || []);
       setOpsEvents(eventsRes.data?.events || []);
+      setOpsEventsTotal(eventsRes.data?.total ?? eventsRes.data?.count ?? 0);
       setLastUpdated(dayjs().format('YYYY-MM-DD HH:mm:ss'));
     } catch (err: any) {
       const detail = err.response?.data?.detail;
@@ -3814,6 +3888,28 @@ const SystemStatusPage: React.FC = () => {
         }
       },
     });
+  };
+
+  const handleOpsEventTypeFilterChange = (value?: string) => {
+    setOpsEventTypeFilter(value);
+    fetchOpsEvents(1, opsEventsPageSize, value, opsEventStatusFilter);
+  };
+
+  const handleOpsEventStatusFilterChange = (value?: string) => {
+    setOpsEventStatusFilter(value);
+    fetchOpsEvents(1, opsEventsPageSize, opsEventTypeFilter, value);
+  };
+
+  const handleOpsEventTableChange = (pagination: any) => {
+    const nextPage = pagination.current || 1;
+    const nextPageSize = pagination.pageSize || opsEventsPageSize;
+    fetchOpsEvents(nextPage, nextPageSize, opsEventTypeFilter, opsEventStatusFilter);
+  };
+
+  const handleResetOpsEventFilters = () => {
+    setOpsEventTypeFilter(undefined);
+    setOpsEventStatusFilter(undefined);
+    fetchOpsEvents(1, opsEventsPageSize, undefined, undefined);
   };
 
   const handleRepairIndexes = () => {
@@ -4191,6 +4287,12 @@ const SystemStatusPage: React.FC = () => {
       render: (createdAt: string) => <Text type="secondary">{createdAt || '-'}</Text>,
     },
     {
+      title: '操作者',
+      key: 'actor',
+      width: 140,
+      render: (_: any, item: OpsEvent) => <Text>{opsEventActorLabel(item)}</Text>,
+    },
+    {
       title: '说明',
       dataIndex: 'message',
       key: 'message',
@@ -4203,6 +4305,16 @@ const SystemStatusPage: React.FC = () => {
           </Space>
         );
       },
+    },
+    {
+      title: '详情',
+      key: 'details',
+      width: 88,
+      render: (_: any, item: OpsEvent) => (
+        <Button size="small" icon={<EyeOutlined />} onClick={() => setSelectedOpsEvent(item)}>
+          查看
+        </Button>
+      ),
     },
   ];
 
@@ -4596,15 +4708,61 @@ const SystemStatusPage: React.FC = () => {
           )}
         </Card>
 
-        <Card title="运维事件" loading={eventsLoading}>
+        <Card
+          title="运维事件"
+          loading={eventsLoading}
+          extra={(
+            <Button size="small" icon={<ReloadOutlined />} onClick={() => fetchOpsEvents()}>
+              刷新
+            </Button>
+          )}
+        >
+          <Space
+            wrap
+            direction={isMobile ? 'vertical' : 'horizontal'}
+            style={{ width: '100%', marginBottom: 12 }}
+          >
+            <Select
+              allowClear
+              placeholder="事件类型"
+              value={opsEventTypeFilter}
+              onChange={handleOpsEventTypeFilterChange}
+              style={{ width: isMobile ? '100%' : 180 }}
+            >
+              {opsEventTypeOptions.map(eventType => (
+                <Select.Option key={eventType} value={eventType}>{opsEventLabel(eventType)}</Select.Option>
+              ))}
+            </Select>
+            <Select
+              allowClear
+              placeholder="状态"
+              value={opsEventStatusFilter}
+              onChange={handleOpsEventStatusFilterChange}
+              style={{ width: isMobile ? '100%' : 130 }}
+            >
+              {opsEventStatusOptions.map(status => (
+                <Select.Option key={status} value={status}>{statusLabel(status)}</Select.Option>
+              ))}
+            </Select>
+            <Button onClick={handleResetOpsEventFilters}>重置</Button>
+          </Space>
           {opsEvents.length > 0 ? (
             <Table
               size="small"
               rowKey="id"
               dataSource={opsEvents}
               columns={eventColumns}
-              pagination={{ pageSize: 6, size: 'small' }}
-              scroll={{ x: 860 }}
+              pagination={{
+                current: opsEventsPage,
+                pageSize: opsEventsPageSize,
+                total: opsEventsTotal,
+                size: 'small',
+                showSizeChanger: true,
+                pageSizeOptions: ['8', '20', '50'],
+                showTotal: total => `共 ${total} 条`,
+              }}
+              onChange={handleOpsEventTableChange}
+              scroll={{ x: 1080 }}
             />
           ) : (
             <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无运维事件" />
@@ -4620,6 +4778,41 @@ const SystemStatusPage: React.FC = () => {
           </Space>
         </Card>
       </div>
+      <Drawer
+        title="运维事件详情"
+        open={!!selectedOpsEvent}
+        onClose={() => setSelectedOpsEvent(null)}
+        width={isMobile ? '100%' : 620}
+      >
+        {selectedOpsEvent && (
+          <Space direction="vertical" size={12} style={{ width: '100%' }}>
+            <Space wrap>
+              <Tag>{opsEventLabel(selectedOpsEvent.event_type)}</Tag>
+              <Tag color={statusTagColor(selectedOpsEvent.status)}>{statusLabel(selectedOpsEvent.status)}</Tag>
+              <Tag>{selectedOpsEvent.action || selectedOpsEvent.details?.action || '-'}</Tag>
+            </Space>
+            <Text><Text strong>ID:</Text> {selectedOpsEvent.id}</Text>
+            <Text><Text strong>时间:</Text> {selectedOpsEvent.created_at || '-'}</Text>
+            <Text><Text strong>操作者:</Text> {opsEventActorLabel(selectedOpsEvent)}</Text>
+            <Text><Text strong>说明:</Text> {selectedOpsEvent.message || '-'}</Text>
+            <Divider style={{ margin: '4px 0' }} />
+            <Text strong>原始详情</Text>
+            <pre style={{
+              margin: 0,
+              padding: 12,
+              background: '#f7f8fa',
+              border: '1px solid #edf0f5',
+              borderRadius: 6,
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+              maxHeight: '55vh',
+              overflow: 'auto',
+            }}>
+              {JSON.stringify(selectedOpsEvent.details || {}, null, 2)}
+            </pre>
+          </Space>
+        )}
+      </Drawer>
     </div>
   );
 };

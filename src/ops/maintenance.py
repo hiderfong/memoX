@@ -112,10 +112,12 @@ def run_backup_maintenance(
         }
 
 
-def record_maintenance_event(store: Any | None, result: dict[str, Any]) -> None:
+def record_maintenance_event(store: Any | None, result: dict[str, Any], actor: dict[str, str] | None = None) -> None:
     if store is None:
         return
     try:
+        if actor:
+            result["actor"] = actor
         event = store.record_ops_event(
             event_type="backup_maintenance",
             status=result.get("status", "error"),
@@ -168,10 +170,10 @@ class OpsMaintenanceRunner:
     def running(self) -> bool:
         return self._task is not None and not self._task.done()
 
-    def _record_event(self, result: dict[str, Any]) -> None:
-        record_maintenance_event(self._store, result)
+    def _record_event(self, result: dict[str, Any], actor: dict[str, str] | None = None) -> None:
+        record_maintenance_event(self._store, result, actor=actor)
 
-    async def run_once(self, *, force: bool = False) -> dict[str, Any]:
+    async def run_once(self, *, force: bool = False, actor: dict[str, str] | None = None) -> dict[str, Any]:
         result = await asyncio.to_thread(
             run_backup_maintenance,
             root=self._root,
@@ -181,7 +183,7 @@ class OpsMaintenanceRunner:
             force=force,
             archive_mirror_dir=self._archive_mirror_dir,
         )
-        self._record_event(result)
+        self._record_event(result, actor=actor)
         self.last_result = result
         if result.get("ok"):
             logger.info(f"[Ops] 备份维护完成: {result.get('message')}")
