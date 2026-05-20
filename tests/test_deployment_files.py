@@ -63,6 +63,7 @@ def test_backup_artifacts_are_documented_and_ignored() -> None:
     assert "/api/system/events" in deployment
     assert "/api/system/diagnostics/export" in deployment
     assert "/api/system/indexes/repair" in deployment
+    assert "SQLite schema version/migration records" in deployment
     assert "redacted config" in deployment
     assert "redacted tails" in deployment
     assert "bearer tokens" in deployment

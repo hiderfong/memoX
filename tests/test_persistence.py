@@ -1,10 +1,14 @@
 """SQLite 持久化存储测试"""
 import os
+import sqlite3
 import sys
+
+import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-from storage.persistence import PersistenceStore
+from src.ops.readiness import _sqlite_quick_check
+from storage.persistence import SCHEMA_VERSION, PersistenceStore, SchemaMigrationError
 
 
 def test_session_create_and_list(tmp_path):
@@ -114,6 +118,9 @@ def test_update_session_title(tmp_path):
 def test_runtime_schema_matches_memory_and_summary_migrations(tmp_path):
     store = PersistenceStore(tmp_path / "test.db")
 
+    assert store.schema_version() == SCHEMA_VERSION
+    assert [item["version"] for item in store.applied_migrations()] == [1, 2, 3]
+
     session_cols = {
         r["name"] for r in store._conn.execute("PRAGMA table_info(chat_sessions)").fetchall()
     }
@@ -143,6 +150,78 @@ def test_runtime_schema_matches_memory_and_summary_migrations(tmp_path):
         ("Rust",),
     ).fetchall()) == 1
     store.close()
+
+
+def test_legacy_database_is_migrated_without_losing_sessions(tmp_path):
+    db_path = tmp_path / "legacy.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("""
+        CREATE TABLE chat_sessions (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    """)
+    conn.execute(
+        "INSERT INTO chat_sessions (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
+        ("legacy-session", "Legacy", "2024-01-01T00:00:00", "2024-01-01T00:00:00"),
+    )
+    conn.commit()
+    conn.close()
+
+    store = PersistenceStore(db_path)
+
+    cols = {r["name"] for r in store._conn.execute("PRAGMA table_info(chat_sessions)").fetchall()}
+    row = store._conn.execute("SELECT id, title, archived, summary FROM chat_sessions").fetchone()
+    assert {"archived", "summary"}.issubset(cols)
+    assert dict(row) == {
+        "id": "legacy-session",
+        "title": "Legacy",
+        "archived": 0,
+        "summary": "",
+    }
+    assert store.schema_version() == SCHEMA_VERSION
+    assert [item["version"] for item in store.applied_migrations()] == [1, 2, 3]
+    store.close()
+
+    reopened = PersistenceStore(db_path)
+    assert [item["version"] for item in reopened.applied_migrations()] == [1, 2, 3]
+    reopened.close()
+
+
+def test_sqlite_health_reports_schema_version_and_migrations(tmp_path):
+    db_path = tmp_path / "test.db"
+    store = PersistenceStore(db_path)
+    store.close()
+
+    result = _sqlite_quick_check(db_path)
+
+    assert result["status"] == "ok"
+    assert result["schema_version"] == SCHEMA_VERSION
+    assert [item["version"] for item in result["migrations"]] == [1, 2, 3]
+
+
+def test_future_database_schema_is_rejected(tmp_path):
+    db_path = tmp_path / "future.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA user_version = 999")
+    conn.execute("""
+        CREATE TABLE schema_migrations (
+            version INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            applied_at TEXT NOT NULL
+        )
+    """)
+    conn.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+        (999, "future_schema", "2030-01-01T00:00:00"),
+    )
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(SchemaMigrationError, match="newer MemoX schema"):
+        PersistenceStore(db_path)
 
 
 def test_ops_event_record_and_latest(tmp_path):

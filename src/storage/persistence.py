@@ -7,6 +7,12 @@ from pathlib import Path
 
 from loguru import logger
 
+SCHEMA_VERSION = 3
+
+
+class SchemaMigrationError(RuntimeError):
+    """Raised when a SQLite database cannot be safely migrated."""
+
 
 class PersistenceStore:
     """SQLite 持久化存储"""
@@ -16,11 +22,40 @@ class PersistenceStore:
         Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        self._guard_supported_schema_version()
         self._init_tables()
+
+    def _guard_supported_schema_version(self) -> None:
+        row = self._conn.execute("PRAGMA user_version").fetchone()
+        user_version = int(row[0]) if row else 0
+        future_versions: list[int] = []
+        has_migrations = self._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'"
+        ).fetchone()
+        if has_migrations:
+            future_versions = [
+                int(r["version"])
+                for r in self._conn.execute(
+                    "SELECT version FROM schema_migrations WHERE version > ? ORDER BY version",
+                    (SCHEMA_VERSION,),
+                ).fetchall()
+            ]
+        if user_version > SCHEMA_VERSION or future_versions:
+            future_label = ", ".join(str(v) for v in future_versions) or str(user_version)
+            raise SchemaMigrationError(
+                "SQLite database was created by a newer MemoX schema "
+                f"(current={SCHEMA_VERSION}, found={future_label}); upgrade MemoX before opening it."
+            )
 
     def _init_tables(self) -> None:
         """初始化数据库表"""
         self._conn.executescript("""
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                applied_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS chat_sessions (
                 id TEXT PRIMARY KEY,
                 title TEXT NOT NULL DEFAULT '',
@@ -121,34 +156,77 @@ class PersistenceStore:
             CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(category);
             CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at DESC);
         """)
-        # 旧库迁移：为 chat_sessions 补齐 archived 列
-        cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(chat_sessions)").fetchall()}
+        self._run_migrations()
+        self._conn.commit()
+
+    def _column_names(self, table: str) -> set[str]:
+        return {r["name"] for r in self._conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+    def _run_migrations(self) -> None:
+        migrations = [
+            (1, "chat_sessions_archive_summary", self._migration_chat_sessions_archive_summary),
+            (2, "memories_table", self._migration_memories_table),
+            (3, "memories_fts", self._migration_memories_fts),
+        ]
+        applied = {
+            row["version"]
+            for row in self._conn.execute("SELECT version FROM schema_migrations").fetchall()
+        }
+        for version, name, migration in migrations:
+            if version in applied:
+                continue
+            try:
+                migration()
+                self._conn.execute(
+                    "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+                    (version, name, datetime.now().isoformat()),
+                )
+                self._conn.execute(f"PRAGMA user_version = {version}")
+                self._conn.commit()
+                logger.info(f"[PersistenceStore] Applied schema migration {version}: {name}")
+            except Exception:
+                self._conn.rollback()
+                raise
+        self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+    def _migration_chat_sessions_archive_summary(self) -> None:
+        cols = self._column_names("chat_sessions")
         if "archived" not in cols:
             self._conn.execute("ALTER TABLE chat_sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
         if "summary" not in cols:
             self._conn.execute("ALTER TABLE chat_sessions ADD COLUMN summary TEXT DEFAULT ''")
-        # 旧库迁移：创建 memories 表（如不存在）
-        tables = {r["name"] for r in self._conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-        if "memories" not in tables:
-            self._conn.execute("""
-                CREATE TABLE memories (
-                    id TEXT PRIMARY KEY,
-                    user_id TEXT,
-                    content TEXT NOT NULL,
-                    category TEXT NOT NULL DEFAULT 'general',
-                    importance INTEGER NOT NULL DEFAULT 3,
-                    source_session_id TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    last_accessed_at TEXT NOT NULL,
-                    metadata TEXT DEFAULT '{}'
-                )
-            """)
-            self._conn.execute("CREATE INDEX idx_memories_user ON memories(user_id)")
-            self._conn.execute("CREATE INDEX idx_memories_category ON memories(category)")
-            self._conn.execute("CREATE INDEX idx_memories_created ON memories(created_at DESC)")
+
+    def _migration_memories_table(self) -> None:
+        self._conn.executescript("""
+            CREATE TABLE IF NOT EXISTS memories (
+                id TEXT PRIMARY KEY,
+                user_id TEXT,
+                content TEXT NOT NULL,
+                category TEXT NOT NULL DEFAULT 'general',
+                importance INTEGER NOT NULL DEFAULT 3,
+                source_session_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_accessed_at TEXT NOT NULL,
+                metadata TEXT DEFAULT '{}'
+            );
+            CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id);
+            CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(category);
+            CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at DESC);
+        """)
+
+    def _migration_memories_fts(self) -> None:
         self._ensure_memories_fts()
-        self._conn.commit()
+
+    def schema_version(self) -> int:
+        row = self._conn.execute("PRAGMA user_version").fetchone()
+        return int(row[0]) if row else 0
+
+    def applied_migrations(self) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT version, name, applied_at FROM schema_migrations ORDER BY version"
+        ).fetchall()
+        return [dict(row) for row in rows]
 
     def _ensure_memories_fts(self) -> None:
         """Keep runtime-created memory schema aligned with Alembic's FTS setup."""

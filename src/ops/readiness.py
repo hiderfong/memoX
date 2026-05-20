@@ -205,6 +205,19 @@ def _sqlite_quick_check(path: Path) -> dict[str, Any]:
         uri = f"file:{path}?mode=ro"
         with sqlite3.connect(uri, uri=True) as conn:
             row = conn.execute("PRAGMA quick_check").fetchone()
+            version_row = conn.execute("PRAGMA user_version").fetchone()
+            schema_version = int(version_row[0]) if version_row else 0
+            migration_rows: list[dict[str, Any]] = []
+            has_migrations = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'"
+            ).fetchone()
+            if has_migrations:
+                migration_rows = [
+                    {"version": r[0], "name": r[1], "applied_at": r[2]}
+                    for r in conn.execute(
+                        "SELECT version, name, applied_at FROM schema_migrations ORDER BY version"
+                    ).fetchall()
+                ]
         result = row[0] if row else "empty"
     except sqlite3.DatabaseError as exc:
         return {"path": str(path), "exists": True, "status": "error", "error": str(exc)}
@@ -213,6 +226,8 @@ def _sqlite_quick_check(path: Path) -> dict[str, Any]:
         "exists": True,
         "status": "ok" if result == "ok" else "error",
         "quick_check": result,
+        "schema_version": schema_version,
+        "migrations": migration_rows,
     }
 
 
