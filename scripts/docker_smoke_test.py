@@ -108,7 +108,14 @@ image_to_video:
     )
 
 
-def _write_compose_file(path: Path, config_path: Path, data_dir: Path, workspace_dir: Path, port: int) -> None:
+def _write_compose_file(
+    path: Path,
+    config_path: Path,
+    data_dir: Path,
+    workspace_dir: Path,
+    backups_dir: Path,
+    port: int,
+) -> None:
     path.write_text(
         f"""services:
   memox:
@@ -126,6 +133,7 @@ def _write_compose_file(path: Path, config_path: Path, data_dir: Path, workspace
       - {_json_string(f"{config_path}:/app/config.yaml:ro")}
       - {_json_string(f"{data_dir}:/app/data")}
       - {_json_string(f"{workspace_dir}:/app/workspace")}
+      - {_json_string(f"{backups_dir}:/app/backups")}
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/api/health"]
       interval: 30s
@@ -187,6 +195,105 @@ def _wait_for_health(base_url: str, timeout: float) -> dict:
     raise RuntimeError(f"Timed out waiting for container health: {last_error}")
 
 
+def _append_check(checks: list[dict], name: str, ok: bool, **extra: object) -> None:
+    checks.append({"name": name, "ok": ok, **extra})
+
+
+def _run_operational_checks(base_url: str, token: str, checks: list[dict]) -> dict:
+    system_status, system_health = _request("GET", f"{base_url}/api/system/health", token=token)
+    _append_check(
+        checks,
+        "system health",
+        system_status == 200 and isinstance(system_health, dict) and system_health.get("status") != "error",
+        status=system_status,
+    )
+
+    backups_status, backups = _request("GET", f"{base_url}/api/system/backups", token=token)
+    _append_check(
+        checks,
+        "system backups",
+        backups_status == 200 and isinstance(backups, dict) and isinstance(backups.get("backups"), list),
+        status=backups_status,
+    )
+
+    events_status, events = _request("GET", f"{base_url}/api/system/events?limit=5", token=token)
+    _append_check(
+        checks,
+        "system events",
+        events_status == 200 and isinstance(events, dict) and isinstance(events.get("events"), list),
+        status=events_status,
+    )
+
+    maintenance_status, maintenance = _request(
+        "POST",
+        f"{base_url}/api/system/maintenance/backup?force=true",
+        token=token,
+    )
+    archive_name = Path(str(maintenance.get("archive") or "")).name if isinstance(maintenance, dict) else ""
+    _append_check(
+        checks,
+        "run backup maintenance",
+        maintenance_status == 200 and isinstance(maintenance, dict) and maintenance.get("ok") is True and bool(archive_name),
+        status=maintenance_status,
+    )
+
+    backups_after_status, backups_after = _request("GET", f"{base_url}/api/system/backups", token=token)
+    backup_names = [
+        backup.get("name")
+        for backup in backups_after.get("backups", [])
+        if isinstance(backup, dict)
+    ] if isinstance(backups_after, dict) else []
+    _append_check(
+        checks,
+        "system backups after maintenance",
+        backups_after_status == 200 and archive_name in backup_names,
+        status=backups_after_status,
+    )
+
+    verify_status, verified = _request(
+        "POST",
+        f"{base_url}/api/system/backups/{archive_name}/verify",
+        token=token,
+    )
+    _append_check(
+        checks,
+        "verify backup archive",
+        verify_status == 200 and isinstance(verified, dict) and verified.get("ok") is True and verified.get("verified") is True,
+        status=verify_status,
+    )
+
+    drill_status, drill = _request(
+        "POST",
+        f"{base_url}/api/system/backups/{archive_name}/restore-drill",
+        token=token,
+    )
+    _append_check(
+        checks,
+        "restore drill",
+        drill_status == 200 and isinstance(drill, dict) and drill.get("ok") is True,
+        status=drill_status,
+    )
+
+    events_after_status, events_after = _request("GET", f"{base_url}/api/system/events?limit=10", token=token)
+    event_types = {
+        event.get("event_type")
+        for event in events_after.get("events", [])
+        if isinstance(event, dict)
+    } if isinstance(events_after, dict) else set()
+    _append_check(
+        checks,
+        "system events after restore drill",
+        events_after_status == 200 and {"backup_maintenance", "restore_drill"}.issubset(event_types),
+        status=events_after_status,
+    )
+
+    return {
+        "archive_name": archive_name,
+        "backup_count": backups_after.get("count", 0) if isinstance(backups_after, dict) else 0,
+        "event_count": events_after.get("count", 0) if isinstance(events_after, dict) else 0,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", type=int, default=0, help="Host port to bind. Defaults to a free port.")
@@ -206,10 +313,14 @@ def main() -> int:
         compose_path = temp_dir / "compose.yml"
         data_dir = temp_dir / "data"
         workspace_dir = temp_dir / "workspace"
+        backups_dir = temp_dir / "backups"
         data_dir.mkdir()
         workspace_dir.mkdir()
+        backups_dir.mkdir()
+        (data_dir / "smoke.txt").write_text("smoke persistent data\n", encoding="utf-8")
+        (workspace_dir / "smoke.txt").write_text("smoke workspace artifact\n", encoding="utf-8")
         _write_smoke_config(config_path)
-        _write_compose_file(compose_path, config_path, data_dir, workspace_dir, port)
+        _write_compose_file(compose_path, config_path, data_dir, workspace_dir, backups_dir, port)
 
         compose = [
             "docker",
@@ -253,9 +364,15 @@ def main() -> int:
                 "ok": me_status == 200 and isinstance(me, dict) and me.get("username") == USERNAME,
                 "status": me_status,
             })
+            ops_result = _run_operational_checks(base_url, token, checks)
 
             ok = all(item["ok"] for item in checks)
-            print(json.dumps({"ok": ok, "base_url": base_url, "checks": checks}, ensure_ascii=False, indent=2))
+            print(json.dumps({
+                "ok": ok,
+                "base_url": base_url,
+                "checks": checks,
+                "ops": ops_result,
+            }, ensure_ascii=False, indent=2))
             return 0 if ok else 1
         except Exception as exc:
             logs = _run([*compose, "logs", "--no-color", "--tail", "160", "memox"], check=False)
