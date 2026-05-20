@@ -110,7 +110,7 @@ uv run --extra dev python scripts/smoke_test.py
 uv run --extra dev python scripts/smoke_test.py --frontend
 ```
 
-冒烟脚本会使用临时数据目录和确定性的本地 embedding 替身，不需要真实模型 API Key；`--frontend` 模式要求已执行过 `cd frontend && npm ci`。
+冒烟脚本会使用临时数据目录和确定性的本地 embedding 替身，不需要真实模型 API Key；它会覆盖登录、文档检索、系统健康、备份清单、运维事件、备份校验和临时恢复演练。`--frontend` 模式要求已执行过 `cd frontend && npm ci`。
 
 ### 5. 常用检查
 

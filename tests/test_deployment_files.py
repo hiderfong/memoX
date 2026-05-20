@@ -55,4 +55,6 @@ def test_backup_artifacts_are_documented_and_ignored() -> None:
     assert "scripts/index_consistency.py" in deployment
     assert "scripts/ops_check.py" in deployment
     assert "/api/system/health" in deployment
+    assert "/api/system/backups" in deployment
+    assert "/api/system/events" in deployment
     assert "ops.auto_backup_enabled" in deployment

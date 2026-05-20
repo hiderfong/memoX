@@ -149,10 +149,18 @@ def _backend_launcher_code(root: Path, data_dir: Path, port: int) -> str:
     return textwrap.dedent(
         f"""
         import sys
+        import os
         from pathlib import Path
 
         root = Path({str(root)!r})
         data_dir = Path({str(data_dir)!r})
+        config_path = data_dir / "config.yaml"
+        os.environ["MEMOX_CONFIG_PATH"] = str(config_path)
+        (data_dir / "data").mkdir(parents=True, exist_ok=True)
+        (data_dir / "data" / "smoke.txt").write_text("smoke persistent data\\n", encoding="utf-8")
+        (data_dir / "workspace").mkdir(parents=True, exist_ok=True)
+        (data_dir / "workspace" / "smoke.txt").write_text("smoke workspace artifact\\n", encoding="utf-8")
+        config_path.write_text("app:\\n  name: MemoX Smoke\\n", encoding="utf-8")
         sys.path.insert(0, str(root / "src"))
 
         from config import Config
@@ -268,6 +276,84 @@ def start_frontend(data_dir: Path, port: int, timeout: float) -> ManagedProcess:
     return managed
 
 
+def run_operational_checks(
+    client: httpx.Client,
+    base_url: str,
+    headers: dict[str, str],
+    checks: Checks,
+    *,
+    prefix: str = "",
+) -> dict[str, Any]:
+    def check_name(name: str) -> str:
+        return f"{prefix}{name}" if prefix else name
+
+    initial_backups = checks.record(
+        check_name("system backups"),
+        client.get(f"{base_url}/api/system/backups", headers=headers),
+        {200},
+    ).json()
+    if not isinstance(initial_backups.get("backups"), list):
+        raise RuntimeError(f"system backups returned unexpected payload: {initial_backups}")
+
+    initial_events = checks.record(
+        check_name("system events"),
+        client.get(f"{base_url}/api/system/events", params={"limit": 5}, headers=headers),
+        {200},
+    ).json()
+    if not isinstance(initial_events.get("events"), list):
+        raise RuntimeError(f"system events returned unexpected payload: {initial_events}")
+
+    maintenance = checks.record(
+        check_name("run backup maintenance"),
+        client.post(f"{base_url}/api/system/maintenance/backup", params={"force": "true"}, headers=headers),
+        {200},
+    ).json()
+    if not maintenance.get("ok"):
+        raise RuntimeError(f"backup maintenance failed: {maintenance}")
+    archive_name = Path(str(maintenance.get("archive") or "")).name
+    if not archive_name:
+        raise RuntimeError(f"backup maintenance did not return an archive: {maintenance}")
+
+    backups = checks.record(
+        check_name("system backups after maintenance"),
+        client.get(f"{base_url}/api/system/backups", headers=headers),
+        {200},
+    ).json()
+    if not any(backup.get("name") == archive_name for backup in backups.get("backups", [])):
+        raise RuntimeError(f"created backup {archive_name} missing from backup list: {backups}")
+
+    verified = checks.record(
+        check_name("verify backup archive"),
+        client.post(f"{base_url}/api/system/backups/{archive_name}/verify", headers=headers),
+        {200},
+    ).json()
+    if not verified.get("ok") or not verified.get("verified"):
+        raise RuntimeError(f"backup verification failed: {verified}")
+
+    drill = checks.record(
+        check_name("restore drill"),
+        client.post(f"{base_url}/api/system/backups/{archive_name}/restore-drill", headers=headers),
+        {200},
+    ).json()
+    if not drill.get("ok"):
+        raise RuntimeError(f"restore drill failed: {drill}")
+
+    events = checks.record(
+        check_name("system events after restore drill"),
+        client.get(f"{base_url}/api/system/events", params={"limit": 10}, headers=headers),
+        {200},
+    ).json()
+    event_types = {event.get("event_type") for event in events.get("events", [])}
+    if not {"backup_maintenance", "restore_drill"}.issubset(event_types):
+        raise RuntimeError(f"operational events missing expected types: {events}")
+
+    return {
+        "archive_name": archive_name,
+        "backup_count": backups.get("count", 0),
+        "event_count": events.get("count", 0),
+    }
+
+
 def run_backend_checks(base_url: str) -> dict[str, Any]:
     checks = Checks()
     unique = f"memox-smoke-keyword-{int(time.time())}"
@@ -314,6 +400,8 @@ workflow:
         ).json()
         if system_health.get("status") == "error":
             raise RuntimeError(f"system health reported error: {system_health}")
+
+        ops_result = run_operational_checks(client, base_url, headers, checks)
 
         before_docs = checks.record(
             "list documents before upload",
@@ -385,6 +473,7 @@ workflow:
         "uploaded_doc_id": doc_id,
         "docs_before": len(before_docs),
         "docs_after": len(after_docs),
+        "ops": ops_result,
         "ssrf_detail": ssrf.get("detail"),
     }
 
@@ -424,6 +513,8 @@ def run_frontend_checks(frontend_url: str) -> dict[str, Any]:
         if proxy_system_health.get("status") == "error":
             raise RuntimeError(f"proxy system health reported error: {proxy_system_health}")
 
+        ops_result = run_operational_checks(client, frontend_url, headers, checks, prefix="proxy ")
+
         upload = checks.record(
             "proxy upload document",
             client.post(
@@ -442,7 +533,7 @@ def run_frontend_checks(frontend_url: str) -> dict[str, Any]:
         if not search.get("results"):
             raise RuntimeError(f"proxy search returned no results: {search}")
 
-    return {"checks": checks.items, "uploaded_doc_id": upload.get("id")}
+    return {"checks": checks.items, "uploaded_doc_id": upload.get("id"), "ops": ops_result}
 
 
 def parse_args() -> argparse.Namespace:

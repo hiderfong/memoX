@@ -186,6 +186,8 @@ uv run --extra dev python scripts/docker_smoke_test.py
 
 The script builds the Compose image, starts a temporary container with `embedding_provider: hash`, checks `/api/health`, API docs, OpenAPI, login and `/api/auth/me`, then shuts the container down. The `hash` embedding provider is deterministic and network-free; it is meant for smoke tests and demos, not production retrieval quality.
 
+For a broader local process smoke test, `scripts/smoke_test.py` also covers authenticated system health, backup archive listing, operational events, backup verification, and temporary restore drills against disposable data.
+
 The production Docker image intentionally skips heavy optional extras such as `sentence-transformers` and Streamlit. Prefer DashScope/OpenAI embeddings in container deployments, or build a custom image with `uv sync --extra local-embeddings` if you need local semantic embeddings.
 
 ## Operational Notes
