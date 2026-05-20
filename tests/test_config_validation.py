@@ -95,6 +95,7 @@ def test_config_example_is_valid_with_required_env(monkeypatch: pytest.MonkeyPat
     validate_config(cfg)
     assert cfg.ops.auto_backup_enabled is True
     assert cfg.ops.auto_backup_include == ["config.yaml", "data", "workspace"]
+    assert cfg.ops.archive_mirror_dir == ""
 
 
 def test_default_config_path_uses_env_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

@@ -49,6 +49,7 @@ def _write_config(root: Path) -> Path:
                 {"username": "user", "password": "pw", "role": "user", "display_name": "User"},
             ],
         },
+        "ops": {"archive_mirror_dir": str(root / "mirror")},
     }
     config_path = root / "config.yaml"
     config_path.write_text(yaml.safe_dump(config), encoding="utf-8")
@@ -257,11 +258,16 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
     assert checks["latest_backup"]["status"] == "warning"
     assert checks["latest_backup"]["details"]["archive_count"] == 0
     assert payload["ops"]["auto_backup_enabled"] is True
+    assert payload["ops"]["archive_mirror_enabled"] is True
+    assert payload["ops"]["archive_mirror_dir"] == str(tmp_path / "mirror")
     assert payload["ops"]["last_backup_maintenance"]["action"] == "created"
     assert manual_payload["ok"] is True
     assert manual_payload["action"] == "created"
     assert manual_payload["forced"] is True
     assert Path(manual_payload["archive"]).exists()
+    assert manual_payload["mirror"]["ok"] is True
+    assert Path(manual_payload["mirror"]["destination"]).exists()
+    assert Path(manual_payload["mirror"]["destination"]).name == Path(manual_payload["archive"]).name
     assert backups_payload["count"] == 1
     assert backups_payload["backups"][0]["name"] == Path(manual_payload["archive"]).name
     assert backups_payload["backups"][0]["metadata_valid"] is True
@@ -310,6 +316,8 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
     assert redacted_config["auth"]["users"][0]["password"] == "***REDACTED***"
     assert refreshed_payload["ops"]["last_backup_maintenance"]["details"]["forced"] is True
     assert refreshed_payload["ops"]["last_diagnostics_export"]["details"]["filename"].endswith(".zip")
+    assert refreshed_payload["ops"]["last_diagnostics_export"]["details"]["mirror"]["ok"] is True
+    assert Path(refreshed_payload["ops"]["last_diagnostics_export"]["details"]["mirror"]["destination"]).exists()
     assert refreshed_payload["ops"]["last_index_repair"]["details"]["action"] == "index_repair"
     assert refreshed_payload["ops"]["last_restore_drill"]["details"]["name"] == Path(manual_payload["archive"]).name
     assert refreshed_payload["ops"]["last_restore_execute"]["details"]["action"] == "rejected"

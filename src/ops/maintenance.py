@@ -9,6 +9,7 @@ from typing import Any
 
 from loguru import logger
 
+from src.ops.archive_mirror import mirror_archive_file
 from src.ops.backup import (
     BackupError,
     create_backup,
@@ -49,6 +50,7 @@ def run_backup_maintenance(
     interval_hours: float,
     max_backups: int,
     force: bool = False,
+    archive_mirror_dir: str | Path | None = None,
 ) -> dict[str, Any]:
     """Create a backup if due, verify it, and prune old local archives."""
     root = root.resolve()
@@ -68,16 +70,30 @@ def run_backup_maintenance(
             action = "skipped"
             message = "Latest backup is still fresh"
 
+        archive = Path(created["archive"]) if created else (before[0] if before else None)
+        mirror = mirror_archive_file(
+            archive,
+            root=root,
+            mirror_dir=archive_mirror_dir,
+            category="backups",
+        )
+        status = "ok"
+        mirror_warning = mirror["enabled"] and (not mirror["ok"] or mirror["status"] == "warning")
+        if mirror_warning:
+            status = "warning"
+            message = f"{message}; {mirror['message']}"
+
         pruned = prune_backups(root=root, keep=max_backups)
         return {
             "ok": True,
-            "status": "ok",
+            "status": status,
             "action": action,
             "message": message,
             "root": str(root),
-            "archive": created["archive"] if created else (str(before[0]) if before else None),
+            "archive": str(archive) if archive else None,
             "entries": len(verified.get("entries", [])) if verified else None,
             "verified": bool(verified),
+            "mirror": mirror,
             "age_seconds": age_seconds,
             "archive_count_before": len(before),
             "archive_count_after": pruned["archive_count_after"],
@@ -124,6 +140,7 @@ class OpsMaintenanceRunner:
         interval_hours: float,
         startup_delay_seconds: float,
         max_backups: int,
+        archive_mirror_dir: str | Path | None = None,
         store: Any | None = None,
     ) -> None:
         self._root = root
@@ -131,6 +148,7 @@ class OpsMaintenanceRunner:
         self._interval_hours = interval_hours
         self._startup_delay_seconds = startup_delay_seconds
         self._max_backups = max_backups
+        self._archive_mirror_dir = archive_mirror_dir
         self._store = store
         self._task: asyncio.Task | None = None
         self._stop = asyncio.Event()
@@ -161,6 +179,7 @@ class OpsMaintenanceRunner:
             interval_hours=self._interval_hours,
             max_backups=self._max_backups,
             force=force,
+            archive_mirror_dir=self._archive_mirror_dir,
         )
         self._record_event(result)
         self.last_result = result
@@ -201,6 +220,7 @@ def init_maintenance_runner(
     interval_hours: float,
     startup_delay_seconds: float,
     max_backups: int,
+    archive_mirror_dir: str | Path | None = None,
     store: Any | None = None,
 ) -> OpsMaintenanceRunner:
     global _runner
@@ -210,6 +230,7 @@ def init_maintenance_runner(
         interval_hours=interval_hours,
         startup_delay_seconds=startup_delay_seconds,
         max_backups=max_backups,
+        archive_mirror_dir=archive_mirror_dir,
         store=store,
     )
     return _runner

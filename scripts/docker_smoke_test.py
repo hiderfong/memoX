@@ -82,6 +82,9 @@ memory:
   summary_max_chars: 500
   recent_messages_to_keep: 4
 
+ops:
+  archive_mirror_dir: "/app/mirror"
+
 auth:
   enabled: true
   public_paths:
@@ -114,6 +117,7 @@ def _write_compose_file(
     data_dir: Path,
     workspace_dir: Path,
     backups_dir: Path,
+    mirror_dir: Path,
     port: int,
 ) -> None:
     path.write_text(
@@ -134,6 +138,7 @@ def _write_compose_file(
       - {_json_string(f"{data_dir}:/app/data")}
       - {_json_string(f"{workspace_dir}:/app/workspace")}
       - {_json_string(f"{backups_dir}:/app/backups")}
+      - {_json_string(f"{mirror_dir}:/app/mirror")}
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/api/health"]
       interval: 30s
@@ -243,6 +248,13 @@ def _run_operational_checks(base_url: str, token: str, checks: list[dict]) -> di
         checks,
         "run backup maintenance",
         maintenance_status == 200 and isinstance(maintenance, dict) and maintenance.get("ok") is True and bool(archive_name),
+        status=maintenance_status,
+    )
+    mirror = maintenance.get("mirror") if isinstance(maintenance, dict) and isinstance(maintenance.get("mirror"), dict) else {}
+    _append_check(
+        checks,
+        "mirror backup archive",
+        bool(mirror.get("ok")) and bool(mirror.get("destination")),
         status=maintenance_status,
     )
 
@@ -391,13 +403,15 @@ def main() -> int:
         data_dir = temp_dir / "data"
         workspace_dir = temp_dir / "workspace"
         backups_dir = temp_dir / "backups"
+        mirror_dir = temp_dir / "mirror"
         data_dir.mkdir()
         workspace_dir.mkdir()
         backups_dir.mkdir()
+        mirror_dir.mkdir()
         (data_dir / "smoke.txt").write_text("smoke persistent data\n", encoding="utf-8")
         (workspace_dir / "smoke.txt").write_text("smoke workspace artifact\n", encoding="utf-8")
         _write_smoke_config(config_path)
-        _write_compose_file(compose_path, config_path, data_dir, workspace_dir, backups_dir, port)
+        _write_compose_file(compose_path, config_path, data_dir, workspace_dir, backups_dir, mirror_dir, port)
 
         compose = [
             "docker",

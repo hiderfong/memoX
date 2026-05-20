@@ -48,8 +48,9 @@ The Compose file bind-mounts these host paths:
 | `./data` | `/app/data` | Chroma, SQLite, uploads, BM25 index, groups, workflow state |
 | `./workspace` | `/app/workspace` | Worker task artifacts and shared files |
 | `./backups` | `/app/backups` | Local backup archives visible to the admin readiness report |
+| external or mounted directory | configured `ops.archive_mirror_dir` | Optional mirror target for backups and diagnostic bundles |
 
-Back up `config.yaml`, `.env`, `data/`, and `workspace/` together before upgrades, then copy backup archives off the host.
+Back up `config.yaml`, `.env`, `data/`, and `workspace/` together before upgrades, then copy backup archives off the host. For continuous off-host protection, mount an external directory into the container and point `ops.archive_mirror_dir` at that path.
 
 ## Backup and Restore
 
@@ -139,7 +140,7 @@ The default check loads `config.yaml`, checks configured persistent directories,
 
 If `config.yaml` references environment variables such as `${MEMOX_ADMIN_PASSWORD}`, run the check from a shell where those variables are exported.
 
-The service also starts an in-process maintenance runner when `ops.auto_backup_enabled=true`. By default it waits 5 minutes after startup, then creates and verifies a local backup when the newest archive is older than 24 hours, and prunes archives beyond `ops.max_backups`. Runtime backups include `config.yaml`, `data/`, and `workspace/`; host-only secrets in `.env` should still be protected by the CLI backup flow or an external secret backup. Each automatic maintenance run is recorded in SQLite and surfaced in the admin system health report. Administrators can also trigger the same backup maintenance flow on demand from the system status page or by calling `POST /api/system/maintenance/backup`.
+The service also starts an in-process maintenance runner when `ops.auto_backup_enabled=true`. By default it waits 5 minutes after startup, then creates and verifies a local backup when the newest archive is older than 24 hours, and prunes archives beyond `ops.max_backups`. Runtime backups include `config.yaml`, `data/`, and `workspace/`; host-only secrets in `.env` should still be protected by the CLI backup flow or an external secret backup. If `ops.archive_mirror_dir` is set, each automatic or manual backup is also copied into `<mirror>/backups/` with checksum verification; the same mirror target receives diagnostic bundles under `<mirror>/diagnostics/`. Mirror failures are recorded as warnings in the admin system health report so local backups can still complete. Administrators can also trigger the same backup maintenance flow on demand from the system status page or by calling `POST /api/system/maintenance/backup`.
 
 Use explicit flags for heavier actions:
 
@@ -165,7 +166,7 @@ Run a basic health check after the container becomes healthy:
 curl -fsS http://localhost:8080/api/health
 ```
 
-Administrators can inspect the deeper runtime readiness report after logging in. The API report includes config, persistent paths, index consistency, SQLite, disk space, and lightweight backup metadata checks. The diagnostics export endpoint creates a zip package with the health report, backup list, recent operational events, index consistency report, redacted config, and tails of common local log files; use it when escalating a production issue. Use `scripts/ops_check.py` when a full backup checksum verification is needed.
+Administrators can inspect the deeper runtime readiness report after logging in. The API report includes config, persistent paths, index consistency, SQLite, disk space, backup metadata checks, and archive mirror configuration. The diagnostics export endpoint creates a zip package with the health report, backup list, recent operational events, index consistency report, redacted config, and tails of common local log files; use it when escalating a production issue. When `ops.archive_mirror_dir` is set, the exported zip is also mirrored to `<mirror>/diagnostics/`. Use `scripts/ops_check.py` when a full backup checksum verification is needed.
 
 ```bash
 curl -fsS http://localhost:8080/api/system/health -H "Authorization: Bearer <token>"

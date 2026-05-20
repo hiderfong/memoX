@@ -477,6 +477,7 @@ async def startup():
             interval_hours=_config.ops.auto_backup_interval_hours,
             startup_delay_seconds=_config.ops.auto_backup_startup_delay_seconds,
             max_backups=_config.ops.max_backups,
+            archive_mirror_dir=_config.ops.archive_mirror_dir,
             store=get_store(),
         )
         ops_runner.start()

@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from auth import AuthUser, require_role
 from config import default_config_path
+from src.ops.archive_mirror import mirror_archive_bytes
 from src.ops.backup import BackupError, list_backup_archives, read_backup_metadata, verify_backup
 from src.ops.diagnostics import build_diagnostic_bundle
 from src.ops.index_consistency import audit_indexes, run_index_repair
@@ -176,6 +177,8 @@ def _system_health_report(request: Request) -> dict:
         "auto_backup_interval_hours": _config.ops.auto_backup_interval_hours,
         "auto_backup_startup_delay_seconds": _config.ops.auto_backup_startup_delay_seconds,
         "max_backups": _config.ops.max_backups,
+        "archive_mirror_enabled": bool(_config.ops.archive_mirror_dir),
+        "archive_mirror_dir": _config.ops.archive_mirror_dir,
         "maintenance_runner_active": bool(getattr(maintenance_runner, "running", False)),
         "last_backup_maintenance": latest_event,
         "last_restore_drill": latest_restore_drill,
@@ -256,6 +259,19 @@ async def export_system_diagnostics(
         ops_events={"count": len(events), "events": events},
         index_report=_index_audit_report(),
     )
+    mirror = await asyncio.to_thread(
+        mirror_archive_bytes,
+        bundle,
+        filename,
+        root=root,
+        mirror_dir=_config.ops.archive_mirror_dir,
+        category="diagnostics",
+    )
+    details["mirror"] = mirror
+    mirror_warning = mirror["enabled"] and (not mirror["ok"] or mirror["status"] == "warning")
+    if mirror_warning:
+        details["status"] = "warning"
+        details["message"] = f"{details.get('message', 'Diagnostic bundle exported')}; {mirror['message']}"
     _record_ops_event("diagnostics_export", details)
     return Response(
         content=bundle,
@@ -408,6 +424,7 @@ async def run_backup_maintenance_now(
         interval_hours=_config.ops.auto_backup_interval_hours,
         max_backups=_config.ops.max_backups,
         force=force,
+        archive_mirror_dir=_config.ops.archive_mirror_dir,
     )
     record_maintenance_event(get_store(), result)
     return result

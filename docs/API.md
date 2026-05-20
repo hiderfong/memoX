@@ -125,12 +125,12 @@ Worker 创建、更新和删除接口会持久化修改 `config.yaml` 中的 `wo
 | `GET` | `/api/system/health` | 管理员系统巡检：配置、索引、SQLite、磁盘 |
 | `GET` | `/api/system/backups` | 管理员查看本地备份归档 |
 | `GET` | `/api/system/events` | 管理员查看最近运维事件，可用 `event_type` 与 `limit` 过滤 |
-| `GET` | `/api/system/diagnostics/export` | 管理员导出 zip 诊断包，包含健康报告、备份清单、运维事件、索引一致性、脱敏配置与日志尾部 |
+| `GET` | `/api/system/diagnostics/export` | 管理员导出 zip 诊断包，包含健康报告、备份清单、运维事件、索引一致性、脱敏配置与日志尾部；设置 `ops.archive_mirror_dir` 后会同步镜像一份 |
 | `POST` | `/api/system/indexes/repair` | 管理员修复 Chroma / BM25 / manifest 索引一致性，可用 `collection` 查询参数指定集合 |
 | `POST` | `/api/system/backups/{name}/verify` | 管理员校验单个备份归档 |
 | `POST` | `/api/system/backups/{name}/restore-preflight` | 管理员预检恢复覆盖风险 |
 | `POST` | `/api/system/backups/{name}/restore` | 管理员强确认后执行真实恢复；请求体需提供 `confirm_archive_name`、`acknowledge_overwrite`、`acknowledge_maintenance_mode` |
 | `POST` | `/api/system/backups/{name}/restore-drill` | 管理员执行临时目录恢复演练 |
-| `POST` | `/api/system/maintenance/backup` | 管理员手动触发备份维护 |
+| `POST` | `/api/system/maintenance/backup` | 管理员手动触发备份维护；设置 `ops.archive_mirror_dir` 后会将归档镜像到外部目录 |
 | `GET` | `/api/files/{name}` | 暴露上传目录中的单个文件 |
 | `WS` | `/ws` | WebSocket 实时通信，支持聊天和任务进度消息 |

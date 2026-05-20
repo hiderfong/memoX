@@ -3898,11 +3898,13 @@ const SystemStatusPage: React.FC = () => {
   const ops = report?.ops || {};
   const maintenanceEvent = (ops.last_backup_maintenance || {}) as Record<string, any>;
   const maintenanceDetails = (maintenanceEvent.details || {}) as Record<string, any>;
+  const maintenanceMirror = (maintenanceDetails.mirror || {}) as Record<string, any>;
   const indexRepairEvent = (ops.last_index_repair || {}) as Record<string, any>;
   const indexRepairDetails = (indexRepairEvent.details || {}) as Record<string, any>;
   const indexRepairAfter = (indexRepairDetails.after || {}) as Record<string, any>;
   const diagnosticsEvent = (ops.last_diagnostics_export || {}) as Record<string, any>;
   const diagnosticsDetails = (diagnosticsEvent.details || {}) as Record<string, any>;
+  const diagnosticsMirror = (diagnosticsDetails.mirror || {}) as Record<string, any>;
   const restoreDrillEvent = (ops.last_restore_drill || {}) as Record<string, any>;
   const restoreDrillDetails = (restoreDrillEvent.details || {}) as Record<string, any>;
   const restoreDrillChecks = Array.isArray(restoreDrillDetails.checks) ? restoreDrillDetails.checks : [];
@@ -4247,6 +4249,10 @@ const SystemStatusPage: React.FC = () => {
             <Text><Text strong>自动备份:</Text> {ops.auto_backup_enabled ? '已启用' : '未启用'}</Text>
             <Text><Text strong>后台维护:</Text> {ops.maintenance_runner_active ? '运行中' : '未运行'}</Text>
             <Text><Text strong>维护间隔:</Text> {ops.auto_backup_interval_hours ?? '-'} 小时</Text>
+            <Text><Text strong>归档镜像:</Text> {ops.archive_mirror_enabled ? '已启用' : '未启用'}</Text>
+            {ops.archive_mirror_enabled && (
+              <Text style={{ wordBreak: 'break-all' }}><Text strong>镜像目录:</Text> {ops.archive_mirror_dir || '-'}</Text>
+            )}
             {maintenanceEvent.id ? (
               <>
                 <Space wrap>
@@ -4257,6 +4263,14 @@ const SystemStatusPage: React.FC = () => {
                 <Text>{maintenanceEvent.message || '-'}</Text>
                 {maintenanceDetails.deleted?.length > 0 && (
                   <Text type="secondary">本次裁剪 {maintenanceDetails.deleted.length} 个旧归档</Text>
+                )}
+                {maintenanceMirror.enabled && (
+                  <Text
+                    type={maintenanceMirror.ok ? 'secondary' : 'danger'}
+                    style={{ wordBreak: 'break-all' }}
+                  >
+                    镜像：{maintenanceMirror.destination || maintenanceMirror.message || '-'}
+                  </Text>
                 )}
               </>
             ) : (
@@ -4290,6 +4304,14 @@ const SystemStatusPage: React.FC = () => {
                 </Space>
                 <Text style={{ wordBreak: 'break-all' }}>{diagnosticsDetails.filename || diagnosticsEvent.message || '-'}</Text>
                 <Text type="secondary">大小 {formatBytes(diagnosticsDetails.size_bytes)}</Text>
+                {diagnosticsMirror.enabled && (
+                  <Text
+                    type={diagnosticsMirror.ok ? 'secondary' : 'danger'}
+                    style={{ wordBreak: 'break-all' }}
+                  >
+                    镜像：{diagnosticsMirror.destination || diagnosticsMirror.message || '-'}
+                  </Text>
+                )}
               </>
             ) : (
               <Text type="secondary">暂无诊断导出记录</Text>

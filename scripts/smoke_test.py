@@ -216,6 +216,9 @@ def _backend_launcher_code(root: Path, data_dir: Path, port: int) -> str:
                 "summary_max_chars": 500,
                 "recent_messages_to_keep": 4,
             }},
+            "ops": {{
+                "archive_mirror_dir": str(data_dir / "mirror"),
+            }},
             "auth": {{
                 "enabled": True,
                 "public_paths": [
@@ -310,6 +313,9 @@ def run_operational_checks(
     ).json()
     if not maintenance.get("ok"):
         raise RuntimeError(f"backup maintenance failed: {maintenance}")
+    mirror = maintenance.get("mirror") if isinstance(maintenance.get("mirror"), dict) else {}
+    if not mirror.get("ok") or not Path(str(mirror.get("destination") or "")).exists():
+        raise RuntimeError(f"backup mirror failed: {maintenance}")
     archive_name = Path(str(maintenance.get("archive") or "")).name
     if not archive_name:
         raise RuntimeError(f"backup maintenance did not return an archive: {maintenance}")

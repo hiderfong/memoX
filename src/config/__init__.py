@@ -216,6 +216,7 @@ class OpsConfig:
     auto_backup_startup_delay_seconds: float = 300.0
     auto_backup_include: list[str] = field(default_factory=lambda: ["config.yaml", "data", "workspace"])
     max_backups: int = 14
+    archive_mirror_dir: str = ""
 
 
 @dataclass

@@ -126,6 +126,9 @@ ops:
     - "data"
     - "workspace"
   max_backups: 14
+  # Optional: mirror backups and diagnostics to an external or mounted directory.
+  # Relative paths are resolved from the deployment root; leave empty to disable.
+  archive_mirror_dir: ""
 
 auth:
   enabled: true

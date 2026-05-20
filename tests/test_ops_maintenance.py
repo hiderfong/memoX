@@ -16,27 +16,33 @@ def _write_deployment(root: Path) -> None:
 
 def test_backup_maintenance_creates_then_skips_fresh_backup(tmp_path: Path) -> None:
     _write_deployment(tmp_path)
+    mirror_dir = tmp_path / "external"
 
     created = run_backup_maintenance(
         root=tmp_path,
         include=("config.yaml", "data"),
         interval_hours=24,
         max_backups=14,
+        archive_mirror_dir=mirror_dir,
     )
     skipped = run_backup_maintenance(
         root=tmp_path,
         include=("config.yaml", "data"),
         interval_hours=24,
         max_backups=14,
+        archive_mirror_dir=mirror_dir,
     )
 
     assert created["ok"] is True
     assert created["action"] == "created"
     assert created["verified"] is True
     assert Path(created["archive"]).exists()
+    assert created["mirror"]["ok"] is True
+    assert Path(created["mirror"]["destination"]).exists()
     assert skipped["ok"] is True
     assert skipped["action"] == "skipped"
     assert skipped["archive"] == created["archive"]
+    assert skipped["mirror"]["destination"] == created["mirror"]["destination"]
 
 
 def test_backup_maintenance_force_creates_even_when_fresh(tmp_path: Path) -> None:
@@ -74,6 +80,7 @@ async def test_maintenance_runner_run_once_records_result(tmp_path: Path) -> Non
         interval_hours=24,
         startup_delay_seconds=0,
         max_backups=14,
+        archive_mirror_dir=tmp_path / "external",
         store=store,
     )
 
@@ -86,4 +93,5 @@ async def test_maintenance_runner_run_once_records_result(tmp_path: Path) -> Non
     assert event is not None
     assert event["action"] == "created"
     assert event["details"]["archive"] == result["archive"]
+    assert event["details"]["mirror"]["ok"] is True
     store.close()
