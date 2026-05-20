@@ -4,7 +4,7 @@ from pydantic import BaseModel
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
-from auth import AuthManager, _get_auth_from_request, get_auth_manager
+from auth import AuthManager, AuthRateLimitError, _get_auth_from_request, get_auth_manager
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -24,7 +24,15 @@ async def login(request: Request, login_req: LoginRequest) -> dict:
     if not isinstance(auth, AuthManager):
         auth = get_auth_manager()
         request.app.state._auth_manager = auth
-    token = auth.login(login_req.username, login_req.password)
+    client_key = request.client.host if request.client else "unknown"
+    try:
+        token = auth.login(login_req.username, login_req.password, client_key=client_key)
+    except AuthRateLimitError as exc:
+        raise HTTPException(
+            status_code=429,
+            detail=f"登录失败次数过多，请 {exc.retry_after_seconds} 秒后重试",
+            headers={"Retry-After": str(exc.retry_after_seconds)},
+        ) from exc
     if not token:
         raise HTTPException(status_code=401, detail="用户名或密码错误")
     user_info = auth.get_user_info(token)

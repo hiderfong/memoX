@@ -210,6 +210,7 @@ The production Docker image intentionally skips heavy optional extras such as `s
 ## Operational Notes
 
 - Keep `auth.enabled=true` for any shared deployment. Startup fails if the configured admin password resolves to an empty value.
+- Repeated failed logins for the same username and client are temporarily locked and return HTTP `429` with `Retry-After`; wait for the lock window instead of restarting the service.
 - Restrict access to Worker management APIs. Creating, updating, or deleting Workers persists changes into `config.yaml`.
 - Use a reverse proxy with TLS for internet-facing use. The bundled container exposes plain HTTP on port `8080`.
 - Treat `data/`, `workspace/`, `.env`, and `config.yaml` as sensitive. They may contain uploaded documents, task artifacts, API keys, or generated outputs.
