@@ -10,6 +10,8 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 
+from .redaction import redact_mapping, redact_text
+
 MAX_LOG_BYTES = 96 * 1024
 LOG_CANDIDATES = (
     "server.log",
@@ -19,7 +21,6 @@ LOG_CANDIDATES = (
     "logs/backend.log",
     "logs/memox.log",
 )
-SENSITIVE_KEYS = ("api_key", "password", "secret", "token")
 
 
 def _utc_stamp() -> str:
@@ -41,21 +42,13 @@ def _jsonable(value: Any) -> Any:
 def redact_config(config: Any) -> dict[str, Any]:
     """Return a config snapshot with obvious secrets removed."""
 
-    def redact(value: Any, key_name: str = "") -> Any:
-        if any(marker in key_name.lower() for marker in SENSITIVE_KEYS):
-            return "***REDACTED***" if value else ""
-        if isinstance(value, dict):
-            return {str(key): redact(item, str(key)) for key, item in value.items()}
-        if isinstance(value, list):
-            return [redact(item, key_name) for item in value]
-        return _jsonable(value)
-
     raw = _jsonable(config)
-    return redact(raw) if isinstance(raw, dict) else {"config": redact(raw)}
+    redacted = redact_mapping(raw)
+    return redacted if isinstance(redacted, dict) else {"config": redacted}
 
 
 def _write_json(bundle: zipfile.ZipFile, name: str, payload: Any) -> None:
-    text = json.dumps(_jsonable(payload), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+    text = json.dumps(_jsonable(redact_mapping(payload)), ensure_ascii=False, indent=2, sort_keys=True) + "\n"
     bundle.writestr(name, text)
 
 
@@ -98,7 +91,7 @@ def collect_log_tails(root: Path) -> dict[str, dict[str, Any]]:
                 "path": str(resolved),
                 "size_bytes": stat.st_size,
                 "tail_truncated": stat.st_size > MAX_LOG_BYTES,
-                "tail": _tail_text(resolved),
+                "tail": redact_text(_tail_text(resolved)),
             }
         except OSError as exc:
             logs[path.name] = {"path": str(path), "error": f"{type(exc).__name__}: {exc}"}
@@ -135,7 +128,9 @@ def build_diagnostic_bundle(
             "config/redacted_config.json",
             "logs/log_sources.json",
         ],
-        "redaction": "Config values with api_key/password/secret/token in their key are redacted.",
+        "redaction": (
+            "Sensitive JSON keys plus common bearer/api-key/password patterns in log tails are redacted."
+        ),
         "log_count": len(log_tails),
     }
 

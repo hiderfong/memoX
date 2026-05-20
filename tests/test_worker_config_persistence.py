@@ -1,5 +1,6 @@
 """Worker template persistence regression tests."""
 
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -140,6 +141,10 @@ async def test_list_providers_exposes_server_side_status(
                 "openai": {
                     "api_key": "${OPENAI_API_KEY}",
                     "base_url": "https://api.openai.com/v1",
+                    "headers": {
+                        "Authorization": "Bearer provider-header-secret",
+                        "X-API-Key": "provider-header-api-key",
+                    },
                 },
                 "kimi": {
                     "api_key": "${KIMI_API_KEY}",
@@ -163,11 +168,16 @@ async def test_list_providers_exposes_server_side_status(
     )
     monkeypatch.setattr(workers, "_get_config", lambda: runtime_config)
 
-    result = {item["name"]: item for item in await workers.list_providers()}
+    provider_payload = await workers.list_providers()
+    result = {item["name"]: item for item in provider_payload}
+    serialized = json.dumps(provider_payload, ensure_ascii=False)
 
     assert result["openai"]["configured"] is True
     assert result["openai"]["env_var"] == "OPENAI_API_KEY"
     assert "coordinator" in result["openai"]["used_by"]
+    assert "openai-key" not in serialized
+    assert "provider-header-secret" not in serialized
+    assert "provider-header-api-key" not in serialized
 
     assert result["kimi"]["configured"] is False
     assert result["kimi"]["env_var"] == "KIMI_API_KEY"
@@ -177,6 +187,7 @@ async def test_list_providers_exposes_server_side_status(
     assert result["google"]["configured"] is True
     assert result["google"]["supported"] is False
     assert "后端未支持" in result["google"]["warnings"][0]
+    assert "google-key" not in serialized
 
 
 @pytest.mark.asyncio
