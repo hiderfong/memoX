@@ -80,9 +80,12 @@ def client(test_dirs):
     api_module.app.router.lifespan_context = noop_lifespan
 
     # 初始化认证
-    init_auth([
-        {"username": "test", "password": "testpass", "role": "admin", "display_name": "Test User"},
-    ])
+    init_auth(
+        [
+            {"username": "test", "password": "testpass", "role": "admin", "display_name": "Test User"},
+        ],
+        app_state=api_module.app.state,
+    )
 
     # 嵌入函数
     embedding = HashEmbedding()

@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from agents.base_agent import create_provider
 from agents.worker_pool import get_worker_pool
-from auth import AuthUser, get_current_user
+from auth import AuthUser, get_current_user, require_role
 from imaging import get_i2v_client, get_image_client, get_video_client
 from knowledge import SearchResult
 from web.state import get_store as _gs
@@ -510,7 +510,10 @@ async def get_memory_config() -> dict:
 
 
 @router.patch("/memory/config")
-async def update_memory_config(req: MemoryConfigRequest) -> dict:
+async def update_memory_config(
+    req: MemoryConfigRequest,
+    _: Annotated[AuthUser, require_role("admin")],
+) -> dict:
     from fastapi import HTTPException
     (
         _rag_engine, _orchestrator, _task_planner,
