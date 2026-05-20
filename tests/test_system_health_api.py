@@ -102,6 +102,8 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
                 headers={"Authorization": f"Bearer {user_token}"},
             )
             assert manual_forbidden.status_code == 403
+            backups_forbidden = client.get("/api/system/backups", headers={"Authorization": f"Bearer {user_token}"})
+            assert backups_forbidden.status_code == 403
 
             response = client.get("/api/system/health", headers={"Authorization": f"Bearer {admin_token}"})
             assert response.status_code == 200
@@ -113,6 +115,24 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
             )
             assert manual.status_code == 200
             manual_payload = manual.json()
+
+            backup_name = Path(manual_payload["archive"]).name
+            backups = client.get("/api/system/backups", headers={"Authorization": f"Bearer {admin_token}"})
+            assert backups.status_code == 200
+            backups_payload = backups.json()
+
+            verified = client.post(
+                f"/api/system/backups/{backup_name}/verify",
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+            assert verified.status_code == 200
+            verified_payload = verified.json()
+
+            missing = client.post(
+                "/api/system/backups/memox-backup-missing.tar.gz/verify",
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+            assert missing.status_code == 404
 
             refreshed = client.get("/api/system/health", headers={"Authorization": f"Bearer {admin_token}"})
             assert refreshed.status_code == 200
@@ -141,4 +161,12 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
     assert manual_payload["action"] == "created"
     assert manual_payload["forced"] is True
     assert Path(manual_payload["archive"]).exists()
+    assert backups_payload["count"] == 1
+    assert backups_payload["backups"][0]["name"] == Path(manual_payload["archive"]).name
+    assert backups_payload["backups"][0]["metadata_valid"] is True
+    assert backups_payload["backups"][0]["entry_count"] > 0
+    assert verified_payload["ok"] is True
+    assert verified_payload["verified"] is True
+    assert verified_payload["name"] == Path(manual_payload["archive"]).name
+    assert verified_payload["entry_count"] > 0
     assert refreshed_payload["ops"]["last_backup_maintenance"]["details"]["forced"] is True

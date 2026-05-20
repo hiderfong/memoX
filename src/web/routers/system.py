@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from auth import AuthUser, require_role
 from config import default_config_path
+from src.ops.backup import BackupError, list_backup_archives, read_backup_metadata, verify_backup
 from src.ops.readiness import run_readiness_checks
 
 router = APIRouter(prefix="/api/system", tags=["system"])
@@ -18,6 +20,61 @@ router = APIRouter(prefix="/api/system", tags=["system"])
 def _config_path_from_runtime() -> Path:
     path = default_config_path()
     return path if path.is_absolute() else Path.cwd() / path
+
+
+def _deployment_root() -> Path:
+    return _config_path_from_runtime().resolve().parent
+
+
+def _utc_from_timestamp(value: float) -> str:
+    return datetime.fromtimestamp(value, timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _backup_archive_summary(archive: Path) -> dict:
+    stat = archive.stat()
+    summary = {
+        "name": archive.name,
+        "archive": str(archive),
+        "size_bytes": stat.st_size,
+        "modified_at": _utc_from_timestamp(stat.st_mtime),
+    }
+    try:
+        metadata = read_backup_metadata(archive)
+    except Exception as exc:
+        return {
+            **summary,
+            "ok": False,
+            "status": "error",
+            "message": f"Backup metadata unreadable: {type(exc).__name__}: {exc}",
+            "metadata_valid": False,
+        }
+
+    return {
+        **summary,
+        "ok": True,
+        "status": "ok",
+        "message": "Backup metadata is readable",
+        "metadata_valid": True,
+        "format": metadata.get("format"),
+        "created_at": metadata.get("created_at"),
+        "included": metadata.get("included", []),
+        "missing": metadata.get("missing", []),
+        "skipped": metadata.get("skipped", []),
+        "entry_count": len(metadata.get("entries", [])),
+    }
+
+
+def _resolve_backup_archive(root: Path, archive_name: str) -> Path:
+    if Path(archive_name).name != archive_name:
+        raise HTTPException(status_code=404, detail="Backup archive not found")
+    if not archive_name.startswith("memox-backup-") or not archive_name.endswith(".tar.gz"):
+        raise HTTPException(status_code=404, detail="Backup archive not found")
+
+    backup_dir = (root / "backups").resolve()
+    archive = (backup_dir / archive_name).resolve()
+    if archive.parent != backup_dir or not archive.is_file():
+        raise HTTPException(status_code=404, detail="Backup archive not found")
+    return archive
 
 
 @router.get("/health")
@@ -79,6 +136,62 @@ async def system_health(
         "last_backup_maintenance": latest_event,
     }
     return result
+
+
+@router.get("/backups")
+async def list_system_backups(
+    _: Annotated[AuthUser, require_role("admin")],
+) -> dict:
+    """Return local backup archive metadata for administrators."""
+    root = _deployment_root()
+    archives = list_backup_archives(root)
+    return {
+        "root": str(root),
+        "backup_dir": str(root / "backups"),
+        "count": len(archives),
+        "backups": [_backup_archive_summary(archive) for archive in archives],
+    }
+
+
+@router.post("/backups/{archive_name}/verify")
+async def verify_system_backup(
+    archive_name: str,
+    _: Annotated[AuthUser, require_role("admin")],
+) -> dict:
+    """Verify a local backup archive without restoring it."""
+    archive = _resolve_backup_archive(_deployment_root(), archive_name)
+    try:
+        result = await asyncio.to_thread(verify_backup, archive)
+    except BackupError as exc:
+        return {
+            **_backup_archive_summary(archive),
+            "verified": False,
+            "ok": False,
+            "status": "error",
+            "message": str(exc),
+        }
+    except Exception as exc:
+        return {
+            **_backup_archive_summary(archive),
+            "verified": False,
+            "ok": False,
+            "status": "error",
+            "message": f"Backup verification failed: {type(exc).__name__}: {exc}",
+        }
+
+    return {
+        "name": archive.name,
+        "archive": result["archive"],
+        "ok": True,
+        "status": "ok",
+        "message": "Backup archive verified",
+        "verified": True,
+        "created_at": result.get("created_at"),
+        "included": result.get("included", []),
+        "missing": result.get("missing", []),
+        "skipped": result.get("skipped", []),
+        "entry_count": len(result.get("entries", [])),
+    }
 
 
 @router.post("/maintenance/backup")

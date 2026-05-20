@@ -60,6 +60,18 @@ interface SystemHealthReport {
   ops?: Record<string, any>;
 }
 
+interface BackupArchiveSummary {
+  name: string;
+  archive: string;
+  status: ReadinessStatus;
+  message?: string;
+  size_bytes?: number;
+  modified_at?: string;
+  created_at?: string;
+  entry_count?: number;
+  metadata_valid?: boolean;
+}
+
 const statusTagColor = (status?: ReadinessStatus) => {
   if (status === 'ok') return 'green';
   if (status === 'warning') return 'orange';
@@ -197,6 +209,9 @@ const api = {
   // 系统
   health: () => axios.get(`${API_BASE}/health`),
   systemHealth: () => axios.get<SystemHealthReport>(`${API_BASE}/system/health`),
+  listBackups: () => axios.get<{ backups: BackupArchiveSummary[] }>(`${API_BASE}/system/backups`),
+  verifyBackup: (archiveName: string) =>
+    axios.post(`${API_BASE}/system/backups/${encodeURIComponent(archiveName)}/verify`),
   runBackupMaintenance: (force: boolean = true) =>
     axios.post(`${API_BASE}/system/maintenance/backup`, null, { params: { force } }),
 
@@ -3580,27 +3595,39 @@ const SystemStatusPage: React.FC = () => {
   const { user } = useContext(AuthContext);
   const isMobile = useIsMobile();
   const [report, setReport] = useState<SystemHealthReport | null>(null);
+  const [backups, setBackups] = useState<BackupArchiveSummary[]>([]);
   const [loading, setLoading] = useState(true);
+  const [backupsLoading, setBackupsLoading] = useState(true);
   const [maintenanceRunning, setMaintenanceRunning] = useState(false);
+  const [verifyingBackup, setVerifyingBackup] = useState('');
   const [lastUpdated, setLastUpdated] = useState<string>('');
 
   const fetchReport = async () => {
     setLoading(true);
+    setBackupsLoading(true);
     try {
-      const res = await api.systemHealth();
-      setReport(res.data);
+      const [healthRes, backupsRes] = await Promise.all([
+        api.systemHealth(),
+        api.listBackups(),
+      ]);
+      setReport(healthRes.data);
+      setBackups(backupsRes.data?.backups || []);
       setLastUpdated(dayjs().format('YYYY-MM-DD HH:mm:ss'));
     } catch (err: any) {
       const detail = err.response?.data?.detail;
       message.error(typeof detail === 'string' ? detail : '获取系统状态失败');
     } finally {
       setLoading(false);
+      setBackupsLoading(false);
     }
   };
 
   useEffect(() => {
     if (user?.role === 'admin') fetchReport();
-    else setLoading(false);
+    else {
+      setLoading(false);
+      setBackupsLoading(false);
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.role]);
 
@@ -3619,6 +3646,24 @@ const SystemStatusPage: React.FC = () => {
       message.error(typeof detail === 'string' ? detail : '备份维护失败');
     } finally {
       setMaintenanceRunning(false);
+    }
+  };
+
+  const handleVerifyBackup = async (archiveName: string) => {
+    setVerifyingBackup(archiveName);
+    try {
+      const res = await api.verifyBackup(archiveName);
+      if (res.data?.ok) {
+        message.success('备份归档校验通过');
+      } else {
+        message.error(res.data?.message || '备份归档校验失败');
+      }
+      await fetchReport();
+    } catch (err: any) {
+      const detail = err.response?.data?.detail;
+      message.error(typeof detail === 'string' ? detail : '备份归档校验失败');
+    } finally {
+      setVerifyingBackup('');
     }
   };
 
@@ -3689,6 +3734,62 @@ const SystemStatusPage: React.FC = () => {
       key: 'duration_ms',
       width: 100,
       render: (ms: number) => <Text type="secondary">{formatDuration(ms)}</Text>,
+    },
+  ];
+  const backupColumns = [
+    {
+      title: '归档',
+      dataIndex: 'name',
+      key: 'name',
+      render: (name: string, item: BackupArchiveSummary) => (
+        <Space direction="vertical" size={0}>
+          <Text strong style={{ wordBreak: 'break-all' }}>{name}</Text>
+          <Text type="secondary" style={{ wordBreak: 'break-all' }}>{item.archive}</Text>
+        </Space>
+      ),
+    },
+    {
+      title: '状态',
+      dataIndex: 'status',
+      key: 'status',
+      width: 90,
+      render: (status: ReadinessStatus) => <Tag color={statusTagColor(status)}>{statusLabel(status)}</Tag>,
+    },
+    {
+      title: '创建时间',
+      dataIndex: 'created_at',
+      key: 'created_at',
+      width: 170,
+      render: (createdAt: string, item: BackupArchiveSummary) => <Text type="secondary">{createdAt || item.modified_at || '-'}</Text>,
+    },
+    {
+      title: '大小',
+      dataIndex: 'size_bytes',
+      key: 'size_bytes',
+      width: 100,
+      render: (bytes: number) => <Text>{formatBytes(bytes)}</Text>,
+    },
+    {
+      title: '条目',
+      dataIndex: 'entry_count',
+      key: 'entry_count',
+      width: 80,
+      render: (count: number) => <Text>{count ?? '-'}</Text>,
+    },
+    {
+      title: '操作',
+      key: 'action',
+      width: 100,
+      render: (_: any, item: BackupArchiveSummary) => (
+        <Button
+          size="small"
+          icon={<CheckCircleOutlined />}
+          onClick={() => handleVerifyBackup(item.name)}
+          loading={verifyingBackup === item.name}
+        >
+          校验
+        </Button>
+      ),
     },
   ];
 
@@ -3868,6 +3969,21 @@ const SystemStatusPage: React.FC = () => {
               <Text type="secondary">暂无备份维护记录</Text>
             )}
           </Space>
+        </Card>
+
+        <Card title="备份归档" loading={backupsLoading}>
+          {backups.length > 0 ? (
+            <Table
+              size="small"
+              rowKey="name"
+              dataSource={backups}
+              columns={backupColumns}
+              pagination={{ pageSize: 5, size: 'small' }}
+              scroll={{ x: 820 }}
+            />
+          ) : (
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无备份归档" />
+          )}
         </Card>
 
         <Card title="运行时" loading={loading}>
