@@ -8,13 +8,15 @@ from pathlib import Path
 from typing import Annotated
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from auth import AuthUser, require_role
 from config import default_config_path
 from src.ops.backup import BackupError, list_backup_archives, read_backup_metadata, verify_backup
-from src.ops.index_consistency import run_index_repair
-from src.ops.readiness import run_readiness_checks
+from src.ops.diagnostics import build_diagnostic_bundle
+from src.ops.index_consistency import audit_indexes, run_index_repair
+from src.ops.readiness import resolve_from_root, run_readiness_checks
 from src.ops.recovery import run_restore_drill, run_restore_execute, run_restore_preflight
 
 router = APIRouter(prefix="/api/system", tags=["system"])
@@ -106,22 +108,23 @@ def _record_ops_event(event_type: str, result: dict) -> None:
         return
 
 
-@router.get("/health")
-async def system_health(
-    request: Request,
-    _: Annotated[AuthUser, require_role("admin")],
-) -> dict:
-    """Return an authenticated operational readiness report."""
-    from web.api import _config, _rag_engine
+def _runtime_index_context() -> tuple[object | None, object | None]:
+    from web.api import _rag_engine
 
-    config_path = _config_path_from_runtime().resolve()
-    root = config_path.parent
     vector_store = getattr(_rag_engine, "vector_store", None)
     bm25_indexer = None
     hybrid_retriever = getattr(_rag_engine, "_hybrid_retriever", None)
     if hybrid_retriever is not None:
         bm25_indexer = getattr(hybrid_retriever, "bm25_indexer", None)
+    return vector_store, bm25_indexer
 
+
+def _system_health_report(request: Request) -> dict:
+    from web.api import _config, _rag_engine
+
+    config_path = _config_path_from_runtime().resolve()
+    root = config_path.parent
+    vector_store, bm25_indexer = _runtime_index_context()
     result = run_readiness_checks(
         root=root,
         config_path=config_path,
@@ -143,6 +146,7 @@ async def system_health(
     latest_restore_drill = None
     latest_restore_execute = None
     latest_index_repair = None
+    latest_diagnostics_export = None
     try:
         from storage import get_store
 
@@ -152,11 +156,13 @@ async def system_health(
             latest_restore_drill = store.get_latest_ops_event("restore_drill")
             latest_restore_execute = store.get_latest_ops_event("restore_execute")
             latest_index_repair = store.get_latest_ops_event("index_repair")
+            latest_diagnostics_export = store.get_latest_ops_event("diagnostics_export")
     except Exception:
         latest_event = None
         latest_restore_drill = None
         latest_restore_execute = None
         latest_index_repair = None
+        latest_diagnostics_export = None
 
     try:
         from ops.maintenance import get_maintenance_runner
@@ -175,8 +181,35 @@ async def system_health(
         "last_restore_drill": latest_restore_drill,
         "last_restore_execute": latest_restore_execute,
         "last_index_repair": latest_index_repair,
+        "last_diagnostics_export": latest_diagnostics_export,
     }
     return result
+
+
+def _index_audit_report() -> dict:
+    from web.api import _config
+
+    config_path = _config_path_from_runtime().resolve()
+    root = config_path.parent
+    vector_store, bm25_indexer = _runtime_index_context()
+    if vector_store is None or bm25_indexer is None:
+        return {"ok": False, "status": "error", "message": "RAG runtime is not loaded"}
+    manifest_path = resolve_from_root(root, _config.knowledge_base.manifest_path)
+    return audit_indexes(
+        vector_store=vector_store,
+        bm25_indexer=bm25_indexer,
+        manifest_path=manifest_path,
+        collection_name="documents",
+    )
+
+
+@router.get("/health")
+async def system_health(
+    request: Request,
+    _: Annotated[AuthUser, require_role("admin")],
+) -> dict:
+    """Return an authenticated operational readiness report."""
+    return _system_health_report(request)
 
 
 @router.get("/backups")
@@ -192,6 +225,43 @@ async def list_system_backups(
         "count": len(archives),
         "backups": [_backup_archive_summary(archive) for archive in archives],
     }
+
+
+@router.get("/diagnostics/export")
+async def export_system_diagnostics(
+    request: Request,
+    _: Annotated[AuthUser, require_role("admin")],
+) -> Response:
+    """Export a zip bundle with structured operational diagnostics."""
+    from storage import get_store
+    from web.api import _config
+
+    root = _deployment_root()
+    store = get_store()
+    events = store.list_ops_events(limit=50) if store is not None else []
+    archives = list_backup_archives(root)
+    payload = {
+        "root": str(root),
+        "backup_dir": str(root / "backups"),
+        "count": len(archives),
+        "backups": [_backup_archive_summary(archive) for archive in archives],
+    }
+    bundle, filename, details = await asyncio.to_thread(
+        build_diagnostic_bundle,
+        root=root,
+        config_path=_config_path_from_runtime().resolve(),
+        config=_config,
+        system_health=_system_health_report(request),
+        backups=payload,
+        ops_events={"count": len(events), "events": events},
+        index_report=_index_audit_report(),
+    )
+    _record_ops_event("diagnostics_export", details)
+    return Response(
+        content=bundle,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @router.get("/events")

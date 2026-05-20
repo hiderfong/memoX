@@ -57,7 +57,9 @@ def test_backup_artifacts_are_documented_and_ignored() -> None:
     assert "/api/system/health" in deployment
     assert "/api/system/backups" in deployment
     assert "/api/system/events" in deployment
+    assert "/api/system/diagnostics/export" in deployment
     assert "/api/system/indexes/repair" in deployment
+    assert "redacted config" in deployment
     assert "restore-preflight" in deployment
     assert "restart the service" in deployment
     assert "/restore" in deployment

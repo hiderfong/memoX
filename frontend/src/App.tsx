@@ -105,6 +105,7 @@ const statusLabel = (status?: ReadinessStatus) => {
 
 const opsEventLabel = (eventType?: string) => {
   if (eventType === 'backup_maintenance') return '备份维护';
+  if (eventType === 'diagnostics_export') return '诊断导出';
   if (eventType === 'index_repair') return '索引修复';
   if (eventType === 'restore_preflight') return '恢复预检';
   if (eventType === 'restore_execute') return '真实恢复';
@@ -250,6 +251,7 @@ const api = {
   runBackupMaintenance: (force: boolean = true) =>
     axios.post(`${API_BASE}/system/maintenance/backup`, null, { params: { force } }),
   repairIndexes: () => axios.post(`${API_BASE}/system/indexes/repair`),
+  exportDiagnostics: () => axios.get(`${API_BASE}/system/diagnostics/export`, { responseType: 'blob' }),
 
   // 认证
   login: (username: string, password: string) =>
@@ -3638,6 +3640,7 @@ const SystemStatusPage: React.FC = () => {
   const [eventsLoading, setEventsLoading] = useState(true);
   const [maintenanceRunning, setMaintenanceRunning] = useState(false);
   const [repairingIndexes, setRepairingIndexes] = useState(false);
+  const [exportingDiagnostics, setExportingDiagnostics] = useState(false);
   const [verifyingBackup, setVerifyingBackup] = useState('');
   const [preflightingBackup, setPreflightingBackup] = useState('');
   const [drillingBackup, setDrillingBackup] = useState('');
@@ -3727,6 +3730,31 @@ const SystemStatusPage: React.FC = () => {
         }
       },
     });
+  };
+
+  const handleExportDiagnostics = async () => {
+    setExportingDiagnostics(true);
+    try {
+      const res = await api.exportDiagnostics();
+      const disposition = res.headers?.['content-disposition'] || '';
+      const filenameMatch = disposition.match(/filename="?([^";]+)"?/);
+      const filename = filenameMatch?.[1] || `memox-diagnostics-${Date.now()}.zip`;
+      const url = URL.createObjectURL(res.data);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      message.success('诊断包已生成');
+      await fetchReport();
+    } catch (err: any) {
+      const detail = err.response?.data?.detail;
+      message.error(typeof detail === 'string' ? detail : '导出诊断包失败');
+    } finally {
+      setExportingDiagnostics(false);
+    }
   };
 
   const handleVerifyBackup = async (archiveName: string) => {
@@ -3873,6 +3901,8 @@ const SystemStatusPage: React.FC = () => {
   const indexRepairEvent = (ops.last_index_repair || {}) as Record<string, any>;
   const indexRepairDetails = (indexRepairEvent.details || {}) as Record<string, any>;
   const indexRepairAfter = (indexRepairDetails.after || {}) as Record<string, any>;
+  const diagnosticsEvent = (ops.last_diagnostics_export || {}) as Record<string, any>;
+  const diagnosticsDetails = (diagnosticsEvent.details || {}) as Record<string, any>;
   const restoreDrillEvent = (ops.last_restore_drill || {}) as Record<string, any>;
   const restoreDrillDetails = (restoreDrillEvent.details || {}) as Record<string, any>;
   const restoreDrillChecks = Array.isArray(restoreDrillDetails.checks) ? restoreDrillDetails.checks : [];
@@ -4072,6 +4102,9 @@ const SystemStatusPage: React.FC = () => {
           <Button icon={<ToolOutlined />} onClick={handleRepairIndexes} loading={repairingIndexes}>
             修复索引
           </Button>
+          <Button icon={<DownloadOutlined />} onClick={handleExportDiagnostics} loading={exportingDiagnostics}>
+            导出诊断
+          </Button>
           <Button icon={<ReloadOutlined />} onClick={fetchReport} loading={loading}>
             刷新
           </Button>
@@ -4246,6 +4279,20 @@ const SystemStatusPage: React.FC = () => {
               </>
             ) : (
               <Text type="secondary">暂无索引修复记录</Text>
+            )}
+            <Divider style={{ margin: '4px 0' }} />
+            <Text strong>最近诊断导出</Text>
+            {diagnosticsEvent.id ? (
+              <>
+                <Space wrap>
+                  <Tag color={statusTagColor(diagnosticsEvent.status)}>{statusLabel(diagnosticsEvent.status)}</Tag>
+                  <Text type="secondary">{diagnosticsEvent.created_at}</Text>
+                </Space>
+                <Text style={{ wordBreak: 'break-all' }}>{diagnosticsDetails.filename || diagnosticsEvent.message || '-'}</Text>
+                <Text type="secondary">大小 {formatBytes(diagnosticsDetails.size_bytes)}</Text>
+              </>
+            ) : (
+              <Text type="secondary">暂无诊断导出记录</Text>
             )}
             <Divider style={{ margin: '4px 0' }} />
             <Text strong>最近恢复演练</Text>

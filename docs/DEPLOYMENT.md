@@ -165,12 +165,13 @@ Run a basic health check after the container becomes healthy:
 curl -fsS http://localhost:8080/api/health
 ```
 
-Administrators can inspect the deeper runtime readiness report after logging in. The API report includes config, persistent paths, index consistency, SQLite, disk space, and lightweight backup metadata checks; use `scripts/ops_check.py` when a full backup checksum verification is needed.
+Administrators can inspect the deeper runtime readiness report after logging in. The API report includes config, persistent paths, index consistency, SQLite, disk space, and lightweight backup metadata checks. The diagnostics export endpoint creates a zip package with the health report, backup list, recent operational events, index consistency report, redacted config, and tails of common local log files; use it when escalating a production issue. Use `scripts/ops_check.py` when a full backup checksum verification is needed.
 
 ```bash
 curl -fsS http://localhost:8080/api/system/health -H "Authorization: Bearer <token>"
 curl -fsS http://localhost:8080/api/system/backups -H "Authorization: Bearer <token>"
 curl -fsS "http://localhost:8080/api/system/events?limit=20" -H "Authorization: Bearer <token>"
+curl -fsS -OJ "http://localhost:8080/api/system/diagnostics/export" -H "Authorization: Bearer <token>"
 curl -fsS -X POST "http://localhost:8080/api/system/indexes/repair" -H "Authorization: Bearer <token>"
 curl -fsS -X POST "http://localhost:8080/api/system/backups/<backup-file>.tar.gz/verify" -H "Authorization: Bearer <token>"
 curl -fsS -X POST "http://localhost:8080/api/system/backups/<backup-file>.tar.gz/restore-preflight" -H "Authorization: Bearer <token>"
@@ -195,7 +196,7 @@ Before changing a real deployment, run the offline Docker smoke test:
 uv run --extra dev python scripts/docker_smoke_test.py
 ```
 
-The script builds the Compose image, starts a temporary container with `embedding_provider: hash`, checks `/api/health`, API docs, OpenAPI, login, `/api/auth/me`, authenticated system health, backup listing, operational events, index repair, backup verification, restore preflight, true-restore rejection guards, and a temporary restore drill, then shuts the container down. The `hash` embedding provider is deterministic and network-free; it is meant for smoke tests and demos, not production retrieval quality.
+The script builds the Compose image, starts a temporary container with `embedding_provider: hash`, checks `/api/health`, API docs, OpenAPI, login, `/api/auth/me`, authenticated system health, backup listing, operational events, diagnostics export, index repair, backup verification, restore preflight, true-restore rejection guards, and a temporary restore drill, then shuts the container down. The `hash` embedding provider is deterministic and network-free; it is meant for smoke tests and demos, not production retrieval quality.
 
 For a faster local process smoke test without rebuilding the image, `scripts/smoke_test.py` covers the same operational API path against disposable data.
 

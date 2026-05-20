@@ -330,6 +330,14 @@ def run_operational_checks(
     if not repair.get("ok") or repair.get("action") != "index_repair":
         raise RuntimeError(f"index repair failed: {repair}")
 
+    diagnostics = checks.record(
+        check_name("export diagnostics"),
+        client.get(f"{base_url}/api/system/diagnostics/export", headers=headers),
+        {200},
+    )
+    if diagnostics.headers.get("content-type") != "application/zip" or not diagnostics.content.startswith(b"PK"):
+        raise RuntimeError("diagnostic export did not return a zip file")
+
     verified = checks.record(
         check_name("verify backup archive"),
         client.post(f"{base_url}/api/system/backups/{archive_name}/verify", headers=headers),
@@ -376,9 +384,14 @@ def run_operational_checks(
         {200},
     ).json()
     event_types = {event.get("event_type") for event in events.get("events", [])}
-    if not {"backup_maintenance", "index_repair", "restore_preflight", "restore_execute", "restore_drill"}.issubset(
-        event_types
-    ):
+    if not {
+        "backup_maintenance",
+        "diagnostics_export",
+        "index_repair",
+        "restore_preflight",
+        "restore_execute",
+        "restore_drill",
+    }.issubset(event_types):
         raise RuntimeError(f"operational events missing expected types: {events}")
 
     return {

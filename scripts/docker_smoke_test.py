@@ -181,6 +181,15 @@ def _request(method: str, url: str, *, body: dict | None = None, token: str | No
         return response.status, payload
 
 
+def _request_raw(method: str, url: str, *, token: str | None = None) -> tuple[int, bytes, str]:
+    headers = {}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(url, headers=headers, method=method)
+    with urllib.request.urlopen(request, timeout=10) as response:
+        return response.status, response.read(), response.headers.get("Content-Type", "")
+
+
 def _wait_for_health(base_url: str, timeout: float) -> dict:
     deadline = time.monotonic() + timeout
     last_error = ""
@@ -261,6 +270,20 @@ def _run_operational_checks(base_url: str, token: str, checks: list[dict]) -> di
         status=repair_status,
     )
 
+    diagnostics_status, diagnostics_content, diagnostics_type = _request_raw(
+        "GET",
+        f"{base_url}/api/system/diagnostics/export",
+        token=token,
+    )
+    _append_check(
+        checks,
+        "export diagnostics",
+        diagnostics_status == 200
+        and diagnostics_type == "application/zip"
+        and diagnostics_content.startswith(b"PK"),
+        status=diagnostics_status,
+    )
+
     verify_status, verified = _request(
         "POST",
         f"{base_url}/api/system/backups/{archive_name}/verify",
@@ -330,9 +353,14 @@ def _run_operational_checks(base_url: str, token: str, checks: list[dict]) -> di
         checks,
         "system events after restore drill",
         events_after_status == 200
-        and {"backup_maintenance", "index_repair", "restore_preflight", "restore_execute", "restore_drill"}.issubset(
-            event_types
-        ),
+        and {
+            "backup_maintenance",
+            "diagnostics_export",
+            "index_repair",
+            "restore_preflight",
+            "restore_execute",
+            "restore_drill",
+        }.issubset(event_types),
         status=events_after_status,
     )
 

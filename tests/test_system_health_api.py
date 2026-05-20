@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import contextlib
 import importlib
+import json
+import zipfile
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -128,6 +131,11 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
             assert events_forbidden.status_code == 403
             repair_forbidden = client.post("/api/system/indexes/repair", headers={"Authorization": f"Bearer {user_token}"})
             assert repair_forbidden.status_code == 403
+            diagnostics_forbidden = client.get(
+                "/api/system/diagnostics/export",
+                headers={"Authorization": f"Bearer {user_token}"},
+            )
+            assert diagnostics_forbidden.status_code == 403
 
             response = client.get("/api/system/health", headers={"Authorization": f"Bearer {admin_token}"})
             assert response.status_code == 200
@@ -181,6 +189,15 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
             )
             assert drill.status_code == 200
             drill_payload = drill.json()
+
+            diagnostics = client.get(
+                "/api/system/diagnostics/export",
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+            assert diagnostics.status_code == 200
+            diagnostics_content_type = diagnostics.headers.get("content-type")
+            diagnostics_disposition = diagnostics.headers.get("content-disposition", "")
+            diagnostics_zip = diagnostics.content
 
             events = client.get("/api/system/events?limit=10", headers={"Authorization": f"Bearer {admin_token}"})
             assert events.status_code == 200
@@ -274,13 +291,32 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
         "data": "ok",
         "workspace": "ok",
     }
+    assert diagnostics_content_type == "application/zip"
+    assert "memox-diagnostics-" in diagnostics_disposition
+    with zipfile.ZipFile(BytesIO(diagnostics_zip)) as bundle:
+        names = set(bundle.namelist())
+        assert {
+            "manifest.json",
+            "reports/system_health.json",
+            "reports/backups.json",
+            "reports/ops_events.json",
+            "reports/index_consistency.json",
+            "config/redacted_config.json",
+            "logs/log_sources.json",
+        }.issubset(names)
+        manifest = json.loads(bundle.read("manifest.json"))
+        redacted_config = json.loads(bundle.read("config/redacted_config.json"))
+    assert manifest["log_count"] >= 0
+    assert redacted_config["auth"]["users"][0]["password"] == "***REDACTED***"
     assert refreshed_payload["ops"]["last_backup_maintenance"]["details"]["forced"] is True
+    assert refreshed_payload["ops"]["last_diagnostics_export"]["details"]["filename"].endswith(".zip")
     assert refreshed_payload["ops"]["last_index_repair"]["details"]["action"] == "index_repair"
     assert refreshed_payload["ops"]["last_restore_drill"]["details"]["name"] == Path(manual_payload["archive"]).name
     assert refreshed_payload["ops"]["last_restore_execute"]["details"]["action"] == "rejected"
-    assert events_payload["count"] >= 5
+    assert events_payload["count"] >= 6
     assert {event["event_type"] for event in events_payload["events"]} >= {
         "backup_maintenance",
+        "diagnostics_export",
         "index_repair",
         "restore_preflight",
         "restore_execute",
