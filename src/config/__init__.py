@@ -40,6 +40,16 @@ def validate_config(config: "Config") -> None:
                     f"用户 {user.username!r} 的密码为空；请设置对应环境变量或在 config.yaml 中提供非空密码"
                 )
 
+    if config.ops.auto_backup_enabled:
+        if config.ops.auto_backup_interval_hours <= 0:
+            errors.append("ops.auto_backup_interval_hours 必须大于 0")
+        if config.ops.auto_backup_startup_delay_seconds < 0:
+            errors.append("ops.auto_backup_startup_delay_seconds 不能为负数")
+        if config.ops.max_backups < 1:
+            errors.append("ops.max_backups 必须至少为 1")
+        if not config.ops.auto_backup_include:
+            errors.append("ops.auto_backup_include 不能为空")
+
     if errors:
         raise ConfigError("MemoX 配置无效:\n- " + "\n- ".join(errors))
 
@@ -198,6 +208,17 @@ class MemoryConfig:
 
 
 @dataclass
+class OpsConfig:
+    """运维自动化配置"""
+
+    auto_backup_enabled: bool = True
+    auto_backup_interval_hours: float = 24.0
+    auto_backup_startup_delay_seconds: float = 300.0
+    auto_backup_include: list[str] = field(default_factory=lambda: ["config.yaml", "data", "workspace"])
+    max_backups: int = 14
+
+
+@dataclass
 class Config:
     """全局配置"""
     app: AppConfig
@@ -207,6 +228,7 @@ class Config:
     worker_templates: dict[str, WorkerTemplate]
     knowledge_base: KnowledgeBaseConfig
     memory: MemoryConfig = field(default_factory=MemoryConfig)
+    ops: OpsConfig = field(default_factory=OpsConfig)
     auth: AuthConfig = field(default_factory=AuthConfig)
     image_generation: ImageGenerationConfig = field(default_factory=ImageGenerationConfig)
     video_generation: VideoGenerationConfig = field(default_factory=VideoGenerationConfig)
@@ -251,6 +273,7 @@ class Config:
         )
 
         memory = MemoryConfig(**data.get("memory", {}))
+        ops = OpsConfig(**data.get("ops", {}))
 
         image_generation = ImageGenerationConfig(**data.get("image_generation", {}))
         video_generation = VideoGenerationConfig(**data.get("video_generation", {}))
@@ -264,6 +287,7 @@ class Config:
             worker_templates=worker_templates,
             knowledge_base=knowledge_base,
             memory=memory,
+            ops=ops,
             auth=auth,
             image_generation=image_generation,
             video_generation=video_generation,

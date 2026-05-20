@@ -64,6 +64,28 @@ def test_validate_config_allows_disabled_auth_without_users() -> None:
     validate_config(cfg)
 
 
+def test_validate_config_rejects_invalid_ops_backup_settings() -> None:
+    cfg = Config._from_dict(
+        {
+            "app": {},
+            "server": {},
+            "coordinator": {},
+            "providers": {},
+            "worker_templates": {},
+            "knowledge_base": {},
+            "auth": {"enabled": False, "users": []},
+            "ops": {
+                "auto_backup_enabled": True,
+                "auto_backup_interval_hours": 0,
+                "max_backups": 0,
+            },
+        }
+    )
+
+    with pytest.raises(ConfigError, match="auto_backup_interval_hours"):
+        validate_config(cfg)
+
+
 def test_config_example_is_valid_with_required_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MEMOX_ADMIN_PASSWORD", "dev-password")
     monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-key")
@@ -71,6 +93,8 @@ def test_config_example_is_valid_with_required_env(monkeypatch: pytest.MonkeyPat
     cfg = Config.from_yaml(Path(__file__).parents[1] / "config.example.yaml")
 
     validate_config(cfg)
+    assert cfg.ops.auto_backup_enabled is True
+    assert cfg.ops.auto_backup_include == ["config.yaml", "data", "workspace"]
 
 
 def test_default_config_path_uses_env_override(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

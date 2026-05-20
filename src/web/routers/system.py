@@ -42,6 +42,8 @@ async def system_health(
         vector_store=vector_store,
         bm25_indexer=bm25_indexer,
         include_backup=True,
+        max_backup_age_hours=_config.ops.auto_backup_interval_hours,
+        max_backups=_config.ops.max_backups,
     )
     result["runtime"] = {
         "app": getattr(request.app, "title", "MemoX API"),

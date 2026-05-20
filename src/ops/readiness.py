@@ -2,25 +2,22 @@
 
 from __future__ import annotations
 
-import json
 import shutil
 import sqlite3
-import tarfile
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Any
 
 from src.config import Config, validate_config
+from src.ops.backup import BackupError, list_backup_archives, read_backup_metadata
 from src.ops.index_consistency import audit_indexes, build_runtime
 
 Status = str
 DEFAULT_MIN_FREE_BYTES = 512 * 1024 * 1024
 DEFAULT_MAX_BACKUP_AGE_HOURS = 24.0
 DEFAULT_MAX_BACKUP_ARCHIVES = 14
-BACKUP_FORMAT = "memox-backup-v1"
-BACKUP_METADATA_NAME = "memox-backup.json"
 
 
 @dataclass(frozen=True)
@@ -276,43 +273,6 @@ def check_disk_space(root: Path, config: Config, *, min_free_bytes: int = DEFAUL
     )
 
 
-def list_backup_archives(root: str | Path = ".") -> list[Path]:
-    """Return MemoX backup archives sorted from newest to oldest."""
-    backup_dir = Path(root).resolve() / "backups"
-    if not backup_dir.exists():
-        return []
-    archives = [path for path in backup_dir.glob("memox-backup-*.tar.gz") if path.is_file()]
-    return sorted(archives, key=lambda path: (path.stat().st_mtime, path.name), reverse=True)
-
-
-def _safe_backup_member(value: str) -> PurePosixPath:
-    rel = PurePosixPath(value)
-    if rel.is_absolute() or ".." in rel.parts or not rel.parts:
-        raise ValueError(f"Unsafe archive path: {value}")
-    return rel
-
-
-def _read_backup_metadata(archive: Path) -> dict[str, Any]:
-    with tarfile.open(archive, "r:gz") as tar:
-        for member in tar.getmembers():
-            _safe_backup_member(member.name)
-        try:
-            member = tar.getmember(BACKUP_METADATA_NAME)
-        except KeyError as exc:
-            raise ValueError(f"Missing {BACKUP_METADATA_NAME}") from exc
-        extracted = tar.extractfile(member)
-        if extracted is None:
-            raise ValueError(f"Cannot read {BACKUP_METADATA_NAME}")
-        metadata = json.loads(extracted.read().decode("utf-8"))
-
-    if metadata.get("format") != BACKUP_FORMAT:
-        raise ValueError(f"Unsupported backup format: {metadata.get('format')}")
-    entries = metadata.get("entries", [])
-    if not isinstance(entries, list):
-        raise ValueError("Backup metadata entries must be a list")
-    return metadata
-
-
 def _parse_backup_timestamp(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -351,8 +311,8 @@ def check_latest_backup(
 
     backup_path = archives[0]
     try:
-        metadata = _read_backup_metadata(backup_path)
-    except (OSError, tarfile.TarError, json.JSONDecodeError, ValueError) as exc:
+        metadata = read_backup_metadata(backup_path)
+    except BackupError as exc:
         return CheckResult(
             name="latest_backup",
             status="error",

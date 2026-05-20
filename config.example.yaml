@@ -117,6 +117,16 @@ memory:
   summary_max_chars: 500
   recent_messages_to_keep: 4
 
+ops:
+  auto_backup_enabled: true
+  auto_backup_interval_hours: 24
+  auto_backup_startup_delay_seconds: 300
+  auto_backup_include:
+    - "config.yaml"
+    - "data"
+    - "workspace"
+  max_backups: 14
+
 auth:
   enabled: true
   public_paths:

@@ -165,6 +165,8 @@ uv run --extra dev python scripts/index_consistency.py
 uv run --extra dev python scripts/ops_check.py
 ```
 
+服务启动后还会按 `ops.auto_backup_*` 配置执行后台备份维护：默认每 24 小时备份 `config.yaml`、`data/`、`workspace/`，并保留最近 14 个本地归档。后台备份不包含主机上的 `.env`；升级、迁移或外部归档前仍建议使用上面的 CLI 备份命令做一次完整校验。
+
 Docker 镜像默认不安装 `sentence-transformers`/Streamlit 这类重依赖。需要本地 embedding 时使用 `uv sync --extra local-embeddings`，需要旧的 Streamlit 管理界面时使用 `uv run --extra ui streamlit run src/ui/streamlit_app.py`。
 
 ## API 接口

@@ -42,7 +42,7 @@ from slowapi.util import get_remote_address  # noqa: E402
 from agents.base_agent import ToolRegistry, create_provider  # noqa: E402
 from agents.worker_pool import WorkerAgent, WorkerConfig, get_worker_pool, init_worker_pool  # noqa: E402
 from auth import AuthUser, _get_auth_from_request, init_auth  # noqa: E402
-from config import Config, load_config, resolve_env_value, validate_config  # noqa: E402
+from config import Config, default_config_path, load_config, resolve_env_value, validate_config  # noqa: E402
 from coordinator.iterative_orchestrator import IterativeOrchestrator  # noqa: E402
 from coordinator.task_planner import TaskPlanner, init_task_planner  # noqa: E402
 from memory import MemoryManager, MemoryRecall, PreferenceLearner  # noqa: E402
@@ -464,14 +464,34 @@ async def startup():
         runner = init_runner(get_store(), _orchestrator)
         runner.start()
 
+    # 启动运维维护任务：自动备份与本地归档裁剪
+    if _config.ops.auto_backup_enabled:
+        from ops.maintenance import init_maintenance_runner
+
+        config_path = default_config_path()
+        if not config_path.is_absolute():
+            config_path = Path.cwd() / config_path
+        ops_runner = init_maintenance_runner(
+            root=config_path.resolve().parent,
+            include=tuple(_config.ops.auto_backup_include),
+            interval_hours=_config.ops.auto_backup_interval_hours,
+            startup_delay_seconds=_config.ops.auto_backup_startup_delay_seconds,
+            max_backups=_config.ops.max_backups,
+        )
+        ops_runner.start()
+
     # 注册优雅停机
     import atexit
-    def _stop_scheduler():
+    def _stop_background_runners():
         from scheduler import get_runner
         r = get_runner()
         if r:
             r.stop()
-    atexit.register(_stop_scheduler)
+        from ops.maintenance import get_maintenance_runner
+        ops_runner = get_maintenance_runner()
+        if ops_runner:
+            ops_runner.stop()
+    atexit.register(_stop_background_runners)
 
     # 初始化文生图客户端
     img_cfg = _config.image_generation if _config else None
