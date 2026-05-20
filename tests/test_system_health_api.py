@@ -109,6 +109,11 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
                 headers={"Authorization": f"Bearer {user_token}"},
             )
             assert drill_forbidden.status_code == 403
+            preflight_forbidden = client.post(
+                "/api/system/backups/memox-backup-missing.tar.gz/restore-preflight",
+                headers={"Authorization": f"Bearer {user_token}"},
+            )
+            assert preflight_forbidden.status_code == 403
             events_forbidden = client.get("/api/system/events", headers={"Authorization": f"Bearer {user_token}"})
             assert events_forbidden.status_code == 403
 
@@ -134,6 +139,13 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
             )
             assert verified.status_code == 200
             verified_payload = verified.json()
+
+            preflight = client.post(
+                f"/api/system/backups/{backup_name}/restore-preflight",
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+            assert preflight.status_code == 200
+            preflight_payload = preflight.json()
 
             drill = client.post(
                 f"/api/system/backups/{backup_name}/restore-drill",
@@ -162,6 +174,11 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
                 headers={"Authorization": f"Bearer {admin_token}"},
             )
             assert missing_drill.status_code == 404
+            missing_preflight = client.post(
+                "/api/system/backups/memox-backup-missing.tar.gz/restore-preflight",
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+            assert missing_preflight.status_code == 404
 
             refreshed = client.get("/api/system/health", headers={"Authorization": f"Bearer {admin_token}"})
             assert refreshed.status_code == 200
@@ -198,6 +215,12 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
     assert verified_payload["verified"] is True
     assert verified_payload["name"] == Path(manual_payload["archive"]).name
     assert verified_payload["entry_count"] > 0
+    assert preflight_payload["ok"] is True
+    assert preflight_payload["status"] == "warning"
+    assert preflight_payload["safe_without_overwrite"] is False
+    assert preflight_payload["requires_overwrite"] is True
+    assert preflight_payload["conflict_count"] > 0
+    assert preflight_payload["writes_performed"] is False
     assert drill_payload["ok"] is True
     assert drill_payload["status"] == "ok"
     assert drill_payload["name"] == Path(manual_payload["archive"]).name
@@ -209,7 +232,11 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
     assert refreshed_payload["ops"]["last_backup_maintenance"]["details"]["forced"] is True
     assert refreshed_payload["ops"]["last_restore_drill"]["details"]["name"] == Path(manual_payload["archive"]).name
     assert events_payload["count"] >= 3
-    assert {event["event_type"] for event in events_payload["events"]} >= {"backup_maintenance", "restore_drill"}
+    assert {event["event_type"] for event in events_payload["events"]} >= {
+        "backup_maintenance",
+        "restore_preflight",
+        "restore_drill",
+    }
     assert restore_events_payload["count"] == 1
     assert restore_events_payload["events"][0]["event_type"] == "restore_drill"
     assert restore_events_payload["events"][0]["details"]["name"] == Path(manual_payload["archive"]).name

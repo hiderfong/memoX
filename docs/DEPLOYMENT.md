@@ -172,6 +172,7 @@ curl -fsS http://localhost:8080/api/system/health -H "Authorization: Bearer <tok
 curl -fsS http://localhost:8080/api/system/backups -H "Authorization: Bearer <token>"
 curl -fsS "http://localhost:8080/api/system/events?limit=20" -H "Authorization: Bearer <token>"
 curl -fsS -X POST "http://localhost:8080/api/system/backups/<backup-file>.tar.gz/verify" -H "Authorization: Bearer <token>"
+curl -fsS -X POST "http://localhost:8080/api/system/backups/<backup-file>.tar.gz/restore-preflight" -H "Authorization: Bearer <token>"
 curl -fsS -X POST "http://localhost:8080/api/system/backups/<backup-file>.tar.gz/restore-drill" -H "Authorization: Bearer <token>"
 curl -fsS -X POST "http://localhost:8080/api/system/maintenance/backup?force=true" -H "Authorization: Bearer <token>"
 ```
@@ -184,7 +185,7 @@ Before changing a real deployment, run the offline Docker smoke test:
 uv run --extra dev python scripts/docker_smoke_test.py
 ```
 
-The script builds the Compose image, starts a temporary container with `embedding_provider: hash`, checks `/api/health`, API docs, OpenAPI, login, `/api/auth/me`, authenticated system health, backup listing, operational events, backup verification, and a temporary restore drill, then shuts the container down. The `hash` embedding provider is deterministic and network-free; it is meant for smoke tests and demos, not production retrieval quality.
+The script builds the Compose image, starts a temporary container with `embedding_provider: hash`, checks `/api/health`, API docs, OpenAPI, login, `/api/auth/me`, authenticated system health, backup listing, operational events, backup verification, restore preflight, and a temporary restore drill, then shuts the container down. The `hash` embedding provider is deterministic and network-free; it is meant for smoke tests and demos, not production retrieval quality.
 
 For a faster local process smoke test without rebuilding the image, `scripts/smoke_test.py` covers the same operational API path against disposable data.
 

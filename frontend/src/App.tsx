@@ -105,6 +105,7 @@ const statusLabel = (status?: ReadinessStatus) => {
 
 const opsEventLabel = (eventType?: string) => {
   if (eventType === 'backup_maintenance') return '备份维护';
+  if (eventType === 'restore_preflight') return '恢复预检';
   if (eventType === 'restore_drill') return '恢复演练';
   return eventType || '运维事件';
 };
@@ -232,6 +233,8 @@ const api = {
     }),
   verifyBackup: (archiveName: string) =>
     axios.post(`${API_BASE}/system/backups/${encodeURIComponent(archiveName)}/verify`),
+  runRestorePreflight: (archiveName: string) =>
+    axios.post(`${API_BASE}/system/backups/${encodeURIComponent(archiveName)}/restore-preflight`),
   runRestoreDrill: (archiveName: string) =>
     axios.post(`${API_BASE}/system/backups/${encodeURIComponent(archiveName)}/restore-drill`),
   runBackupMaintenance: (force: boolean = true) =>
@@ -3624,6 +3627,7 @@ const SystemStatusPage: React.FC = () => {
   const [eventsLoading, setEventsLoading] = useState(true);
   const [maintenanceRunning, setMaintenanceRunning] = useState(false);
   const [verifyingBackup, setVerifyingBackup] = useState('');
+  const [preflightingBackup, setPreflightingBackup] = useState('');
   const [drillingBackup, setDrillingBackup] = useState('');
   const [lastUpdated, setLastUpdated] = useState<string>('');
 
@@ -3694,6 +3698,26 @@ const SystemStatusPage: React.FC = () => {
       message.error(typeof detail === 'string' ? detail : '备份归档校验失败');
     } finally {
       setVerifyingBackup('');
+    }
+  };
+
+  const handleRunRestorePreflight = async (archiveName: string) => {
+    setPreflightingBackup(archiveName);
+    try {
+      const res = await api.runRestorePreflight(archiveName);
+      if (res.data?.ok && res.data?.status === 'ok') {
+        message.success('恢复预检通过');
+      } else if (res.data?.ok) {
+        message.warning(res.data?.message || '恢复预检发现需要确认的覆盖项');
+      } else {
+        message.error(res.data?.message || '恢复预检失败');
+      }
+      await fetchReport();
+    } catch (err: any) {
+      const detail = err.response?.data?.detail;
+      message.error(typeof detail === 'string' ? detail : '恢复预检失败');
+    } finally {
+      setPreflightingBackup('');
     }
   };
 
@@ -3832,7 +3856,7 @@ const SystemStatusPage: React.FC = () => {
     {
       title: '操作',
       key: 'action',
-      width: 170,
+      width: 240,
       render: (_: any, item: BackupArchiveSummary) => (
         <Space>
           <Button
@@ -3842,6 +3866,14 @@ const SystemStatusPage: React.FC = () => {
             loading={verifyingBackup === item.name}
           >
             校验
+          </Button>
+          <Button
+            size="small"
+            icon={<EyeOutlined />}
+            onClick={() => handleRunRestorePreflight(item.name)}
+            loading={preflightingBackup === item.name}
+          >
+            预检
           </Button>
           <Button
             size="small"

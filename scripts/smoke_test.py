@@ -330,6 +330,14 @@ def run_operational_checks(
     if not verified.get("ok") or not verified.get("verified"):
         raise RuntimeError(f"backup verification failed: {verified}")
 
+    preflight = checks.record(
+        check_name("restore preflight"),
+        client.post(f"{base_url}/api/system/backups/{archive_name}/restore-preflight", headers=headers),
+        {200},
+    ).json()
+    if not preflight.get("ok") or preflight.get("writes_performed") is not False:
+        raise RuntimeError(f"restore preflight failed: {preflight}")
+
     drill = checks.record(
         check_name("restore drill"),
         client.post(f"{base_url}/api/system/backups/{archive_name}/restore-drill", headers=headers),
@@ -344,7 +352,7 @@ def run_operational_checks(
         {200},
     ).json()
     event_types = {event.get("event_type") for event in events.get("events", [])}
-    if not {"backup_maintenance", "restore_drill"}.issubset(event_types):
+    if not {"backup_maintenance", "restore_preflight", "restore_drill"}.issubset(event_types):
         raise RuntimeError(f"operational events missing expected types: {events}")
 
     return {

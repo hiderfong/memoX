@@ -13,7 +13,7 @@ from auth import AuthUser, require_role
 from config import default_config_path
 from src.ops.backup import BackupError, list_backup_archives, read_backup_metadata, verify_backup
 from src.ops.readiness import run_readiness_checks
-from src.ops.recovery import run_restore_drill
+from src.ops.recovery import run_restore_drill, run_restore_preflight
 
 router = APIRouter(prefix="/api/system", tags=["system"])
 
@@ -250,6 +250,18 @@ async def run_system_backup_restore_drill(
     archive = _resolve_backup_archive(_deployment_root(), archive_name)
     result = await asyncio.to_thread(run_restore_drill, archive)
     _record_ops_event("restore_drill", result)
+    return result
+
+
+@router.post("/backups/{archive_name}/restore-preflight")
+async def run_system_backup_restore_preflight(
+    archive_name: str,
+    _: Annotated[AuthUser, require_role("admin")],
+) -> dict:
+    """Analyze a restore against the current deployment root without writing files."""
+    archive = _resolve_backup_archive(_deployment_root(), archive_name)
+    result = await asyncio.to_thread(run_restore_preflight, archive, _deployment_root())
+    _record_ops_event("restore_preflight", result)
     return result
 
 
