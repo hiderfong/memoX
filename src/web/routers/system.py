@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from auth import AuthUser, require_role
 from config import default_config_path
 from src.ops.backup import BackupError, list_backup_archives, read_backup_metadata, verify_backup
+from src.ops.index_consistency import run_index_repair
 from src.ops.readiness import run_readiness_checks
 from src.ops.recovery import run_restore_drill, run_restore_execute, run_restore_preflight
 
@@ -141,6 +142,7 @@ async def system_health(
     latest_event = None
     latest_restore_drill = None
     latest_restore_execute = None
+    latest_index_repair = None
     try:
         from storage import get_store
 
@@ -149,10 +151,12 @@ async def system_health(
             latest_event = store.get_latest_ops_event("backup_maintenance")
             latest_restore_drill = store.get_latest_ops_event("restore_drill")
             latest_restore_execute = store.get_latest_ops_event("restore_execute")
+            latest_index_repair = store.get_latest_ops_event("index_repair")
     except Exception:
         latest_event = None
         latest_restore_drill = None
         latest_restore_execute = None
+        latest_index_repair = None
 
     try:
         from ops.maintenance import get_maintenance_runner
@@ -170,6 +174,7 @@ async def system_health(
         "last_backup_maintenance": latest_event,
         "last_restore_drill": latest_restore_drill,
         "last_restore_execute": latest_restore_execute,
+        "last_index_repair": latest_index_repair,
     }
     return result
 
@@ -297,6 +302,17 @@ async def run_system_backup_restore(
         safety_include=include,
     )
     _record_ops_event("restore_execute", result)
+    return result
+
+
+@router.post("/indexes/repair")
+async def run_system_index_repair(
+    _: Annotated[AuthUser, require_role("admin")],
+    collection: str = Query(default="documents", min_length=1, max_length=64),
+) -> dict:
+    """Repair disk-backed Chroma/BM25/manifest consistency for the configured collection."""
+    result = await asyncio.to_thread(run_index_repair, _config_path_from_runtime().resolve(), collection)
+    _record_ops_event("index_repair", result)
     return result
 
 

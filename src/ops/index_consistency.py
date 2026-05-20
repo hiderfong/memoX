@@ -320,6 +320,49 @@ def repair_indexes(
     }
 
 
+def run_index_repair(config_path: str | Path, collection_name: str = "documents") -> dict:
+    """Audit and repair disk-backed search indexes using a fresh runtime."""
+    resolved_config = Path(config_path).resolve()
+    result: dict[str, Any] = {
+        "ok": False,
+        "status": "error",
+        "action": "index_repair",
+        "config": str(resolved_config),
+        "collection": collection_name,
+    }
+
+    try:
+        vector_store, bm25_indexer, manifest_path = build_runtime(resolved_config)
+        repaired = repair_indexes(
+            vector_store=vector_store,
+            bm25_indexer=bm25_indexer,
+            manifest_path=manifest_path,
+            collection_name=collection_name,
+        )
+        after = repaired["after"]
+        action_count = len(repaired.get("repair_actions", []))
+        return {
+            **result,
+            "ok": repaired["ok"],
+            "status": after.get("status", "error"),
+            "message": (
+                "Index repair completed without remaining errors"
+                if repaired["ok"]
+                else "Index repair completed with remaining errors"
+            ),
+            "manifest": str(manifest_path),
+            "repair_action_count": action_count,
+            "repair_actions": repaired.get("repair_actions", []),
+            "before": repaired["before"],
+            "after": after,
+        }
+    except Exception as exc:
+        return {
+            **result,
+            "message": f"Index repair failed: {type(exc).__name__}: {exc}",
+        }
+
+
 def _resolve_config_path(root: Path, value: str | Path) -> Path:
     path = Path(value)
     if path.is_absolute():

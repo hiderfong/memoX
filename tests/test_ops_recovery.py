@@ -61,6 +61,12 @@ def test_restore_execute_restores_after_safety_backup(tmp_path: Path) -> None:
     assert result["status"] == "ok"
     assert result["action"] == "restored"
     assert result["writes_performed"] is True
+    assert result["restart_required"] is True
+    assert [action["action"] for action in result["post_restore_actions"]] == [
+        "repair_indexes",
+        "restart_service",
+        "run_health_check",
+    ]
     assert result["safety_backup_created"] is True
     safety_archive = Path(result["safety_backup"]["archive"])
     assert safety_archive.exists()
@@ -95,6 +101,7 @@ def test_restore_execute_rejects_without_exact_confirmation(tmp_path: Path) -> N
     assert result["status"] == "warning"
     assert result["action"] == "rejected"
     assert result["writes_performed"] is False
+    assert result["restart_required"] is False
     assert not (target / "backups").exists()
     assert (target / "data" / "memo.txt").read_text(encoding="utf-8") == "current memo\n"
 
@@ -121,6 +128,7 @@ def test_restore_execute_rejects_without_overwrite_acknowledgement(tmp_path: Pat
     assert result["action"] == "rejected"
     assert result["preflight"]["requires_overwrite"] is True
     assert result["writes_performed"] is False
+    assert result["restart_required"] is False
     assert not (target / "backups").exists()
     assert (target / "workspace" / "artifact.txt").read_text(encoding="utf-8") == "current artifact\n"
 

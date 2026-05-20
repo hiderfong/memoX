@@ -125,6 +125,7 @@ Worker 创建、更新和删除接口会持久化修改 `config.yaml` 中的 `wo
 | `GET` | `/api/system/health` | 管理员系统巡检：配置、索引、SQLite、磁盘 |
 | `GET` | `/api/system/backups` | 管理员查看本地备份归档 |
 | `GET` | `/api/system/events` | 管理员查看最近运维事件，可用 `event_type` 与 `limit` 过滤 |
+| `POST` | `/api/system/indexes/repair` | 管理员修复 Chroma / BM25 / manifest 索引一致性，可用 `collection` 查询参数指定集合 |
 | `POST` | `/api/system/backups/{name}/verify` | 管理员校验单个备份归档 |
 | `POST` | `/api/system/backups/{name}/restore-preflight` | 管理员预检恢复覆盖风险 |
 | `POST` | `/api/system/backups/{name}/restore` | 管理员强确认后执行真实恢复；请求体需提供 `confirm_archive_name`、`acknowledge_overwrite`、`acknowledge_maintenance_mode` |

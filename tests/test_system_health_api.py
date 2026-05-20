@@ -126,6 +126,8 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
             assert restore_forbidden.status_code == 403
             events_forbidden = client.get("/api/system/events", headers={"Authorization": f"Bearer {user_token}"})
             assert events_forbidden.status_code == 403
+            repair_forbidden = client.post("/api/system/indexes/repair", headers={"Authorization": f"Bearer {user_token}"})
+            assert repair_forbidden.status_code == 403
 
             response = client.get("/api/system/health", headers={"Authorization": f"Bearer {admin_token}"})
             assert response.status_code == 200
@@ -142,6 +144,10 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
             backups = client.get("/api/system/backups", headers={"Authorization": f"Bearer {admin_token}"})
             assert backups.status_code == 200
             backups_payload = backups.json()
+
+            repair = client.post("/api/system/indexes/repair", headers={"Authorization": f"Bearer {admin_token}"})
+            assert repair.status_code == 200
+            repair_payload = repair.json()
 
             verified = client.post(
                 f"/api/system/backups/{backup_name}/verify",
@@ -243,6 +249,9 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
     assert backups_payload["backups"][0]["name"] == Path(manual_payload["archive"]).name
     assert backups_payload["backups"][0]["metadata_valid"] is True
     assert backups_payload["backups"][0]["entry_count"] > 0
+    assert repair_payload["ok"] is True
+    assert repair_payload["action"] == "index_repair"
+    assert repair_payload["after"]["status"] == "ok"
     assert verified_payload["ok"] is True
     assert verified_payload["verified"] is True
     assert verified_payload["name"] == Path(manual_payload["archive"]).name
@@ -266,11 +275,13 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
         "workspace": "ok",
     }
     assert refreshed_payload["ops"]["last_backup_maintenance"]["details"]["forced"] is True
+    assert refreshed_payload["ops"]["last_index_repair"]["details"]["action"] == "index_repair"
     assert refreshed_payload["ops"]["last_restore_drill"]["details"]["name"] == Path(manual_payload["archive"]).name
     assert refreshed_payload["ops"]["last_restore_execute"]["details"]["action"] == "rejected"
-    assert events_payload["count"] >= 4
+    assert events_payload["count"] >= 5
     assert {event["event_type"] for event in events_payload["events"]} >= {
         "backup_maintenance",
+        "index_repair",
         "restore_preflight",
         "restore_execute",
         "restore_drill",

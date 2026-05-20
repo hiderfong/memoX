@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, createContext, useContext } from 'react';
 import { Layout, Menu, Typography, Card, Button, Upload, List, Space, Avatar, Input, message, Spin, Tag, Progress, Badge, Drawer, Timeline, Alert, Empty, Tooltip, Form, Divider, Checkbox, Modal, Tabs, Table, Select, Slider, InputNumber, AutoComplete, Switch } from 'antd';
-import { UploadOutlined, FileTextOutlined, RobotOutlined, MessageOutlined, TeamOutlined, SettingOutlined, CloudUploadOutlined, DeleteOutlined, SendOutlined, LoadingOutlined, BulbOutlined, ThunderboltOutlined, ClockCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, InboxOutlined, UserOutlined, LockOutlined, LogoutOutlined, SafetyCertificateOutlined, LinkOutlined, FolderOpenOutlined, MailOutlined, LineChartOutlined, FileSearchOutlined, EyeOutlined, SaveOutlined, DownOutlined, UpOutlined, PlusOutlined, EditOutlined, DownloadOutlined, BgColorsOutlined, ReloadOutlined, RollbackOutlined, ExclamationCircleOutlined } from '@ant-design/icons';
+import { UploadOutlined, FileTextOutlined, RobotOutlined, MessageOutlined, TeamOutlined, SettingOutlined, CloudUploadOutlined, DeleteOutlined, SendOutlined, LoadingOutlined, BulbOutlined, ThunderboltOutlined, ClockCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, InboxOutlined, UserOutlined, LockOutlined, LogoutOutlined, SafetyCertificateOutlined, LinkOutlined, FolderOpenOutlined, MailOutlined, LineChartOutlined, FileSearchOutlined, EyeOutlined, SaveOutlined, DownOutlined, UpOutlined, PlusOutlined, EditOutlined, DownloadOutlined, BgColorsOutlined, ReloadOutlined, RollbackOutlined, ExclamationCircleOutlined, ToolOutlined } from '@ant-design/icons';
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip as RTooltip, Legend, ResponsiveContainer } from 'recharts';
 import { useNavigate, useLocation, Routes, Route, Link, Navigate } from 'react-router-dom';
 import axios from 'axios';
@@ -105,6 +105,7 @@ const statusLabel = (status?: ReadinessStatus) => {
 
 const opsEventLabel = (eventType?: string) => {
   if (eventType === 'backup_maintenance') return '备份维护';
+  if (eventType === 'index_repair') return '索引修复';
   if (eventType === 'restore_preflight') return '恢复预检';
   if (eventType === 'restore_execute') return '真实恢复';
   if (eventType === 'restore_drill') return '恢复演练';
@@ -248,6 +249,7 @@ const api = {
     axios.post(`${API_BASE}/system/backups/${encodeURIComponent(archiveName)}/restore-drill`),
   runBackupMaintenance: (force: boolean = true) =>
     axios.post(`${API_BASE}/system/maintenance/backup`, null, { params: { force } }),
+  repairIndexes: () => axios.post(`${API_BASE}/system/indexes/repair`),
 
   // 认证
   login: (username: string, password: string) =>
@@ -3635,6 +3637,7 @@ const SystemStatusPage: React.FC = () => {
   const [backupsLoading, setBackupsLoading] = useState(true);
   const [eventsLoading, setEventsLoading] = useState(true);
   const [maintenanceRunning, setMaintenanceRunning] = useState(false);
+  const [repairingIndexes, setRepairingIndexes] = useState(false);
   const [verifyingBackup, setVerifyingBackup] = useState('');
   const [preflightingBackup, setPreflightingBackup] = useState('');
   const [drillingBackup, setDrillingBackup] = useState('');
@@ -3691,6 +3694,39 @@ const SystemStatusPage: React.FC = () => {
     } finally {
       setMaintenanceRunning(false);
     }
+  };
+
+  const handleRepairIndexes = () => {
+    Modal.confirm({
+      title: '修复检索索引',
+      icon: <ExclamationCircleOutlined />,
+      okText: '开始修复',
+      cancelText: '取消',
+      content: (
+        <Space direction="vertical" size={8}>
+          <Text>系统会重建 BM25，并清理指向缺失 Chroma 文档的 manifest 记录。</Text>
+          <Text type="secondary">适合在真实恢复后、或系统状态提示索引不一致时执行。</Text>
+        </Space>
+      ),
+      onOk: async () => {
+        setRepairingIndexes(true);
+        try {
+          const res = await api.repairIndexes();
+          if (res.data?.ok) {
+            message.success(res.data?.repair_action_count ? '索引修复已完成' : '索引检查完成，无需修复');
+          } else {
+            message.error(res.data?.message || '索引修复失败');
+          }
+          await fetchReport();
+        } catch (err: any) {
+          const detail = err.response?.data?.detail;
+          message.error(typeof detail === 'string' ? detail : '索引修复失败');
+          throw err;
+        } finally {
+          setRepairingIndexes(false);
+        }
+      },
+    });
   };
 
   const handleVerifyBackup = async (archiveName: string) => {
@@ -3834,6 +3870,9 @@ const SystemStatusPage: React.FC = () => {
   const ops = report?.ops || {};
   const maintenanceEvent = (ops.last_backup_maintenance || {}) as Record<string, any>;
   const maintenanceDetails = (maintenanceEvent.details || {}) as Record<string, any>;
+  const indexRepairEvent = (ops.last_index_repair || {}) as Record<string, any>;
+  const indexRepairDetails = (indexRepairEvent.details || {}) as Record<string, any>;
+  const indexRepairAfter = (indexRepairDetails.after || {}) as Record<string, any>;
   const restoreDrillEvent = (ops.last_restore_drill || {}) as Record<string, any>;
   const restoreDrillDetails = (restoreDrillEvent.details || {}) as Record<string, any>;
   const restoreDrillChecks = Array.isArray(restoreDrillDetails.checks) ? restoreDrillDetails.checks : [];
@@ -4030,6 +4069,9 @@ const SystemStatusPage: React.FC = () => {
           <Button icon={<SaveOutlined />} onClick={handleRunBackupMaintenance} loading={maintenanceRunning}>
             立即备份
           </Button>
+          <Button icon={<ToolOutlined />} onClick={handleRepairIndexes} loading={repairingIndexes}>
+            修复索引
+          </Button>
           <Button icon={<ReloadOutlined />} onClick={fetchReport} loading={loading}>
             刷新
           </Button>
@@ -4186,6 +4228,24 @@ const SystemStatusPage: React.FC = () => {
               </>
             ) : (
               <Text type="secondary">暂无备份维护记录</Text>
+            )}
+            <Divider style={{ margin: '4px 0' }} />
+            <Text strong>最近索引修复</Text>
+            {indexRepairEvent.id ? (
+              <>
+                <Space wrap>
+                  <Tag color={statusTagColor(indexRepairEvent.status)}>{statusLabel(indexRepairEvent.status)}</Tag>
+                  <Text type="secondary">{indexRepairEvent.created_at}</Text>
+                </Space>
+                <Text>{indexRepairEvent.message || '-'}</Text>
+                <Space wrap>
+                  <Tag>动作 {indexRepairDetails.repair_action_count ?? 0}</Tag>
+                  <Tag>Chroma {indexRepairAfter.summary?.chroma_chunks ?? '-'}</Tag>
+                  <Tag>BM25 {indexRepairAfter.summary?.bm25_chunks ?? '-'}</Tag>
+                </Space>
+              </>
+            ) : (
+              <Text type="secondary">暂无索引修复记录</Text>
             )}
             <Divider style={{ margin: '4px 0' }} />
             <Text strong>最近恢复演练</Text>

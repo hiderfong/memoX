@@ -19,6 +19,22 @@ from src.ops.backup import (
 
 CRITICAL_RESTORE_PATHS = ("config.yaml", "data", "workspace")
 MAX_PREFLIGHT_ITEMS = 50
+POST_RESTORE_ACTIONS = (
+    {
+        "action": "repair_indexes",
+        "endpoint": "/api/system/indexes/repair",
+        "reason": "Rebuild BM25 from restored Chroma data and remove stale manifest entries.",
+    },
+    {
+        "action": "restart_service",
+        "reason": "Reload restored config, SQLite connections, vector store clients, and in-memory caches.",
+    },
+    {
+        "action": "run_health_check",
+        "endpoint": "/api/system/health",
+        "reason": "Confirm restored runtime readiness after restart.",
+    },
+)
 
 
 def _archive_contains_path(entries: list[Any], rel_path: str) -> bool:
@@ -184,6 +200,7 @@ def run_restore_execute(
         "writes_performed": False,
         "requires_maintenance_mode": True,
         "safety_backup_created": False,
+        "restart_required": False,
     }
 
     if confirm_archive_name != archive_path.name:
@@ -250,6 +267,8 @@ def run_restore_execute(
             "message": "Restore completed" if not has_errors else "Restore completed with errors",
             "verified": True,
             "writes_performed": True,
+            "restart_required": True,
+            "post_restore_actions": list(POST_RESTORE_ACTIONS),
             "preflight": preflight,
             "safety_backup_created": True,
             "safety_backup": safety_summary,

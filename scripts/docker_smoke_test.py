@@ -250,6 +250,17 @@ def _run_operational_checks(base_url: str, token: str, checks: list[dict]) -> di
         status=backups_after_status,
     )
 
+    repair_status, repair = _request("POST", f"{base_url}/api/system/indexes/repair", token=token)
+    _append_check(
+        checks,
+        "repair indexes",
+        repair_status == 200
+        and isinstance(repair, dict)
+        and repair.get("ok") is True
+        and repair.get("action") == "index_repair",
+        status=repair_status,
+    )
+
     verify_status, verified = _request(
         "POST",
         f"{base_url}/api/system/backups/{archive_name}/verify",
@@ -319,7 +330,9 @@ def _run_operational_checks(base_url: str, token: str, checks: list[dict]) -> di
         checks,
         "system events after restore drill",
         events_after_status == 200
-        and {"backup_maintenance", "restore_preflight", "restore_execute", "restore_drill"}.issubset(event_types),
+        and {"backup_maintenance", "index_repair", "restore_preflight", "restore_execute", "restore_drill"}.issubset(
+            event_types
+        ),
         status=events_after_status,
     )
 
