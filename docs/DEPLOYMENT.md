@@ -54,6 +54,10 @@ Back up `config.yaml`, `.env`, `data/`, and `workspace/` together before upgrade
 
 ## Backup and Restore
 
+For incident response and maintenance-window sequencing, use
+[RECOVERY_RUNBOOK.md](RECOVERY_RUNBOOK.md). The commands below are the lower
+level building blocks.
+
 For a consistent backup, pause writes first. On the single-node Compose deployment the simplest path is:
 
 ```bash

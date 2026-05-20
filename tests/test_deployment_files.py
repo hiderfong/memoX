@@ -46,9 +46,12 @@ def test_backup_artifacts_are_documented_and_ignored() -> None:
     gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
     dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
     deployment = (ROOT / "docs" / "DEPLOYMENT.md").read_text(encoding="utf-8")
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
     assert "backups/" in gitignore
     assert "backups" in dockerignore
+    assert "docs/RECOVERY_RUNBOOK.md" in readme
+    assert "RECOVERY_RUNBOOK.md" in deployment
     assert "scripts/backup_restore.py create" in deployment
     assert "scripts/backup_restore.py restore" in deployment
     assert "scripts/backup_restore.py prune" in deployment
@@ -70,3 +73,27 @@ def test_backup_artifacts_are_documented_and_ignored() -> None:
     assert "backup verification" in deployment
     assert "temporary restore drill" in deployment
     assert "ops.auto_backup_enabled" in deployment
+
+
+def test_recovery_runbook_documents_guarded_restore_flow() -> None:
+    runbook = (ROOT / "docs" / "RECOVERY_RUNBOOK.md").read_text(encoding="utf-8")
+
+    assert "Recovery Priorities" in runbook
+    assert "Incident Triage" in runbook
+    assert "Backup Selection" in runbook
+    assert "API Restore Path" in runbook
+    assert "Offline Restore Path" in runbook
+    assert "Post-Restore Validation" in runbook
+    assert "Rollback From A Bad Restore" in runbook
+    assert "scripts/ops_check.py --create-backup --restore-drill" in runbook
+    assert "scripts/backup_restore.py verify" in runbook
+    assert "scripts/backup_restore.py restore" in runbook
+    assert "/api/system/diagnostics/export" in runbook
+    assert "/api/system/backups/$BACKUP_NAME/restore-preflight" in runbook
+    assert "/api/system/backups/$BACKUP_NAME/restore" in runbook
+    assert "confirm_archive_name" in runbook
+    assert "acknowledge_overwrite" in runbook
+    assert "acknowledge_maintenance_mode" in runbook
+    assert "safety_backup.archive" in runbook
+    assert "ops.archive_mirror_dir" in runbook
+    assert "<mirror>/backups/" in runbook
