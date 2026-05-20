@@ -82,6 +82,52 @@ interface OpsEvent {
   created_at: string;
 }
 
+interface LifecycleCleanupResult {
+  ok: boolean;
+  status: ReadinessStatus;
+  action: string;
+  message?: string;
+  dry_run: boolean;
+  policy?: Record<string, number>;
+  tables?: Array<{
+    name: string;
+    retention_days: number;
+    cutoff: string;
+    eligible_count: number;
+    deleted_count: number;
+  }>;
+  diagnostics?: {
+    candidate_count: number;
+    eligible_count: number;
+    deleted_count: number;
+    eligible_bytes: number;
+    eligible?: Array<{
+      path: string;
+      name: string;
+      size_bytes: number;
+      modified_at: string;
+      reason: string;
+    }>;
+    deleted?: Array<{
+      path: string;
+      name: string;
+      size_bytes: number;
+      modified_at: string;
+      reason: string;
+    }>;
+  };
+  summary?: {
+    eligible_records: number;
+    deleted_records: number;
+    eligible_files: number;
+    deleted_files: number;
+    eligible_bytes: number;
+    core_user_data_deleted: boolean;
+  };
+  event_id?: number;
+  recorded_at?: string;
+}
+
 const statusTagColor = (status?: ReadinessStatus) => {
   if (status === 'ok') return 'green';
   if (status === 'warning') return 'orange';
@@ -110,6 +156,7 @@ const opsEventLabel = (eventType?: string) => {
   if (eventType === 'restore_preflight') return '恢复预检';
   if (eventType === 'restore_execute') return '真实恢复';
   if (eventType === 'restore_drill') return '恢复演练';
+  if (eventType === 'lifecycle_cleanup') return '生命周期清理';
   return eventType || '运维事件';
 };
 
@@ -250,6 +297,8 @@ const api = {
     axios.post(`${API_BASE}/system/backups/${encodeURIComponent(archiveName)}/restore-drill`),
   runBackupMaintenance: (force: boolean = true) =>
     axios.post(`${API_BASE}/system/maintenance/backup`, null, { params: { force } }),
+  runLifecycleCleanup: (dryRun: boolean = true) =>
+    axios.post<LifecycleCleanupResult>(`${API_BASE}/system/maintenance/lifecycle`, null, { params: { dry_run: dryRun } }),
   repairIndexes: () => axios.post(`${API_BASE}/system/indexes/repair`),
   exportDiagnostics: () => axios.get(`${API_BASE}/system/diagnostics/export`, { responseType: 'blob' }),
 
@@ -3639,6 +3688,9 @@ const SystemStatusPage: React.FC = () => {
   const [backupsLoading, setBackupsLoading] = useState(true);
   const [eventsLoading, setEventsLoading] = useState(true);
   const [maintenanceRunning, setMaintenanceRunning] = useState(false);
+  const [cleanupRunning, setCleanupRunning] = useState(false);
+  const [cleanupExecuting, setCleanupExecuting] = useState(false);
+  const [cleanupPreview, setCleanupPreview] = useState<LifecycleCleanupResult | null>(null);
   const [repairingIndexes, setRepairingIndexes] = useState(false);
   const [exportingDiagnostics, setExportingDiagnostics] = useState(false);
   const [verifyingBackup, setVerifyingBackup] = useState('');
@@ -3697,6 +3749,71 @@ const SystemStatusPage: React.FC = () => {
     } finally {
       setMaintenanceRunning(false);
     }
+  };
+
+  const handleLifecycleDryRun = async () => {
+    setCleanupRunning(true);
+    try {
+      const res = await api.runLifecycleCleanup(true);
+      setCleanupPreview(res.data);
+      if (res.data?.ok) {
+        message.success('生命周期清理预检完成');
+      } else {
+        message.warning(res.data?.message || '生命周期清理预检完成但存在警告');
+      }
+      await fetchReport();
+    } catch (err: any) {
+      const detail = err.response?.data?.detail;
+      message.error(typeof detail === 'string' ? detail : '生命周期清理预检失败');
+    } finally {
+      setCleanupRunning(false);
+    }
+  };
+
+  const handleExecuteLifecycleCleanup = () => {
+    const summary = cleanupPreview?.summary;
+    Modal.confirm({
+      title: '执行生命周期清理',
+      icon: <ExclamationCircleOutlined />,
+      okText: '执行清理',
+      cancelText: '取消',
+      okButtonProps: { danger: true },
+      width: 560,
+      content: (
+        <Space direction="vertical" style={{ width: '100%' }} size={12}>
+          <Alert
+            type="warning"
+            showIcon
+            message="清理会删除过期运维事件、审计日志和诊断包。"
+            description="聊天、记忆、上传文档和工作区文件不会被删除。"
+          />
+          <Space wrap>
+            <Tag>记录 {summary?.eligible_records ?? '-'}</Tag>
+            <Tag>诊断包 {summary?.eligible_files ?? '-'}</Tag>
+            <Tag>空间 {formatBytes(summary?.eligible_bytes)}</Tag>
+          </Space>
+        </Space>
+      ),
+      onOk: async () => {
+        setCleanupExecuting(true);
+        try {
+          const res = await api.runLifecycleCleanup(false);
+          setCleanupPreview(res.data);
+          if (res.data?.ok) {
+            message.success('生命周期清理已执行');
+          } else {
+            message.warning(res.data?.message || '生命周期清理完成但存在警告');
+          }
+          await fetchReport();
+        } catch (err: any) {
+          const detail = err.response?.data?.detail;
+          message.error(typeof detail === 'string' ? detail : '生命周期清理失败');
+          throw err;
+        } finally {
+          setCleanupExecuting(false);
+        }
+      },
+    });
   };
 
   const handleRepairIndexes = () => {
@@ -3905,6 +4022,12 @@ const SystemStatusPage: React.FC = () => {
   const diagnosticsEvent = (ops.last_diagnostics_export || {}) as Record<string, any>;
   const diagnosticsDetails = (diagnosticsEvent.details || {}) as Record<string, any>;
   const diagnosticsMirror = (diagnosticsDetails.mirror || {}) as Record<string, any>;
+  const lifecycleEvent = (ops.last_lifecycle_cleanup || {}) as Record<string, any>;
+  const lifecycleDetails = (lifecycleEvent.details || {}) as LifecycleCleanupResult;
+  const lifecycleSummary = (cleanupPreview?.summary || lifecycleDetails.summary || {}) as Record<string, any>;
+  const lifecycleTables = (cleanupPreview?.tables || lifecycleDetails.tables || []) as any[];
+  const lifecycleDiagnostics = (cleanupPreview?.diagnostics || lifecycleDetails.diagnostics || {}) as Record<string, any>;
+  const retention = (ops.retention || {}) as Record<string, number>;
   const restoreDrillEvent = (ops.last_restore_drill || {}) as Record<string, any>;
   const restoreDrillDetails = (restoreDrillEvent.details || {}) as Record<string, any>;
   const restoreDrillChecks = Array.isArray(restoreDrillDetails.checks) ? restoreDrillDetails.checks : [];
@@ -4100,6 +4223,9 @@ const SystemStatusPage: React.FC = () => {
         <Space wrap>
           <Button icon={<SaveOutlined />} onClick={handleRunBackupMaintenance} loading={maintenanceRunning}>
             立即备份
+          </Button>
+          <Button icon={<DeleteOutlined />} onClick={handleLifecycleDryRun} loading={cleanupRunning}>
+            清理预检
           </Button>
           <Button icon={<ToolOutlined />} onClick={handleRepairIndexes} loading={repairingIndexes}>
             修复索引
@@ -4356,6 +4482,101 @@ const SystemStatusPage: React.FC = () => {
               </>
             ) : (
               <Text type="secondary">暂无真实恢复记录</Text>
+            )}
+          </Space>
+        </Card>
+
+        <Card
+          title="生命周期治理"
+          loading={loading}
+          extra={(
+            <Space>
+              <Button size="small" icon={<EyeOutlined />} onClick={handleLifecycleDryRun} loading={cleanupRunning}>
+                预检
+              </Button>
+              <Button
+                size="small"
+                danger
+                icon={<DeleteOutlined />}
+                onClick={handleExecuteLifecycleCleanup}
+                loading={cleanupExecuting}
+                disabled={!cleanupPreview}
+              >
+                执行
+              </Button>
+            </Space>
+          )}
+        >
+          <Space direction="vertical" style={{ width: '100%' }} size={10}>
+            <Space wrap>
+              <Tag>运维事件 {retention.ops_event_retention_days ?? '-'} 天</Tag>
+              <Tag>审计日志 {retention.audit_log_retention_days ?? '-'} 天</Tag>
+              <Tag>诊断包 {retention.diagnostic_retention_days ?? '-'} 天</Tag>
+              <Tag>最多 {retention.max_diagnostic_bundles ?? '-'} 个</Tag>
+            </Space>
+            <Alert
+              type="info"
+              showIcon
+              message="不会删除聊天、记忆、上传文档或工作区文件"
+            />
+            <Space wrap>
+              <Tag color="blue">待清理记录 {lifecycleSummary.eligible_records ?? 0}</Tag>
+              <Tag color="blue">待清理诊断包 {lifecycleSummary.eligible_files ?? 0}</Tag>
+              <Tag color="blue">可释放 {formatBytes(lifecycleSummary.eligible_bytes)}</Tag>
+              {cleanupPreview && (
+                <Tag color={cleanupPreview.dry_run ? 'default' : 'green'}>
+                  {cleanupPreview.dry_run ? '预检结果' : '执行结果'}
+                </Tag>
+              )}
+            </Space>
+            {lifecycleTables.length > 0 && (
+              <List
+                size="small"
+                dataSource={lifecycleTables}
+                renderItem={(item: any) => (
+                  <List.Item>
+                    <Space direction="vertical" size={0}>
+                      <Text strong>{item.name}</Text>
+                      <Text type="secondary">
+                        过期 {item.eligible_count ?? 0} 条，已删除 {item.deleted_count ?? 0} 条
+                      </Text>
+                    </Space>
+                  </List.Item>
+                )}
+              />
+            )}
+            {Array.isArray(lifecycleDiagnostics.eligible) && lifecycleDiagnostics.eligible.length > 0 && (
+              <>
+                <Divider style={{ margin: '4px 0' }} />
+                <Text strong>待清理诊断包</Text>
+                <List
+                  size="small"
+                  dataSource={lifecycleDiagnostics.eligible.slice(0, 5)}
+                  renderItem={(item: any) => (
+                    <List.Item>
+                      <Space direction="vertical" size={0}>
+                        <Text style={{ wordBreak: 'break-all' }}>{item.name}</Text>
+                        <Text type="secondary">
+                          {formatBytes(item.size_bytes)} · {item.reason === 'age' ? '超过保留期' : '超过数量上限'}
+                        </Text>
+                      </Space>
+                    </List.Item>
+                  )}
+                />
+              </>
+            )}
+            {lifecycleEvent.id ? (
+              <>
+                <Divider style={{ margin: '4px 0' }} />
+                <Space wrap>
+                  <Tag color={statusTagColor(lifecycleEvent.status)}>{statusLabel(lifecycleEvent.status)}</Tag>
+                  <Tag>{lifecycleEvent.action || lifecycleDetails.action || '-'}</Tag>
+                  <Text type="secondary">{lifecycleEvent.created_at}</Text>
+                </Space>
+                <Text>{lifecycleEvent.message || lifecycleDetails.message || '-'}</Text>
+              </>
+            ) : (
+              <Text type="secondary">暂无清理执行记录</Text>
             )}
           </Space>
         </Card>
