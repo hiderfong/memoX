@@ -178,6 +178,28 @@ async def list_system_backups(
     }
 
 
+@router.get("/events")
+async def list_system_events(
+    _: Annotated[AuthUser, require_role("admin")],
+    event_type: str | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=100),
+) -> dict:
+    """Return recent operational events for administrators."""
+    try:
+        from storage import get_store
+
+        store = get_store()
+        events = store.list_ops_events(event_type=event_type, limit=limit) if store is not None else []
+    except Exception:
+        events = []
+    return {
+        "event_type": event_type,
+        "limit": limit,
+        "count": len(events),
+        "events": events,
+    }
+
+
 @router.post("/backups/{archive_name}/verify")
 async def verify_system_backup(
     archive_name: str,

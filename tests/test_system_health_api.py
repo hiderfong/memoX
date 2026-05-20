@@ -109,6 +109,8 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
                 headers={"Authorization": f"Bearer {user_token}"},
             )
             assert drill_forbidden.status_code == 403
+            events_forbidden = client.get("/api/system/events", headers={"Authorization": f"Bearer {user_token}"})
+            assert events_forbidden.status_code == 403
 
             response = client.get("/api/system/health", headers={"Authorization": f"Bearer {admin_token}"})
             assert response.status_code == 200
@@ -139,6 +141,16 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
             )
             assert drill.status_code == 200
             drill_payload = drill.json()
+
+            events = client.get("/api/system/events?limit=10", headers={"Authorization": f"Bearer {admin_token}"})
+            assert events.status_code == 200
+            events_payload = events.json()
+            restore_events = client.get(
+                "/api/system/events?event_type=restore_drill&limit=5",
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+            assert restore_events.status_code == 200
+            restore_events_payload = restore_events.json()
 
             missing = client.post(
                 "/api/system/backups/memox-backup-missing.tar.gz/verify",
@@ -196,3 +208,8 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
     }
     assert refreshed_payload["ops"]["last_backup_maintenance"]["details"]["forced"] is True
     assert refreshed_payload["ops"]["last_restore_drill"]["details"]["name"] == Path(manual_payload["archive"]).name
+    assert events_payload["count"] >= 3
+    assert {event["event_type"] for event in events_payload["events"]} >= {"backup_maintenance", "restore_drill"}
+    assert restore_events_payload["count"] == 1
+    assert restore_events_payload["events"][0]["event_type"] == "restore_drill"
+    assert restore_events_payload["events"][0]["details"]["name"] == Path(manual_payload["archive"]).name

@@ -124,6 +124,7 @@ Worker 创建、更新和删除接口会持久化修改 `config.yaml` 中的 `wo
 | `GET` | `/api/health` | 健康检查 |
 | `GET` | `/api/system/health` | 管理员系统巡检：配置、索引、SQLite、磁盘 |
 | `GET` | `/api/system/backups` | 管理员查看本地备份归档 |
+| `GET` | `/api/system/events` | 管理员查看最近运维事件，可用 `event_type` 与 `limit` 过滤 |
 | `POST` | `/api/system/backups/{name}/verify` | 管理员校验单个备份归档 |
 | `POST` | `/api/system/backups/{name}/restore-drill` | 管理员执行临时目录恢复演练 |
 | `POST` | `/api/system/maintenance/backup` | 管理员手动触发备份维护 |

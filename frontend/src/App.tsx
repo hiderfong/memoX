@@ -72,6 +72,16 @@ interface BackupArchiveSummary {
   metadata_valid?: boolean;
 }
 
+interface OpsEvent {
+  id: number;
+  event_type: string;
+  status: ReadinessStatus;
+  action?: string;
+  message?: string;
+  details?: Record<string, any>;
+  created_at: string;
+}
+
 const statusTagColor = (status?: ReadinessStatus) => {
   if (status === 'ok') return 'green';
   if (status === 'warning') return 'orange';
@@ -91,6 +101,12 @@ const statusLabel = (status?: ReadinessStatus) => {
   if (status === 'warning') return '警告';
   if (status === 'error') return '错误';
   return status || '未知';
+};
+
+const opsEventLabel = (eventType?: string) => {
+  if (eventType === 'backup_maintenance') return '备份维护';
+  if (eventType === 'restore_drill') return '恢复演练';
+  return eventType || '运维事件';
 };
 
 const formatBytes = (bytes?: number) => {
@@ -210,6 +226,10 @@ const api = {
   health: () => axios.get(`${API_BASE}/health`),
   systemHealth: () => axios.get<SystemHealthReport>(`${API_BASE}/system/health`),
   listBackups: () => axios.get<{ backups: BackupArchiveSummary[] }>(`${API_BASE}/system/backups`),
+  listOpsEvents: (limit: number = 12, eventType?: string) =>
+    axios.get<{ events: OpsEvent[] }>(`${API_BASE}/system/events`, {
+      params: { limit, event_type: eventType || undefined },
+    }),
   verifyBackup: (archiveName: string) =>
     axios.post(`${API_BASE}/system/backups/${encodeURIComponent(archiveName)}/verify`),
   runRestoreDrill: (archiveName: string) =>
@@ -3598,8 +3618,10 @@ const SystemStatusPage: React.FC = () => {
   const isMobile = useIsMobile();
   const [report, setReport] = useState<SystemHealthReport | null>(null);
   const [backups, setBackups] = useState<BackupArchiveSummary[]>([]);
+  const [opsEvents, setOpsEvents] = useState<OpsEvent[]>([]);
   const [loading, setLoading] = useState(true);
   const [backupsLoading, setBackupsLoading] = useState(true);
+  const [eventsLoading, setEventsLoading] = useState(true);
   const [maintenanceRunning, setMaintenanceRunning] = useState(false);
   const [verifyingBackup, setVerifyingBackup] = useState('');
   const [drillingBackup, setDrillingBackup] = useState('');
@@ -3608,13 +3630,16 @@ const SystemStatusPage: React.FC = () => {
   const fetchReport = async () => {
     setLoading(true);
     setBackupsLoading(true);
+    setEventsLoading(true);
     try {
-      const [healthRes, backupsRes] = await Promise.all([
+      const [healthRes, backupsRes, eventsRes] = await Promise.all([
         api.systemHealth(),
         api.listBackups(),
+        api.listOpsEvents(12),
       ]);
       setReport(healthRes.data);
       setBackups(backupsRes.data?.backups || []);
+      setOpsEvents(eventsRes.data?.events || []);
       setLastUpdated(dayjs().format('YYYY-MM-DD HH:mm:ss'));
     } catch (err: any) {
       const detail = err.response?.data?.detail;
@@ -3622,6 +3647,7 @@ const SystemStatusPage: React.FC = () => {
     } finally {
       setLoading(false);
       setBackupsLoading(false);
+      setEventsLoading(false);
     }
   };
 
@@ -3630,6 +3656,7 @@ const SystemStatusPage: React.FC = () => {
     else {
       setLoading(false);
       setBackupsLoading(false);
+      setEventsLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.role]);
@@ -3826,6 +3853,50 @@ const SystemStatusPage: React.FC = () => {
           </Button>
         </Space>
       ),
+    },
+  ];
+  const eventColumns = [
+    {
+      title: '类型',
+      dataIndex: 'event_type',
+      key: 'event_type',
+      width: 110,
+      render: (eventType: string) => <Tag>{opsEventLabel(eventType)}</Tag>,
+    },
+    {
+      title: '状态',
+      dataIndex: 'status',
+      key: 'status',
+      width: 90,
+      render: (status: ReadinessStatus) => <Tag color={statusTagColor(status)}>{statusLabel(status)}</Tag>,
+    },
+    {
+      title: '动作',
+      dataIndex: 'action',
+      key: 'action',
+      width: 120,
+      render: (action: string, item: OpsEvent) => <Text>{action || item.details?.action || '-'}</Text>,
+    },
+    {
+      title: '时间',
+      dataIndex: 'created_at',
+      key: 'created_at',
+      width: 170,
+      render: (createdAt: string) => <Text type="secondary">{createdAt || '-'}</Text>,
+    },
+    {
+      title: '说明',
+      dataIndex: 'message',
+      key: 'message',
+      render: (text: string, item: OpsEvent) => {
+        const archive = item.details?.name || item.details?.archive;
+        return (
+          <Space direction="vertical" size={0}>
+            <Text>{text || '-'}</Text>
+            {archive && <Text type="secondary" style={{ wordBreak: 'break-all' }}>{archive}</Text>}
+          </Space>
+        );
+      },
     },
   ];
 
@@ -4041,6 +4112,21 @@ const SystemStatusPage: React.FC = () => {
             />
           ) : (
             <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无备份归档" />
+          )}
+        </Card>
+
+        <Card title="运维事件" loading={eventsLoading}>
+          {opsEvents.length > 0 ? (
+            <Table
+              size="small"
+              rowKey="id"
+              dataSource={opsEvents}
+              columns={eventColumns}
+              pagination={{ pageSize: 6, size: 'small' }}
+              scroll={{ x: 860 }}
+            />
+          ) : (
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无运维事件" />
           )}
         </Card>
 
