@@ -39,6 +39,31 @@ def test_backup_maintenance_creates_then_skips_fresh_backup(tmp_path: Path) -> N
     assert skipped["archive"] == created["archive"]
 
 
+def test_backup_maintenance_force_creates_even_when_fresh(tmp_path: Path) -> None:
+    _write_deployment(tmp_path)
+
+    created = run_backup_maintenance(
+        root=tmp_path,
+        include=("config.yaml", "data"),
+        interval_hours=24,
+        max_backups=14,
+    )
+    forced = run_backup_maintenance(
+        root=tmp_path,
+        include=("config.yaml", "data"),
+        interval_hours=24,
+        max_backups=14,
+        force=True,
+    )
+
+    assert forced["ok"] is True
+    assert forced["action"] == "created"
+    assert forced["forced"] is True
+    assert forced["verified"] is True
+    assert forced["archive"] != created["archive"]
+    assert Path(forced["archive"]).exists()
+
+
 @pytest.mark.asyncio
 async def test_maintenance_runner_run_once_records_result(tmp_path: Path) -> None:
     _write_deployment(tmp_path)

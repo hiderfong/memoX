@@ -48,6 +48,7 @@ def run_backup_maintenance(
     include: tuple[str, ...],
     interval_hours: float,
     max_backups: int,
+    force: bool = False,
 ) -> dict[str, Any]:
     """Create a backup if due, verify it, and prune old local archives."""
     root = root.resolve()
@@ -57,7 +58,7 @@ def run_backup_maintenance(
 
     try:
         age_seconds = latest_backup_age_seconds(root)
-        due = age_seconds is None or age_seconds >= interval_hours * 3600
+        due = force or age_seconds is None or age_seconds >= interval_hours * 3600
         if due:
             created = create_backup(root=root, include=include)
             verified = verify_backup(created["archive"])
@@ -81,6 +82,7 @@ def run_backup_maintenance(
             "archive_count_before": len(before),
             "archive_count_after": pruned["archive_count_after"],
             "deleted": pruned["deleted"],
+            "forced": force,
         }
     except BackupError as exc:
         return {
@@ -90,7 +92,25 @@ def run_backup_maintenance(
             "message": str(exc),
             "root": str(root),
             "archive_count_before": len(before),
+            "forced": force,
         }
+
+
+def record_maintenance_event(store: Any | None, result: dict[str, Any]) -> None:
+    if store is None:
+        return
+    try:
+        event = store.record_ops_event(
+            event_type="backup_maintenance",
+            status=result.get("status", "error"),
+            action=result.get("action", ""),
+            message=result.get("message", ""),
+            details=result,
+        )
+        result["event_id"] = event["id"]
+        result["recorded_at"] = event["created_at"]
+    except Exception as exc:
+        logger.warning(f"[Ops] 记录运维事件失败: {type(exc).__name__}: {exc}")
 
 
 class OpsMaintenanceRunner:
@@ -131,28 +151,16 @@ class OpsMaintenanceRunner:
         return self._task is not None and not self._task.done()
 
     def _record_event(self, result: dict[str, Any]) -> None:
-        if self._store is None:
-            return
-        try:
-            event = self._store.record_ops_event(
-                event_type="backup_maintenance",
-                status=result.get("status", "error"),
-                action=result.get("action", ""),
-                message=result.get("message", ""),
-                details=result,
-            )
-            result["event_id"] = event["id"]
-            result["recorded_at"] = event["created_at"]
-        except Exception as exc:
-            logger.warning(f"[Ops] 记录运维事件失败: {type(exc).__name__}: {exc}")
+        record_maintenance_event(self._store, result)
 
-    async def run_once(self) -> dict[str, Any]:
+    async def run_once(self, *, force: bool = False) -> dict[str, Any]:
         result = await asyncio.to_thread(
             run_backup_maintenance,
             root=self._root,
             include=self._include,
             interval_hours=self._interval_hours,
             max_backups=self._max_backups,
+            force=force,
         )
         self._record_event(result)
         self.last_result = result

@@ -139,7 +139,7 @@ The default check loads `config.yaml`, checks configured persistent directories,
 
 If `config.yaml` references environment variables such as `${MEMOX_ADMIN_PASSWORD}`, run the check from a shell where those variables are exported.
 
-The service also starts an in-process maintenance runner when `ops.auto_backup_enabled=true`. By default it waits 5 minutes after startup, then creates and verifies a local backup when the newest archive is older than 24 hours, and prunes archives beyond `ops.max_backups`. Runtime backups include `config.yaml`, `data/`, and `workspace/`; host-only secrets in `.env` should still be protected by the CLI backup flow or an external secret backup. Each automatic maintenance run is recorded in SQLite and surfaced in the admin system health report.
+The service also starts an in-process maintenance runner when `ops.auto_backup_enabled=true`. By default it waits 5 minutes after startup, then creates and verifies a local backup when the newest archive is older than 24 hours, and prunes archives beyond `ops.max_backups`. Runtime backups include `config.yaml`, `data/`, and `workspace/`; host-only secrets in `.env` should still be protected by the CLI backup flow or an external secret backup. Each automatic maintenance run is recorded in SQLite and surfaced in the admin system health report. Administrators can also trigger the same backup maintenance flow on demand from the system status page or by calling `POST /api/system/maintenance/backup`.
 
 Use explicit flags for heavier actions:
 
@@ -169,6 +169,7 @@ Administrators can inspect the deeper runtime readiness report after logging in.
 
 ```bash
 curl -fsS http://localhost:8080/api/system/health -H "Authorization: Bearer <token>"
+curl -fsS -X POST "http://localhost:8080/api/system/maintenance/backup?force=true" -H "Authorization: Bearer <token>"
 ```
 
 ## Deployment Smoke Test

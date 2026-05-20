@@ -197,6 +197,8 @@ const api = {
   // 系统
   health: () => axios.get(`${API_BASE}/health`),
   systemHealth: () => axios.get<SystemHealthReport>(`${API_BASE}/system/health`),
+  runBackupMaintenance: (force: boolean = true) =>
+    axios.post(`${API_BASE}/system/maintenance/backup`, null, { params: { force } }),
 
   // 认证
   login: (username: string, password: string) =>
@@ -3579,6 +3581,7 @@ const SystemStatusPage: React.FC = () => {
   const isMobile = useIsMobile();
   const [report, setReport] = useState<SystemHealthReport | null>(null);
   const [loading, setLoading] = useState(true);
+  const [maintenanceRunning, setMaintenanceRunning] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<string>('');
 
   const fetchReport = async () => {
@@ -3600,6 +3603,24 @@ const SystemStatusPage: React.FC = () => {
     else setLoading(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.role]);
+
+  const handleRunBackupMaintenance = async () => {
+    setMaintenanceRunning(true);
+    try {
+      const res = await api.runBackupMaintenance(true);
+      if (res.data?.ok) {
+        message.success(res.data.action === 'created' ? '备份已创建并校验' : '备份维护已完成');
+      } else {
+        message.error(res.data?.message || '备份维护失败');
+      }
+      await fetchReport();
+    } catch (err: any) {
+      const detail = err.response?.data?.detail;
+      message.error(typeof detail === 'string' ? detail : '备份维护失败');
+    } finally {
+      setMaintenanceRunning(false);
+    }
+  };
 
   if (user?.role !== 'admin') {
     return (
@@ -3685,9 +3706,14 @@ const SystemStatusPage: React.FC = () => {
           <Title level={4} style={{ marginBottom: 4 }}>系统状态</Title>
           {lastUpdated && <Text type="secondary">更新于 {lastUpdated}</Text>}
         </div>
-        <Button icon={<ReloadOutlined />} onClick={fetchReport} loading={loading}>
-          刷新
-        </Button>
+        <Space wrap>
+          <Button icon={<SaveOutlined />} onClick={handleRunBackupMaintenance} loading={maintenanceRunning}>
+            立即备份
+          </Button>
+          <Button icon={<ReloadOutlined />} onClick={fetchReport} loading={loading}>
+            刷新
+          </Button>
+        </Space>
       </div>
 
       {report && report.status !== 'ok' && (
@@ -3839,7 +3865,7 @@ const SystemStatusPage: React.FC = () => {
                 )}
               </>
             ) : (
-              <Text type="secondary">暂无自动维护记录</Text>
+              <Text type="secondary">暂无备份维护记录</Text>
             )}
           </Space>
         </Card>

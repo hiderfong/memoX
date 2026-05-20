@@ -36,7 +36,7 @@ def utc_timestamp() -> str:
 
 
 def default_backup_path(root: Path) -> Path:
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%f")
     return root / "backups" / f"memox-backup-{stamp}.tar.gz"
 
 

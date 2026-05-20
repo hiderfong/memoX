@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 
 from auth import AuthUser, require_role
 from config import default_config_path
@@ -77,4 +78,31 @@ async def system_health(
         "maintenance_runner_active": bool(getattr(maintenance_runner, "running", False)),
         "last_backup_maintenance": latest_event,
     }
+    return result
+
+
+@router.post("/maintenance/backup")
+async def run_backup_maintenance_now(
+    _: Annotated[AuthUser, require_role("admin")],
+    force: bool = Query(default=True),
+) -> dict:
+    """Run backup maintenance on demand for administrators."""
+    from ops.maintenance import get_maintenance_runner, record_maintenance_event, run_backup_maintenance
+    from storage import get_store
+    from web.api import _config
+
+    runner = get_maintenance_runner()
+    if runner is not None:
+        return await runner.run_once(force=force)
+
+    config_path = _config_path_from_runtime().resolve()
+    result = await asyncio.to_thread(
+        run_backup_maintenance,
+        root=config_path.parent,
+        include=tuple(_config.ops.auto_backup_include),
+        interval_hours=_config.ops.auto_backup_interval_hours,
+        max_backups=_config.ops.max_backups,
+        force=force,
+    )
+    record_maintenance_event(get_store(), result)
     return result

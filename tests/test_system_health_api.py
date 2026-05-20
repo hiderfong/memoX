@@ -97,10 +97,26 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
         with TestClient(api_module.app, raise_server_exceptions=False) as client:
             forbidden = client.get("/api/system/health", headers={"Authorization": f"Bearer {user_token}"})
             assert forbidden.status_code == 403
+            manual_forbidden = client.post(
+                "/api/system/maintenance/backup?force=true",
+                headers={"Authorization": f"Bearer {user_token}"},
+            )
+            assert manual_forbidden.status_code == 403
 
             response = client.get("/api/system/health", headers={"Authorization": f"Bearer {admin_token}"})
             assert response.status_code == 200
             payload = response.json()
+
+            manual = client.post(
+                "/api/system/maintenance/backup?force=true",
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+            assert manual.status_code == 200
+            manual_payload = manual.json()
+
+            refreshed = client.get("/api/system/health", headers={"Authorization": f"Bearer {admin_token}"})
+            assert refreshed.status_code == 200
+            refreshed_payload = refreshed.json()
     finally:
         api_module.app.router.lifespan_context = original_lifespan
         api_module._config = None
@@ -121,3 +137,8 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
     assert checks["latest_backup"]["details"]["archive_count"] == 0
     assert payload["ops"]["auto_backup_enabled"] is True
     assert payload["ops"]["last_backup_maintenance"]["action"] == "created"
+    assert manual_payload["ok"] is True
+    assert manual_payload["action"] == "created"
+    assert manual_payload["forced"] is True
+    assert Path(manual_payload["archive"]).exists()
+    assert refreshed_payload["ops"]["last_backup_maintenance"]["details"]["forced"] is True
