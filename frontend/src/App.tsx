@@ -212,6 +212,8 @@ const api = {
   listBackups: () => axios.get<{ backups: BackupArchiveSummary[] }>(`${API_BASE}/system/backups`),
   verifyBackup: (archiveName: string) =>
     axios.post(`${API_BASE}/system/backups/${encodeURIComponent(archiveName)}/verify`),
+  runRestoreDrill: (archiveName: string) =>
+    axios.post(`${API_BASE}/system/backups/${encodeURIComponent(archiveName)}/restore-drill`),
   runBackupMaintenance: (force: boolean = true) =>
     axios.post(`${API_BASE}/system/maintenance/backup`, null, { params: { force } }),
 
@@ -3600,6 +3602,7 @@ const SystemStatusPage: React.FC = () => {
   const [backupsLoading, setBackupsLoading] = useState(true);
   const [maintenanceRunning, setMaintenanceRunning] = useState(false);
   const [verifyingBackup, setVerifyingBackup] = useState('');
+  const [drillingBackup, setDrillingBackup] = useState('');
   const [lastUpdated, setLastUpdated] = useState<string>('');
 
   const fetchReport = async () => {
@@ -3667,6 +3670,26 @@ const SystemStatusPage: React.FC = () => {
     }
   };
 
+  const handleRunRestoreDrill = async (archiveName: string) => {
+    setDrillingBackup(archiveName);
+    try {
+      const res = await api.runRestoreDrill(archiveName);
+      if (res.data?.ok && res.data?.status === 'ok') {
+        message.success('恢复演练通过');
+      } else if (res.data?.ok) {
+        message.warning(res.data?.message || '恢复演练完成但存在警告');
+      } else {
+        message.error(res.data?.message || '恢复演练失败');
+      }
+      await fetchReport();
+    } catch (err: any) {
+      const detail = err.response?.data?.detail;
+      message.error(typeof detail === 'string' ? detail : '恢复演练失败');
+    } finally {
+      setDrillingBackup('');
+    }
+  };
+
   if (user?.role !== 'admin') {
     return (
       <Alert
@@ -3691,6 +3714,9 @@ const SystemStatusPage: React.FC = () => {
   const ops = report?.ops || {};
   const maintenanceEvent = (ops.last_backup_maintenance || {}) as Record<string, any>;
   const maintenanceDetails = (maintenanceEvent.details || {}) as Record<string, any>;
+  const restoreDrillEvent = (ops.last_restore_drill || {}) as Record<string, any>;
+  const restoreDrillDetails = (restoreDrillEvent.details || {}) as Record<string, any>;
+  const restoreDrillChecks = Array.isArray(restoreDrillDetails.checks) ? restoreDrillDetails.checks : [];
   const missingDirectories = persistentPaths.missing_directories || [];
   const statusCounts = checks.reduce<Record<string, number>>((acc, check) => {
     acc[check.status] = (acc[check.status] || 0) + 1;
@@ -3779,16 +3805,26 @@ const SystemStatusPage: React.FC = () => {
     {
       title: '操作',
       key: 'action',
-      width: 100,
+      width: 170,
       render: (_: any, item: BackupArchiveSummary) => (
-        <Button
-          size="small"
-          icon={<CheckCircleOutlined />}
-          onClick={() => handleVerifyBackup(item.name)}
-          loading={verifyingBackup === item.name}
-        >
-          校验
-        </Button>
+        <Space>
+          <Button
+            size="small"
+            icon={<CheckCircleOutlined />}
+            onClick={() => handleVerifyBackup(item.name)}
+            loading={verifyingBackup === item.name}
+          >
+            校验
+          </Button>
+          <Button
+            size="small"
+            icon={<SafetyCertificateOutlined />}
+            onClick={() => handleRunRestoreDrill(item.name)}
+            loading={drillingBackup === item.name}
+          >
+            演练
+          </Button>
+        </Space>
       ),
     },
   ];
@@ -3967,6 +4003,28 @@ const SystemStatusPage: React.FC = () => {
               </>
             ) : (
               <Text type="secondary">暂无备份维护记录</Text>
+            )}
+            <Divider style={{ margin: '4px 0' }} />
+            <Text strong>最近恢复演练</Text>
+            {restoreDrillEvent.id ? (
+              <>
+                <Space wrap>
+                  <Tag color={statusTagColor(restoreDrillEvent.status)}>{statusLabel(restoreDrillEvent.status)}</Tag>
+                  <Text type="secondary">{restoreDrillEvent.created_at}</Text>
+                </Space>
+                <Text>{restoreDrillEvent.message || '-'}</Text>
+                {restoreDrillChecks.length > 0 && (
+                  <Space wrap>
+                    {restoreDrillChecks.map((check: any) => (
+                      <Tag key={check.name} color={statusTagColor(check.status)}>
+                        {check.name}: {statusLabel(check.status)}
+                      </Tag>
+                    ))}
+                  </Space>
+                )}
+              </>
+            ) : (
+              <Text type="secondary">暂无恢复演练记录</Text>
             )}
           </Space>
         </Card>

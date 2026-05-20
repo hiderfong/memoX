@@ -104,6 +104,11 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
             assert manual_forbidden.status_code == 403
             backups_forbidden = client.get("/api/system/backups", headers={"Authorization": f"Bearer {user_token}"})
             assert backups_forbidden.status_code == 403
+            drill_forbidden = client.post(
+                "/api/system/backups/memox-backup-missing.tar.gz/restore-drill",
+                headers={"Authorization": f"Bearer {user_token}"},
+            )
+            assert drill_forbidden.status_code == 403
 
             response = client.get("/api/system/health", headers={"Authorization": f"Bearer {admin_token}"})
             assert response.status_code == 200
@@ -128,11 +133,23 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
             assert verified.status_code == 200
             verified_payload = verified.json()
 
+            drill = client.post(
+                f"/api/system/backups/{backup_name}/restore-drill",
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+            assert drill.status_code == 200
+            drill_payload = drill.json()
+
             missing = client.post(
                 "/api/system/backups/memox-backup-missing.tar.gz/verify",
                 headers={"Authorization": f"Bearer {admin_token}"},
             )
             assert missing.status_code == 404
+            missing_drill = client.post(
+                "/api/system/backups/memox-backup-missing.tar.gz/restore-drill",
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+            assert missing_drill.status_code == 404
 
             refreshed = client.get("/api/system/health", headers={"Authorization": f"Bearer {admin_token}"})
             assert refreshed.status_code == 200
@@ -169,4 +186,13 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
     assert verified_payload["verified"] is True
     assert verified_payload["name"] == Path(manual_payload["archive"]).name
     assert verified_payload["entry_count"] > 0
+    assert drill_payload["ok"] is True
+    assert drill_payload["status"] == "ok"
+    assert drill_payload["name"] == Path(manual_payload["archive"]).name
+    assert {check["name"]: check["status"] for check in drill_payload["checks"]} == {
+        "config.yaml": "ok",
+        "data": "ok",
+        "workspace": "ok",
+    }
     assert refreshed_payload["ops"]["last_backup_maintenance"]["details"]["forced"] is True
+    assert refreshed_payload["ops"]["last_restore_drill"]["details"]["name"] == Path(manual_payload["archive"]).name

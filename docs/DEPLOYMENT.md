@@ -171,6 +171,7 @@ Administrators can inspect the deeper runtime readiness report after logging in.
 curl -fsS http://localhost:8080/api/system/health -H "Authorization: Bearer <token>"
 curl -fsS http://localhost:8080/api/system/backups -H "Authorization: Bearer <token>"
 curl -fsS -X POST "http://localhost:8080/api/system/backups/<backup-file>.tar.gz/verify" -H "Authorization: Bearer <token>"
+curl -fsS -X POST "http://localhost:8080/api/system/backups/<backup-file>.tar.gz/restore-drill" -H "Authorization: Bearer <token>"
 curl -fsS -X POST "http://localhost:8080/api/system/maintenance/backup?force=true" -H "Authorization: Bearer <token>"
 ```
 

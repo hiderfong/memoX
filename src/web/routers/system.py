@@ -13,6 +13,7 @@ from auth import AuthUser, require_role
 from config import default_config_path
 from src.ops.backup import BackupError, list_backup_archives, read_backup_metadata, verify_backup
 from src.ops.readiness import run_readiness_checks
+from src.ops.recovery import run_restore_drill
 
 router = APIRouter(prefix="/api/system", tags=["system"])
 
@@ -77,6 +78,26 @@ def _resolve_backup_archive(root: Path, archive_name: str) -> Path:
     return archive
 
 
+def _record_ops_event(event_type: str, result: dict) -> None:
+    try:
+        from storage import get_store
+
+        store = get_store()
+        if store is None:
+            return
+        event = store.record_ops_event(
+            event_type=event_type,
+            status=result.get("status", "error"),
+            action=result.get("action", ""),
+            message=result.get("message", ""),
+            details=result,
+        )
+        result["event_id"] = event["id"]
+        result["recorded_at"] = event["created_at"]
+    except Exception:
+        return
+
+
 @router.get("/health")
 async def system_health(
     request: Request,
@@ -111,14 +132,17 @@ async def system_health(
     }
     store = None
     latest_event = None
+    latest_restore_drill = None
     try:
         from storage import get_store
 
         store = get_store()
         if store is not None:
             latest_event = store.get_latest_ops_event("backup_maintenance")
+            latest_restore_drill = store.get_latest_ops_event("restore_drill")
     except Exception:
         latest_event = None
+        latest_restore_drill = None
 
     try:
         from ops.maintenance import get_maintenance_runner
@@ -134,6 +158,7 @@ async def system_health(
         "max_backups": _config.ops.max_backups,
         "maintenance_runner_active": bool(getattr(maintenance_runner, "running", False)),
         "last_backup_maintenance": latest_event,
+        "last_restore_drill": latest_restore_drill,
     }
     return result
 
@@ -192,6 +217,18 @@ async def verify_system_backup(
         "skipped": result.get("skipped", []),
         "entry_count": len(result.get("entries", [])),
     }
+
+
+@router.post("/backups/{archive_name}/restore-drill")
+async def run_system_backup_restore_drill(
+    archive_name: str,
+    _: Annotated[AuthUser, require_role("admin")],
+) -> dict:
+    """Restore a local backup archive into a disposable directory and check key paths."""
+    archive = _resolve_backup_archive(_deployment_root(), archive_name)
+    result = await asyncio.to_thread(run_restore_drill, archive)
+    _record_ops_event("restore_drill", result)
+    return result
 
 
 @router.post("/maintenance/backup")
