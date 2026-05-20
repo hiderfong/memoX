@@ -93,6 +93,18 @@ class PersistenceStore:
             CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp DESC);
             CREATE INDEX IF NOT EXISTS idx_audit_resource ON audit_log(resource, resource_id);
 
+            CREATE TABLE IF NOT EXISTS ops_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_type TEXT NOT NULL,
+                status TEXT NOT NULL,
+                action TEXT NOT NULL DEFAULT '',
+                message TEXT NOT NULL DEFAULT '',
+                details TEXT DEFAULT '{}',
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_ops_events_created ON ops_events(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_ops_events_type_created ON ops_events(event_type, created_at DESC);
+
             CREATE TABLE IF NOT EXISTS memories (
                 id TEXT PRIMARY KEY,
                 user_id TEXT,
@@ -602,6 +614,55 @@ class PersistenceStore:
         params.append(limit)
         rows = self._conn.execute(query, params).fetchall()
         return [dict(r) for r in rows]
+
+    # ── 运维事件 ──────────────────────────────────────────────
+
+    @staticmethod
+    def _ops_event_row_to_dict(row: sqlite3.Row) -> dict:
+        return {
+            "id": row["id"],
+            "event_type": row["event_type"],
+            "status": row["status"],
+            "action": row["action"],
+            "message": row["message"],
+            "details": json.loads(row["details"]) if row["details"] else {},
+            "created_at": row["created_at"],
+        }
+
+    def record_ops_event(
+        self,
+        event_type: str,
+        status: str,
+        action: str = "",
+        message: str = "",
+        details: dict | None = None,
+    ) -> dict:
+        """记录后台运维事件，并返回新记录。"""
+        now = datetime.now().isoformat()
+        cursor = self._conn.execute(
+            """INSERT INTO ops_events
+               (event_type, status, action, message, details, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (event_type, status, action, message, json.dumps(details or {}, ensure_ascii=False), now),
+        )
+        self._conn.commit()
+        row = self._conn.execute("SELECT * FROM ops_events WHERE id=?", (cursor.lastrowid,)).fetchone()
+        return self._ops_event_row_to_dict(row)
+
+    def list_ops_events(self, event_type: str | None = None, limit: int = 20) -> list[dict]:
+        query = "SELECT * FROM ops_events"
+        params: list = []
+        if event_type:
+            query += " WHERE event_type=?"
+            params.append(event_type)
+        query += " ORDER BY created_at DESC, id DESC LIMIT ?"
+        params.append(limit)
+        rows = self._conn.execute(query, params).fetchall()
+        return [self._ops_event_row_to_dict(row) for row in rows]
+
+    def get_latest_ops_event(self, event_type: str | None = None) -> dict | None:
+        events = self.list_ops_events(event_type=event_type, limit=1)
+        return events[0] if events else None
 
     # ==================== 跨会话记忆（memories）====================
 

@@ -104,12 +104,14 @@ class OpsMaintenanceRunner:
         interval_hours: float,
         startup_delay_seconds: float,
         max_backups: int,
+        store: Any | None = None,
     ) -> None:
         self._root = root
         self._include = include
         self._interval_hours = interval_hours
         self._startup_delay_seconds = startup_delay_seconds
         self._max_backups = max_backups
+        self._store = store
         self._task: asyncio.Task | None = None
         self._stop = asyncio.Event()
         self.last_result: dict[str, Any] | None = None
@@ -124,6 +126,26 @@ class OpsMaintenanceRunner:
     def stop(self) -> None:
         self._stop.set()
 
+    @property
+    def running(self) -> bool:
+        return self._task is not None and not self._task.done()
+
+    def _record_event(self, result: dict[str, Any]) -> None:
+        if self._store is None:
+            return
+        try:
+            event = self._store.record_ops_event(
+                event_type="backup_maintenance",
+                status=result.get("status", "error"),
+                action=result.get("action", ""),
+                message=result.get("message", ""),
+                details=result,
+            )
+            result["event_id"] = event["id"]
+            result["recorded_at"] = event["created_at"]
+        except Exception as exc:
+            logger.warning(f"[Ops] 记录运维事件失败: {type(exc).__name__}: {exc}")
+
     async def run_once(self) -> dict[str, Any]:
         result = await asyncio.to_thread(
             run_backup_maintenance,
@@ -132,6 +154,7 @@ class OpsMaintenanceRunner:
             interval_hours=self._interval_hours,
             max_backups=self._max_backups,
         )
+        self._record_event(result)
         self.last_result = result
         if result.get("ok"):
             logger.info(f"[Ops] 备份维护完成: {result.get('message')}")
@@ -170,6 +193,7 @@ def init_maintenance_runner(
     interval_hours: float,
     startup_delay_seconds: float,
     max_backups: int,
+    store: Any | None = None,
 ) -> OpsMaintenanceRunner:
     global _runner
     _runner = OpsMaintenanceRunner(
@@ -178,6 +202,7 @@ def init_maintenance_runner(
         interval_hours=interval_hours,
         startup_delay_seconds=startup_delay_seconds,
         max_backups=max_backups,
+        store=store,
     )
     return _runner
 

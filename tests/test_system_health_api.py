@@ -58,10 +58,20 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
     init_auth = importlib.import_module("auth").init_auth
     Config = importlib.import_module("config").Config
     BM25Indexer = importlib.import_module("knowledge.bm25_indexer").BM25Indexer
+    storage = importlib.import_module("storage")
+    persistence_module = importlib.import_module("storage.persistence")
 
     config_path = _write_config(tmp_path)
     monkeypatch.setenv("MEMOX_CONFIG_PATH", str(config_path))
     original_lifespan = api_module.app.router.lifespan_context
+    store = storage.init_store(tmp_path / "data" / "memox.db")
+    store.record_ops_event(
+        event_type="backup_maintenance",
+        status="ok",
+        action="created",
+        message="Created and verified backup",
+        details={"archive": "backups/memox-backup-test.tar.gz", "verified": True},
+    )
 
     @contextlib.asynccontextmanager
     async def noop_lifespan(app):
@@ -95,6 +105,8 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
         api_module.app.router.lifespan_context = original_lifespan
         api_module._config = None
         api_module._rag_engine = None
+        store.close()
+        persistence_module._store = None
 
     assert payload["ok"] is True
     assert payload["status"] == "warning"
@@ -107,3 +119,5 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
     assert checks["disk"]["status"] == "ok"
     assert checks["latest_backup"]["status"] == "warning"
     assert checks["latest_backup"]["details"]["archive_count"] == 0
+    assert payload["ops"]["auto_backup_enabled"] is True
+    assert payload["ops"]["last_backup_maintenance"]["action"] == "created"

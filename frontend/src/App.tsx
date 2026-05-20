@@ -57,6 +57,7 @@ interface SystemHealthReport {
   config: string;
   checks: SystemCheck[];
   runtime?: Record<string, any>;
+  ops?: Record<string, any>;
 }
 
 const statusTagColor = (status?: ReadinessStatus) => {
@@ -3621,6 +3622,9 @@ const SystemStatusPage: React.FC = () => {
   const backupCheck = getCheck('latest_backup');
   const backupDetails = (backupCheck?.details || {}) as Record<string, any>;
   const backupWarnings = Array.isArray(backupDetails.warnings) ? backupDetails.warnings : [];
+  const ops = report?.ops || {};
+  const maintenanceEvent = (ops.last_backup_maintenance || {}) as Record<string, any>;
+  const maintenanceDetails = (maintenanceEvent.details || {}) as Record<string, any>;
   const missingDirectories = persistentPaths.missing_directories || [];
   const statusCounts = checks.reduce<Record<string, number>>((acc, check) => {
     acc[check.status] = (acc[check.status] || 0) + 1;
@@ -3817,6 +3821,25 @@ const SystemStatusPage: React.FC = () => {
                   <Tag key={warning} color="orange">{warning}</Tag>
                 ))}
               </Space>
+            )}
+            <Divider style={{ margin: '4px 0' }} />
+            <Text><Text strong>自动备份:</Text> {ops.auto_backup_enabled ? '已启用' : '未启用'}</Text>
+            <Text><Text strong>后台维护:</Text> {ops.maintenance_runner_active ? '运行中' : '未运行'}</Text>
+            <Text><Text strong>维护间隔:</Text> {ops.auto_backup_interval_hours ?? '-'} 小时</Text>
+            {maintenanceEvent.id ? (
+              <>
+                <Space wrap>
+                  <Tag color={statusTagColor(maintenanceEvent.status)}>{statusLabel(maintenanceEvent.status)}</Tag>
+                  <Tag>{maintenanceEvent.action || '-'}</Tag>
+                  <Text type="secondary">{maintenanceEvent.created_at}</Text>
+                </Space>
+                <Text>{maintenanceEvent.message || '-'}</Text>
+                {maintenanceDetails.deleted?.length > 0 && (
+                  <Text type="secondary">本次裁剪 {maintenanceDetails.deleted.length} 个旧归档</Text>
+                )}
+              </>
+            ) : (
+              <Text type="secondary">暂无自动维护记录</Text>
             )}
           </Space>
         </Card>

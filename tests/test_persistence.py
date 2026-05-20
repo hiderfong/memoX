@@ -145,6 +145,32 @@ def test_runtime_schema_matches_memory_and_summary_migrations(tmp_path):
     store.close()
 
 
+def test_ops_event_record_and_latest(tmp_path):
+    store = PersistenceStore(tmp_path / "test.db")
+
+    first = store.record_ops_event(
+        event_type="backup_maintenance",
+        status="ok",
+        action="created",
+        message="created backup",
+        details={"archive": "backups/one.tar.gz"},
+    )
+    second = store.record_ops_event(
+        event_type="backup_maintenance",
+        status="error",
+        action="error",
+        message="backup failed",
+        details={"reason": "disk full"},
+    )
+
+    assert first["id"] != second["id"]
+    assert store.get_latest_ops_event("backup_maintenance")["id"] == second["id"]
+    events = store.list_ops_events("backup_maintenance")
+    assert [event["message"] for event in events] == ["backup failed", "created backup"]
+    assert events[0]["details"]["reason"] == "disk full"
+    store.close()
+
+
 # ==================== 定时任务 ====================
 
 
