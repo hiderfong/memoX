@@ -25,8 +25,10 @@ from scripts.backup_restore import (  # noqa: E402
     read_backup_metadata,
     verify_backup,
 )
-from src.config import default_config_path  # noqa: E402
+from src.config import Config, default_config_path  # noqa: E402
 from src.ops.readiness import (  # noqa: E402
+    DEFAULT_MAX_BACKUP_AGE_HOURS,
+    DEFAULT_MAX_BACKUP_ARCHIVES,
     CheckResult,
     duration_ms,
     overall_status,
@@ -193,6 +195,40 @@ def run_script_check(name: str, command: list[str], *, cwd: Path, timeout: float
     )
 
 
+def resolve_backup_policy(
+    *,
+    config_path: Path,
+    max_backup_age_hours: float | None,
+    max_backups: int | None,
+) -> dict[str, Any]:
+    """Resolve backup thresholds from CLI overrides or ops config."""
+    policy: dict[str, Any] = {
+        "max_backup_age_hours": max_backup_age_hours,
+        "max_backups": max_backups,
+        "sources": {
+            "max_backup_age_hours": "cli" if max_backup_age_hours is not None else "default",
+            "max_backups": "cli" if max_backups is not None else "default",
+        },
+    }
+    if max_backup_age_hours is None or max_backups is None:
+        try:
+            cfg = Config.from_yaml(config_path)
+            if max_backup_age_hours is None:
+                policy["max_backup_age_hours"] = cfg.ops.auto_backup_interval_hours
+                policy["sources"]["max_backup_age_hours"] = "config"
+            if max_backups is None:
+                policy["max_backups"] = cfg.ops.max_backups
+                policy["sources"]["max_backups"] = "config"
+        except Exception as exc:
+            policy["config_error"] = f"{type(exc).__name__}: {exc}"
+
+    if policy["max_backup_age_hours"] is None:
+        policy["max_backup_age_hours"] = DEFAULT_MAX_BACKUP_AGE_HOURS
+    if policy["max_backups"] is None:
+        policy["max_backups"] = DEFAULT_MAX_BACKUP_ARCHIVES
+    return policy
+
+
 def run_ops_check(
     *,
     root: Path,
@@ -200,8 +236,8 @@ def run_ops_check(
     collection_name: str,
     verify_latest_backup: bool,
     backup_archive: Path | None,
-    max_backup_age_hours: float,
-    max_backups: int,
+    max_backup_age_hours: float | None,
+    max_backups: int | None,
     create_backup_first: bool,
     include_smoke: bool,
     include_frontend_smoke: bool,
@@ -212,6 +248,11 @@ def run_ops_check(
     if create_backup_first:
         checks.append(check_create_backup(root))
 
+    backup_policy = resolve_backup_policy(
+        config_path=config_path,
+        max_backup_age_hours=max_backup_age_hours,
+        max_backups=max_backups,
+    )
     readiness = run_readiness_checks(root=root, config_path=config_path, collection_name=collection_name)
     checks.extend(CheckResult(**check) for check in readiness["checks"])
     checks.append(
@@ -219,8 +260,8 @@ def run_ops_check(
             root,
             archive=backup_archive,
             verify=verify_latest_backup,
-            max_age_hours=max_backup_age_hours,
-            max_backups=max_backups,
+            max_age_hours=float(backup_policy["max_backup_age_hours"]),
+            max_backups=int(backup_policy["max_backups"]),
         )
     )
 
@@ -240,6 +281,7 @@ def run_ops_check(
         "status": status,
         "root": str(root),
         "config": str(config_path),
+        "backup_policy": backup_policy,
         "checks": [asdict(check) for check in checks],
     }
 
@@ -248,6 +290,13 @@ def _print_human(result: dict[str, Any]) -> None:
     print(f"Status: {result['status']}")
     print(f"Root: {result['root']}")
     print(f"Config: {result['config']}")
+    policy = result.get("backup_policy") or {}
+    if policy:
+        print(
+            "Backup policy: "
+            f"max age {policy.get('max_backup_age_hours')}h, "
+            f"max archives {policy.get('max_backups')}"
+        )
     for check in result["checks"]:
         print(f"- [{check['status']}] {check['name']}: {check['message']} ({check['duration_ms']}ms)")
         details = check.get("details") or {}
@@ -267,8 +316,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--collection", default="documents", help="Chroma collection name.")
     parser.add_argument("--backup", help="Backup archive to inspect/verify instead of the latest backups/*.tar.gz.")
     parser.add_argument("--no-verify-backup", action="store_true", help="Inspect latest backup metadata without checksums.")
-    parser.add_argument("--max-backup-age-hours", type=float, default=24.0, help="Warn if the latest backup is older.")
-    parser.add_argument("--max-backups", type=int, default=14, help="Warn if backup archive count exceeds this value.")
+    parser.add_argument(
+        "--max-backup-age-hours",
+        type=float,
+        default=None,
+        help="Warn if the latest backup is older. Defaults to ops.auto_backup_interval_hours.",
+    )
+    parser.add_argument(
+        "--max-backups",
+        type=int,
+        default=None,
+        help="Warn if backup archive count exceeds this value. Defaults to ops.max_backups.",
+    )
     parser.add_argument("--create-backup", action="store_true", help="Create and verify a backup before other checks.")
     parser.add_argument("--smoke", action="store_true", help="Run isolated backend smoke test.")
     parser.add_argument("--frontend-smoke", action="store_true", help="Run isolated backend + Vite frontend smoke test.")

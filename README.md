@@ -159,7 +159,7 @@ uv run --extra dev python scripts/restore_drill.py
 uv run --extra dev python scripts/index_consistency.py
 ```
 
-日常运维可以跑一键巡检，默认会读取配置、检查持久化路径、审计索引一致性、SQLite、磁盘空间并校验最近一次备份：
+日常运维可以跑一键巡检，默认会读取配置、检查持久化路径、审计索引一致性、SQLite、磁盘空间并校验最近一次备份；备份新鲜度和本地归档数量阈值默认跟随 `ops.auto_backup_interval_hours` 与 `ops.max_backups`，也可以用命令行参数覆盖：
 
 ```bash
 uv run --extra dev python scripts/ops_check.py

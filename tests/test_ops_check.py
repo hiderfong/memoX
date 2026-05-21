@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from scripts.backup_restore import BackupError, create_backup
-from scripts.ops_check import check_latest_backup, find_latest_backup
+from scripts.ops_check import check_latest_backup, find_latest_backup, resolve_backup_policy
 from src.ops.readiness import (
     CheckResult,
     overall_status,
@@ -107,6 +107,52 @@ def test_latest_backup_warns_when_stale_or_too_many(tmp_path: Path) -> None:
         "latest backup is older than 1h",
         "backup archive count exceeds 2",
     ]
+
+
+def test_backup_policy_defaults_to_ops_config(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+auth:
+  enabled: false
+ops:
+  auto_backup_interval_hours: 72
+  max_backups: 3
+""",
+        encoding="utf-8",
+    )
+
+    policy = resolve_backup_policy(config_path=config_path, max_backup_age_hours=None, max_backups=None)
+
+    assert policy["max_backup_age_hours"] == 72
+    assert policy["max_backups"] == 3
+    assert policy["sources"] == {
+        "max_backup_age_hours": "config",
+        "max_backups": "config",
+    }
+
+
+def test_backup_policy_cli_overrides_config(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        """
+auth:
+  enabled: false
+ops:
+  auto_backup_interval_hours: 72
+  max_backups: 3
+""",
+        encoding="utf-8",
+    )
+
+    policy = resolve_backup_policy(config_path=config_path, max_backup_age_hours=12, max_backups=5)
+
+    assert policy["max_backup_age_hours"] == 12
+    assert policy["max_backups"] == 5
+    assert policy["sources"] == {
+        "max_backup_age_hours": "cli",
+        "max_backups": "cli",
+    }
 
 
 def test_readiness_latest_backup_inspects_metadata_without_checksum(tmp_path: Path) -> None:

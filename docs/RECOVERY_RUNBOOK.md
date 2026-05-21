@@ -78,6 +78,11 @@ uv run --extra dev python scripts/ops_check.py --json > memox-ops-check.json
 uv run --extra dev python scripts/backup_restore.py create --json > memox-safety-backup.json
 ```
 
+`scripts/ops_check.py` uses `ops.auto_backup_interval_hours` and
+`ops.max_backups` from the active config as its default backup thresholds, so
+the CLI verdict should match the authenticated system health page unless you
+override those values with command-line flags.
+
 Keep diagnostic bundles and backup archives out of public issue trackers. They
 may contain uploaded documents, vector indexes, API keys, and workspace output.
 
