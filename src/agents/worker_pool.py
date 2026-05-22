@@ -37,10 +37,12 @@ class SubTask:
     id: str
     description: str
     dependencies: list[str] = field(default_factory=list)  # 依赖的任务 ID
+    acceptance_criteria: list[str] = field(default_factory=list)
     status: TaskStatus = TaskStatus.PENDING
     result: str | None = None
     error: str | None = None
     assigned_agent: str | None = None
+    attempts: int = 0
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     started_at: str | None = None
     completed_at: str | None = None
@@ -191,6 +193,9 @@ class WorkerAgent:
 
             # 构建用户消息
             user_content = task.description
+            if task.acceptance_criteria:
+                criteria = "\n".join(f"- {item}" for item in task.acceptance_criteria)
+                user_content = f"{user_content}\n\n验收标准：\n{criteria}"
             if context:
                 context_str = json.dumps(context, ensure_ascii=False, indent=2)
                 user_content = f"""上下文信息：

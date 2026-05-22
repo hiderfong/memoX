@@ -163,10 +163,13 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
             assert repair.status_code == 200
             repair_payload = repair.json()
 
+            url = f"/api/system/backups/{backup_name}/verify"
+            print("Requesting verify URL:", url)
             verified = client.post(
-                f"/api/system/backups/{backup_name}/verify",
+                url,
                 headers={"Authorization": f"Bearer {admin_token}"},
             )
+            print("Verify status:", verified.status_code, verified.text)
             assert verified.status_code == 200
             verified_payload = verified.json()
 
@@ -349,6 +352,10 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
     assert refreshed_payload["ops"]["last_diagnostics_export"]["details"]["actor"]["username"] == "admin"
     assert refreshed_payload["ops"]["last_diagnostics_export"]["details"]["mirror"]["ok"] is True
     assert refreshed_payload["ops"]["retention"]["ops_event_retention_days"] == 90
+    assert refreshed_payload["ops"]["retention"]["task_job_retention_days"] == 30
+    assert "task_jobs" in refreshed_payload["ops"]
+    assert "needs_intervention" in refreshed_payload["ops"]["task_jobs"]
+    assert "manual_retryable" in refreshed_payload["ops"]["task_jobs"]
     assert refreshed_payload["ops"]["last_lifecycle_cleanup"]["details"]["action"] == "executed"
     assert Path(refreshed_payload["ops"]["last_diagnostics_export"]["details"]["mirror"]["destination"]).exists()
     assert refreshed_payload["ops"]["last_index_repair"]["details"]["action"] == "index_repair"

@@ -1,12 +1,16 @@
 """Tasks router"""
+import contextlib
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from coordinator.task_jobs import TaskJobRequest, TaskJobRunner
 from web.state import get_store as _gs
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
+_task_job_runner: TaskJobRunner | None = None
+_task_job_runner_key: tuple[int, int, int] | None = None
 
 
 class TaskRequest(BaseModel):
@@ -22,93 +26,112 @@ class FeedbackRequest(BaseModel):
     feedback: str
 
 
-@router.post("")
-async def create_task(request: TaskRequest) -> dict:
-    """创建并执行任务（迭代编排器）"""
-    import asyncio
+class RetryTaskRequest(BaseModel):
+    force: bool = False
 
+
+def _get_task_job_runner() -> TaskJobRunner:
     import web.api as _api_module
 
-    _orchestrator = getattr(_api_module, "_orchestrator", None)
-    _task_planner = getattr(_api_module, "_task_planner", None)
-
-    if not _orchestrator:
+    global _task_job_runner, _task_job_runner_key
+    orchestrator = getattr(_api_module, "_orchestrator", None)
+    task_planner = getattr(_api_module, "_task_planner", None)
+    result_cache = getattr(_api_module, "_task_results", {})
+    config = getattr(_api_module, "_config", None)
+    store = _gs()
+    if not orchestrator:
         raise HTTPException(status_code=500, detail="Orchestrator not initialized")
+    if not store:
+        raise HTTPException(status_code=500, detail="Persistence store not initialized")
 
-    timeout = request.timeout_seconds
-    try:
-        coro = _orchestrator.run(
+    key = (id(orchestrator), id(task_planner), id(store))
+    if _task_job_runner is None or _task_job_runner_key != key:
+        init_task_job_runner(orchestrator, task_planner, store, result_cache, config=config)
+    return _task_job_runner
+
+
+def init_task_job_runner(orchestrator, task_planner, store, result_cache, config=None) -> TaskJobRunner:
+    """Initialize the shared task job runner used by API routes and startup recovery."""
+    global _task_job_runner, _task_job_runner_key
+    coordinator = getattr(config, "coordinator", None)
+    _task_job_runner = TaskJobRunner(
+        orchestrator,
+        task_planner,
+        store,
+        result_cache,
+        auto_retry_enabled=bool(getattr(coordinator, "task_auto_retry_enabled", False)),
+        auto_retry_max_attempts=int(getattr(coordinator, "task_auto_retry_max_attempts", 0) or 0),
+        auto_retry_initial_delay_seconds=float(
+            getattr(coordinator, "task_auto_retry_initial_delay_seconds", 30.0) or 0.0
+        ),
+        auto_retry_max_delay_seconds=float(getattr(coordinator, "task_auto_retry_max_delay_seconds", 300.0) or 0.0),
+        auto_retry_backoff_multiplier=float(getattr(coordinator, "task_auto_retry_backoff_multiplier", 2.0) or 1.0),
+    )
+    _task_job_runner_key = (id(orchestrator), id(task_planner), id(store))
+    return _task_job_runner
+
+
+def _attach_persistent_task_metadata(task: dict, store) -> dict:
+    task_id = task.get("task_id") or task.get("id")
+    if not task_id or not store:
+        return task
+
+    checkpoint = store.get_task_checkpoint(task_id)
+    if checkpoint:
+        task["checkpoint"] = checkpoint
+        task["sub_tasks"] = checkpoint.get("sub_tasks", [])
+
+    job = store.get_task_job_request(task_id)
+    if job:
+        task["job"] = {
+            "lease_owner": job.get("lease_owner", ""),
+            "lease_expires_at": job.get("lease_expires_at", ""),
+            "recovery_count": job.get("recovery_count", 0),
+            "last_recovered_at": job.get("last_recovered_at", ""),
+            "auto_retry_count": job.get("auto_retry_count", 0),
+            "next_retry_at": job.get("next_retry_at", ""),
+            "updated_at": job.get("updated_at", ""),
+        }
+    latest_failure = _latest_failure_from_events(store.list_task_events(task_id))
+    if latest_failure:
+        task["last_failure"] = latest_failure
+    return task
+
+
+def _latest_failure_from_events(events: list[dict]) -> dict:
+    for event in reversed(events):
+        details = event.get("details") or {}
+        failure_type = details.get("failure_type")
+        if not failure_type and event.get("event_type") == "timeout":
+            failure_type = "timeout"
+        if failure_type:
+            retryable = bool(
+                details.get("retryable")
+                or failure_type in {"timeout", "lease_lost", "retryable_exception"}
+            )
+            return {
+                "event_type": event.get("event_type", ""),
+                "failure_type": failure_type,
+                "retryable": retryable,
+                "message": event.get("message", ""),
+                "created_at": event.get("created_at", ""),
+            }
+    return {}
+
+
+@router.post("")
+async def create_task(request: TaskRequest) -> dict:
+    """创建后台任务，并立即返回可轮询的任务记录。"""
+    runner = _get_task_job_runner()
+    return runner.submit(
+        TaskJobRequest(
             description=request.description,
             context=request.context or {},
+            generate_suggestions=request.generate_suggestions,
             active_group_ids=request.active_group_ids,
+            timeout_seconds=request.timeout_seconds,
         )
-        if timeout:
-            result = await asyncio.wait_for(coro, timeout=float(timeout))
-        else:
-            result = await coro
-    except asyncio.TimeoutError as e:
-        raise HTTPException(status_code=504, detail=f"任务执行超时（{timeout}秒）") from e
-
-    suggestions = []
-    if request.generate_suggestions and _task_planner:
-        from agents.worker_pool import Task
-
-        placeholder_task = Task(
-            id=result.task_id,
-            description=request.description,
-        )
-        suggestions = await _task_planner.generate_optimization_suggestions(
-            placeholder_task,
-            result.result_summary,
-            request.context or {},
-        )
-
-    # 读取邮件通信日志
-    mail_log = ""
-    mail_log_path = Path(result.shared_dir) / "mail_log.txt"
-    if mail_log_path.exists():
-        mail_log = mail_log_path.read_text(encoding="utf-8")
-
-    response_data = {
-        "task_id": result.task_id,
-        "result": result.result_summary,
-        "shared_dir": result.shared_dir,
-        "final_score": result.final_score,
-        "iterations": [
-            {
-                "iteration": r.iteration,
-                "score": r.score,
-                "improvements": r.improvements,
-            }
-            for r in result.iterations
-        ],
-        "mail_log": mail_log,
-        "suggestions": [
-            {
-                "type": s.type,
-                "title": s.title,
-                "description": s.description,
-                "confidence": s.confidence,
-                "code_snippet": s.code_snippet,
-                "priority": s.priority,
-            }
-            for s in suggestions
-        ],
-    }
-
-    # 缓存结果供后续查询
-    _api_module._task_results[result.task_id] = response_data
-
-    # 检测取消状态
-    task_status = "cancelled" if result.result_summary == "(任务已取消)" else "completed"
-
-    # 持久化任务
-
-    store = _gs()
-    if store:
-        store.save_task({**response_data, "description": request.description, "status": task_status})
-
-    return response_data
+    )
 
 
 @router.get("")
@@ -122,7 +145,7 @@ async def list_tasks() -> list[dict]:
     if store:
         persisted = store.list_tasks(limit=100)
         if persisted:
-            return persisted
+            return [_attach_persistent_task_metadata(dict(task), store) for task in persisted]
 
     # 回退到 TaskPlanner 的内存存储
     if _task_planner:
@@ -136,9 +159,12 @@ async def list_running_tasks() -> list[str]:
     import web.api as _api_module
     _orchestrator = getattr(_api_module, "_orchestrator", None)
 
-    if not _orchestrator:
-        return []
-    return _orchestrator.list_running_tasks()
+    running: set[str] = set()
+    if _orchestrator:
+        running.update(_orchestrator.list_running_tasks())
+    with contextlib.suppress(HTTPException):
+        running.update(_get_task_job_runner().list_running())
+    return sorted(running)
 
 
 @router.get("/{task_id}/files")
@@ -184,6 +210,17 @@ async def get_task_files(task_id: str) -> dict:
     return {"task_id": task_id, "files": files}
 
 
+@router.get("/{task_id}/events")
+async def get_task_events(task_id: str) -> dict:
+    """获取任务事件日志。"""
+    store = _gs()
+    if not store:
+        raise HTTPException(status_code=500, detail="Persistence store not initialized")
+    if not store.get_task(task_id):
+        raise HTTPException(status_code=404, detail="Task not found")
+    return {"task_id": task_id, "events": store.list_task_events(task_id)}
+
+
 @router.get("/{task_id}")
 async def get_task(task_id: str) -> dict:
     """获取任务详情（内存 → 缓存 → SQLite）"""
@@ -191,16 +228,32 @@ async def get_task(task_id: str) -> dict:
     _task_planner = getattr(_api_module, "_task_planner", None)
     _task_results = getattr(_api_module, "_task_results", {})
 
+    if task_id in _task_results and _task_results[task_id].get("status") in {
+        "completed",
+        "failed",
+        "cancelled",
+        "timeout",
+    }:
+        cached = dict(_task_results[task_id])
+        store = _gs()
+        return _attach_persistent_task_metadata(cached, store)
+
     # 1. TaskPlanner 内存中的任务（含子任务实时状态）
     if _task_planner:
         task = _task_planner.get_task(task_id)
         if task:
             return {
                 "id": task.id,
+                "task_id": task.id,
                 "description": task.description,
                 "status": task.status.value,
                 "result": task.result,
                 "error": task.error,
+                "final_score": 0.0,
+                "iterations": [],
+                "mail_log": "",
+                "suggestions": [],
+                "shared_dir": "",
                 "sub_tasks": [
                     {
                         "id": st.id,
@@ -209,6 +262,7 @@ async def get_task(task_id: str) -> dict:
                         "result": st.result,
                         "error": st.error,
                         "assigned_agent": st.assigned_agent,
+                        "acceptance_criteria": st.acceptance_criteria,
                     }
                     for st in task.sub_tasks
                 ],
@@ -219,14 +273,16 @@ async def get_task(task_id: str) -> dict:
 
     # 2. 内存缓存
     if task_id in _task_results:
-        return _task_results[task_id]
+        cached = dict(_task_results[task_id])
+        store = _gs()
+        return _attach_persistent_task_metadata(cached, store)
 
     # 3. SQLite 持久化
     store = _gs()
     if store:
         persisted = store.get_task(task_id)
         if persisted:
-            return persisted
+            return _attach_persistent_task_metadata(persisted, store)
 
     raise HTTPException(status_code=404, detail="Task not found")
 
@@ -239,9 +295,31 @@ async def cancel_task(task_id: str) -> dict:
 
     if not _orchestrator:
         raise HTTPException(status_code=500, detail="Orchestrator not initialized")
-    if _orchestrator.cancel_task(task_id):
+    try:
+        runner = _get_task_job_runner()
+        cancelled = runner.cancel(task_id)
+    except HTTPException:
+        cancelled = _orchestrator.cancel_task(task_id)
+    if cancelled:
         return {"success": True, "message": f"Task {task_id} cancel requested"}
     raise HTTPException(status_code=404, detail="Task not found or not running")
+
+
+@router.post("/{task_id}/retry")
+async def retry_task(task_id: str, request: RetryTaskRequest | None = None) -> dict:
+    """重新入队可重试失败任务，或手动恢复失去本地执行器的未完成任务。"""
+    runner = _get_task_job_runner()
+    try:
+        task = runner.retry(task_id, force=request.force if request else False)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="Task not found") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    store = _gs()
+    return _attach_persistent_task_metadata(dict(task), store)
 
 
 @router.post("/{task_id}/feedback")

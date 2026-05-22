@@ -97,6 +97,14 @@ def test_parallel_executor_runs_dependency_batches(tmp_path):
         "run_shell",
         "send_mail",
         "read_mail",
+        "broadcast_message",
+        "read_broadcasts",
+        "web_search",
+        "web_fetch",
+        "database_query",
+        "github_create_issue",
+        "github_search",
+        "playwright_crawler",
     }
 
 

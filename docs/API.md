@@ -75,11 +75,13 @@ Worker 创建、更新和删除接口会持久化修改 `config.yaml` 中的 `wo
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | `GET` | `/api/tasks` | 列出任务 |
-| `POST` | `/api/tasks` | 创建并执行任务 |
+| `POST` | `/api/tasks` | 提交后台执行任务，立即返回可轮询的任务记录 |
 | `GET` | `/api/tasks/running` | 列出运行中任务 |
 | `GET` | `/api/tasks/{task_id}` | 获取任务详情 |
 | `GET` | `/api/tasks/{task_id}/files` | 获取任务 shared 目录文件 |
+| `GET` | `/api/tasks/{task_id}/events` | 获取任务生命周期事件、子任务进度、失败原因和租约状态 |
 | `POST` | `/api/tasks/{task_id}/cancel` | 取消运行中任务 |
+| `POST` | `/api/tasks/{task_id}/retry` | 将可重试失败任务重新入队，或手动恢复无活跃租约的未完成任务 |
 | `POST` | `/api/tasks/{task_id}/feedback` | 提交 Human-in-the-Loop 反馈 |
 | `GET` | `/api/workers` | 列出 Worker |
 | `POST` | `/api/workers` | 创建 Worker，仅管理员 |
@@ -88,6 +90,8 @@ Worker 创建、更新和删除接口会持久化修改 `config.yaml` 中的 `wo
 | `PUT` | `/api/workers/{worker_id}/config` | 更新 Worker 配置，仅管理员 |
 | `DELETE` | `/api/workers/{worker_id}` | 删除 Worker，仅管理员 |
 | `GET` | `/api/providers` | 列出 Provider 配置摘要、模型、服务端密钥状态与引用位置 |
+
+后台任务失败事件会在 `details.failure_type` 中标记原因：`user_cancelled` 表示用户取消，`timeout` 和 `retryable_exception` 可自动重试，`non_retryable_exception` 需要人工排查，`lease_lost` 表示当前执行器丢失租约并已停止本地执行以避免重复写入。自动重试会记录 `auto_retry_scheduled`、`auto_retry_queued`、`auto_retry_exhausted` 事件；任务详情的 `job.auto_retry_count` 和 `job.next_retry_at` 可用于展示重试次数和下一次重试时间。
 
 ## Skills、工作流与定时任务
 

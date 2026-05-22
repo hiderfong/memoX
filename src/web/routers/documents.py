@@ -1,7 +1,7 @@
 """Documents and groups router"""
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel
 
 from auth import AuthUser, require_role
@@ -167,6 +167,62 @@ async def upload_document(
         with contextlib.suppress(Exception):
             file_path.unlink(missing_ok=True)
         raise HTTPException(status_code=500, detail=f"文档处理失败: {type(e).__name__}: {str(e)}") from e
+
+
+
+
+
+@router.get("/knowledge/graph")
+async def get_knowledge_graph(
+    depth: int = Query(2, description="查询深度"),
+    limit: int = Query(1000, description="最大返回节点数"),
+):
+    """获取知识图谱可视化数据"""
+    from web.api import _rag_engine
+
+    if not _rag_engine or not getattr(_rag_engine, "_knowledge_graph", None):
+        raise HTTPException(status_code=503, detail="知识图谱未初始化或未启用")
+
+    kg = _rag_engine._knowledge_graph
+    if not kg.enabled:
+        raise HTTPException(status_code=400, detail="知识图谱功能已禁用")
+
+    stats = kg.stats()
+    if stats.get("nodes", 0) == 0:
+        return {"nodes": [], "links": []}
+
+    # 获取三元组并转换为 nodes 和 links 格式
+    triples = kg.export_triples()
+
+    nodes_dict = {}
+    links = []
+
+    for t in triples[:limit]:
+        subj = t["subject"]
+        obj = t["object"]
+        pred = t["predicate"]
+
+        if subj not in nodes_dict:
+            nodes_dict[subj] = {"id": subj, "name": subj, "val": 1}
+        else:
+            nodes_dict[subj]["val"] += 1
+
+        if obj not in nodes_dict:
+            nodes_dict[obj] = {"id": obj, "name": obj, "val": 1}
+        else:
+            nodes_dict[obj]["val"] += 1
+
+        links.append({
+            "source": subj,
+            "target": obj,
+            "label": pred,
+            "confidence": t.get("confidence", 1.0)
+        })
+
+    return {
+        "nodes": list(nodes_dict.values()),
+        "links": links
+    }
 
 
 @router.post("/documents/url")

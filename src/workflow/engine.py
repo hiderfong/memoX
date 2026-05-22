@@ -8,7 +8,6 @@
 """
 
 import asyncio
-import contextlib
 import json
 import uuid
 from dataclasses import dataclass, field
@@ -421,6 +420,21 @@ class WorkflowEngine:
 
     def _should_skip_step(self, step: WorkflowStep, run: WorkflowRun, workflow: Workflow) -> bool:
         """判断步骤是否应跳过"""
+        # 如果定义了自定义条件表达式
+        if step.condition_expr:
+            from workflow.parser import resolve_template
+            resolved_expr = resolve_template(step.condition_expr, run.context)
+            try:
+                # 简单安全的 eval（禁止 builtin）
+                # 仅允许 bool 判断和基础比较
+                # 这里为了演示和灵活性，允许基本的 python 语法，实际生产可能需要限制更严格
+                result = eval(resolved_expr, {"__builtins__": {}}, {})
+                if not result:
+                    return True
+            except Exception as e:
+                logger.warning(f"[WorkflowEngine] 条件表达式 '{step.condition_expr}' 求值失败: {e}")
+                return True # 求值失败则跳过
+
         if step.condition == StepCondition.ALWAYS:
             return False
 
@@ -456,9 +470,21 @@ class WorkflowEngine:
         on_step_change: Any,
     ) -> Any:
         """执行单个步骤"""
-        # 解析输入模板
-        input_resolved = resolve_template(step.input, run.context)
-        run.mark_step_started(step.id, input_resolved)
+        from workflow.parser import resolve_template, resolve_value
+
+        # 检查是否是 map 循环执行
+        is_map = bool(step.map_over)
+        if is_map:
+            map_list = resolve_value(step.map_over, run.context)
+            if not isinstance(map_list, list):
+                logger.warning(f"[WorkflowEngine] map_over 目标不是列表: {step.map_over} -> {type(map_list)}")
+                map_list = [map_list] if map_list is not None else []
+        else:
+            map_list = [None]  # 单次执行的占位符
+
+        # 在 UI 上展示一个概括性的输入（未完全解析，或只解析外部变量）
+        base_input_resolved = resolve_template(step.input, run.context)
+        run.mark_step_started(step.id, base_input_resolved)
         self._persistence.save_run(run)
 
         if on_step_change:
@@ -467,97 +493,112 @@ class WorkflowEngine:
             except Exception as e:
                 logger.warning(f"[WorkflowEngine] on_step_change callback 失败: {e}")
 
-        # 构建 Worker 执行上下文
-        step_context = {
-            **context,
-            **run.context,
-            step.output_var: "",  # placeholder
-        }
-
-        # 将依赖结果注入 context
+        # 将依赖结果提前准备好
+        base_step_context = {**context, **run.context, step.output_var: ""}
         deps = step.get_input_refs()
         for ref in deps:
+            if ref in ("item", "index"): continue # 循环变量，推迟解析
             parts = ref.split(".")
             target_id = parts[0]
             output = run.get_output(target_id)
             if output is not None:
-                step_context[target_id] = output
+                base_step_context[target_id] = output
                 if len(parts) > 1:
                     try:
-                        step_context[ref] = _nested_get(output, parts[1:])
+                        base_step_context[ref] = _nested_get(output, parts[1:])
                     except Exception:
-                        step_context[ref] = str(output)
+                        base_step_context[ref] = str(output)
                 else:
-                    step_context[ref] = str(output)
+                    base_step_context[ref] = str(output)
 
-        step_context["task_description"] = input_resolved
+        map_results = []
+        step_error = ""
 
-        # 构造 Task 给 WorkerPool
         from agents.worker_pool import SubTask
-        subtask = SubTask(
-            id=step.id,
-            description=input_resolved,
-            worker_name=step.worker,
-            dependencies=[],
-            status=TaskStatus.PENDING,
-        )
 
-        retry = step.retry_on_fail
-        last_error = ""
-        for attempt in range(retry + 1):
-            try:
-                worker = self._worker_pool.get_worker_for(subtask)
-                if not worker:
-                    raise RuntimeError(f"未找到 worker: {step.worker}")
+        for idx, item in enumerate(map_list):
+            current_context = {**base_step_context}
+            if is_map:
+                current_context["item"] = item
+                current_context["index"] = idx
 
-                result_str, error = await asyncio.wait_for(
-                    self._worker_pool.execute_task(subtask, step_context),
-                    timeout=float(step.timeout_seconds),
-                )
+            # 解析本次循环的实际输入模板
+            input_resolved = resolve_template(step.input, current_context)
+            current_context["task_description"] = input_resolved
 
-                if error:
-                    last_error = error
+            # 构造 Task 给 WorkerPool
+            subtask = SubTask(
+                id=f"{step.id}_{idx}" if is_map else step.id,
+                description=input_resolved,
+                assigned_agent=step.worker,
+                dependencies=[],
+                status=TaskStatus.PENDING,
+            )
+
+            retry = step.retry_on_fail
+            last_error = ""
+            success = False
+            for attempt in range(retry + 1):
+                try:
+                    worker = self._worker_pool.get_worker_for(subtask)
+                    if not worker:
+                        raise RuntimeError(f"未找到 worker: {step.worker}")
+
+                    result_str, error = await asyncio.wait_for(
+                        self._worker_pool.execute_task(subtask, current_context),
+                        timeout=float(step.timeout_seconds),
+                    )
+
+                    if error:
+                        last_error = error
+                        if attempt < retry:
+                            logger.warning(f"[WorkflowEngine] 步骤 '{step.id}' (item={idx}) 失败，{attempt+1}/{retry+1} 重试")
+                            await asyncio.sleep(1.0 * (attempt + 1))
+                            continue
+                        raise RuntimeError(error)
+
+                    map_results.append(result_str)
+                    success = True
+                    break
+
+                except asyncio.TimeoutError:
+                    last_error = f"执行超时 ({step.timeout_seconds}s)"
                     if attempt < retry:
-                        logger.warning(f"[WorkflowEngine] 步骤 '{step.id}' 失败，{attempt+1}/{retry+1} 重试")
-                        await asyncio.sleep(1.0 * (attempt + 1))
+                        logger.warning(f"[WorkflowEngine] 步骤 '{step.id}' 超时，重试")
                         continue
-                    run.mark_step_failed(step.id, error)
-                    run.context[f"{step.id}.error"] = error
-                    self._persistence.save_run(run)
-                    return error
+                    raise RuntimeError(last_error)
+                except Exception as e:
+                    last_error = str(e)
+                    if attempt < retry:
+                        continue
+                    raise RuntimeError(last_error)
 
-                # 成功
-                run.mark_step_completed(step.id, result_str)
-                run.context[step.output_var] = result_str
-                run.context[f"{step.id}.success"] = True
-                self._persistence.save_run(run)
+            if not success:
+                step_error = last_error
+                break  # 一个失败就中断整个 map
 
-                if on_step_change:
-                    with contextlib.suppress(Exception):
-                        on_step_change(step.id, WorkflowRunStatus.COMPLETED)
+        if step_error:
+            run.mark_step_failed(step.id, step_error)
+            run.context[f"{step.id}.error"] = step_error
+            if on_step_change:
+                try:
+                    on_step_change(step.id, WorkflowRunStatus.FAILED)
+                except Exception:
+                    pass
+            return None
 
-                return result_str
+        # 执行成功
+        final_output = map_results if is_map else (map_results[0] if map_results else None)
+        run.mark_step_completed(step.id, final_output)
+        run.context[step.output_var] = final_output
 
-            except asyncio.TimeoutError:
-                last_error = f"步骤执行超时（{step.timeout_seconds}s）"
-                if attempt < retry:
-                    continue
-                run.mark_step_failed(step.id, last_error)
-                run.context[f"{step.id}.error"] = last_error
-                self._persistence.save_run(run)
-                return last_error
+        if on_step_change:
+            try:
+                on_step_change(step.id, WorkflowRunStatus.COMPLETED)
+            except Exception:
+                pass
 
-            except Exception as e:
-                last_error = str(e)
-                if attempt < retry:
-                    await asyncio.sleep(1.0 * (attempt + 1))
-                    continue
-                run.mark_step_failed(step.id, last_error)
-                run.context[f"{step.id}.error"] = last_error
-                self._persistence.save_run(run)
-                return last_error
-
-        return last_error
+        return final_output
 
 
 def _nested_get(obj: Any, path: list[str]) -> Any:

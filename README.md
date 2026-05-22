@@ -28,9 +28,10 @@ memoX/
 │   │   ├── vector_store.py     # 向量存储
 │   │   └── rag_engine.py       # RAG 引擎
 │   ├── tools/                  # 工具模块
+│   ├── ui/                     # Streamlit 主界面
 │   └── web/                    # Web 服务
 │       └── api.py              # FastAPI 服务
-├── frontend/                   # React 前端
+├── frontend_wip/               # React 前端（实验性/开发中）
 ├── scripts/                    # 开发、验证脚本
 ├── tests/                      # 后端测试
 ├── config.yaml                # 配置文件
@@ -48,8 +49,8 @@ memoX/
 # Python 依赖
 uv sync --extra dev
 
-# 前端依赖
-cd frontend && npm ci
+# 前端依赖（如果需要开发实验性 React 界面）
+cd frontend_wip && npm ci
 ```
 
 ### 2. 配置
@@ -93,12 +94,16 @@ auth:
 # 启动后端 (终端 1)
 uv run memox
 
-# 启动前端 (终端 2)
-cd frontend
-npm run dev
+# 启动主 UI (终端 2)
+uv run --extra ui streamlit run src/ui/streamlit_app.py
 ```
 
-访问 http://localhost:3000
+如果想体验开发中的 React 前端：
+
+```bash
+cd frontend_wip
+npm run dev
+```
 
 ### 4. 冒烟验证
 
@@ -110,7 +115,7 @@ uv run --extra dev python scripts/smoke_test.py
 uv run --extra dev python scripts/smoke_test.py --frontend
 ```
 
-冒烟脚本会使用临时数据目录和确定性的本地 embedding 替身，不需要真实模型 API Key；它会覆盖登录、文档检索、系统健康、备份清单、索引修复、诊断包导出、运维事件、备份校验、恢复预检、真实恢复拒绝闸门和临时恢复演练。`--frontend` 模式要求已执行过 `cd frontend && npm ci`。
+冒烟脚本会使用临时数据目录和确定性的本地 embedding 替身，不需要真实模型 API Key；它会覆盖登录、文档检索、系统健康、备份清单、索引修复、诊断包导出、运维事件、备份校验、恢复预检、真实恢复拒绝闸门和临时恢复演练。`--frontend` 模式要求已执行过 `cd frontend_wip && npm ci`。
 
 ### 5. 常用检查
 
@@ -118,7 +123,7 @@ uv run --extra dev python scripts/smoke_test.py --frontend
 uv run --extra dev ruff check src tests scripts
 uv run --extra dev python -m compileall -q src tests scripts
 uv run --extra dev pytest tests --ignore=tests/e2e
-cd frontend && npm run build
+cd frontend_wip && npm run build
 ```
 
 ## 部署

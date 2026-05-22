@@ -128,6 +128,76 @@ def test_lifecycle_cleanup_execute_deletes_only_operational_expired_data(tmp_pat
     store.close()
 
 
+def test_lifecycle_cleanup_deletes_only_old_terminal_task_jobs(tmp_path: Path) -> None:
+    store = PersistenceStore(tmp_path / "memox.db")
+    old_completed_at = _iso_days_ago(45)
+    fresh_completed_at = _iso_days_ago(1)
+    store.save_task({
+        "task_id": "task_old_done",
+        "description": "old done",
+        "status": "completed",
+        "result": "done",
+        "created_at": _iso_days_ago(46),
+        "completed_at": old_completed_at,
+    })
+    store.save_task_job_request("task_old_done", "old done", created_at=_iso_days_ago(46))
+    store.save_task({
+        "task_id": "task_fresh_done",
+        "description": "fresh done",
+        "status": "completed",
+        "result": "done",
+        "created_at": _iso_days_ago(2),
+        "completed_at": fresh_completed_at,
+    })
+    store.save_task_job_request("task_fresh_done", "fresh done", created_at=_iso_days_ago(2))
+    store.save_task({
+        "task_id": "task_old_running",
+        "description": "old running",
+        "status": "running",
+        "result": "",
+        "created_at": _iso_days_ago(46),
+        "completed_at": None,
+    })
+    store.save_task_job_request("task_old_running", "old running", created_at=_iso_days_ago(46))
+
+    dry_run = run_lifecycle_cleanup(
+        root=tmp_path,
+        store=store,
+        policy=LifecyclePolicy(
+            ops_event_retention_days=0,
+            audit_log_retention_days=0,
+            task_job_retention_days=30,
+            diagnostic_retention_days=0,
+            max_diagnostic_bundles=20,
+        ),
+        dry_run=True,
+    )
+    dry_run_tables = {item["name"]: item for item in dry_run["tables"]}
+    assert dry_run_tables["task_jobs"]["eligible_count"] == 1
+    assert store.get_task_job_request("task_old_done") is not None
+
+    executed = run_lifecycle_cleanup(
+        root=tmp_path,
+        store=store,
+        policy=LifecyclePolicy(
+            ops_event_retention_days=0,
+            audit_log_retention_days=0,
+            task_job_retention_days=30,
+            diagnostic_retention_days=0,
+            max_diagnostic_bundles=20,
+        ),
+        dry_run=False,
+    )
+
+    executed_tables = {item["name"]: item for item in executed["tables"]}
+    assert executed_tables["task_jobs"]["deleted_count"] == 1
+    assert store.get_task_job_request("task_old_done") is None
+    assert store.get_task("task_old_done")["status"] == "completed"
+    assert store.get_task_job_request("task_fresh_done") is not None
+    assert store.get_task_job_request("task_old_running") is not None
+    store.close()
+
+
 def test_lifecycle_cleanup_enforces_diagnostic_count_limit(tmp_path: Path) -> None:
     store = PersistenceStore(tmp_path / "memox.db")
     oldest = _write_diagnostic(

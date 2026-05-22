@@ -52,6 +52,16 @@ The Compose file bind-mounts these host paths:
 
 Back up `config.yaml`, `.env`, `data/`, and `workspace/` together before upgrades, then copy backup archives off the host. For continuous off-host protection, mount an external directory into the container and point `ops.archive_mirror_dir` at that path.
 
+## Long-Running Tasks
+
+Task submission is asynchronous: `POST /api/tasks` persists the request, returns a task record immediately, and an in-process runner continues execution in the background. Clients should poll `GET /api/tasks/{task_id}` for terminal states and inspect `GET /api/tasks/{task_id}/events` for progress, subtask checkpoints, failure reasons, and lease transitions. Retryable failures can be requeued with `POST /api/tasks/{task_id}/retry`.
+
+The runner stores recoverable job requests, checkpoints, and events in SQLite. On service startup it claims queued or running jobs whose lease is free or expired, restores the latest checkpoint, skips completed subtasks, and continues the remaining work. Active leases are refreshed during execution; if a runner loses its lease, it stops local execution without writing a terminal task status so another owner can recover cleanly.
+
+Failure events include a machine-readable `failure_type`: `user_cancelled`, `orchestrator_cancelled`, `lease_lost`, `timeout`, `retryable_exception`, or `non_retryable_exception`. Treat `timeout`, `lease_lost`, and `retryable_exception` as safe candidates for retry; treat `user_cancelled` and `non_retryable_exception` as requiring user intent or operator review.
+
+Automatic retry is controlled by the `coordinator.task_auto_retry_*` settings. The default example configuration enables up to two automatic retries for `timeout` and `retryable_exception`, starting after 30 seconds and backing off up to 300 seconds. Each scheduled retry is persisted in SQLite as `task_jobs.next_retry_at`, so a service restart can reload and continue pending retry timers instead of losing them.
+
 ## Backup and Restore
 
 For incident response and maintenance-window sequencing, use
@@ -172,7 +182,7 @@ curl -fsS http://localhost:8080/api/health
 
 Administrators can inspect the deeper runtime readiness report after logging in. The API report includes config, persistent paths, index consistency, SQLite, disk space, backup metadata checks, archive mirror configuration, and SQLite schema version/migration records. The diagnostics export endpoint creates a zip package with the health report, backup list, recent operational events, index consistency report, redacted config, and redacted tails of common local log files; use it when escalating a production issue. JSON reports and log tails redact common API keys, bearer tokens, passwords, secrets, cookies, and private keys, but diagnostics bundles should still be treated as sensitive operational artifacts. When `ops.archive_mirror_dir` is set, the exported zip is also mirrored to `<mirror>/diagnostics/`. Use `scripts/ops_check.py` when a full backup checksum verification is needed.
 
-Lifecycle cleanup is intentionally conservative. `POST /api/system/maintenance/lifecycle?dry_run=true` reports expired operational events, audit log rows, and diagnostic bundles according to `ops.ops_event_retention_days`, `ops.audit_log_retention_days`, `ops.diagnostic_retention_days`, and `ops.max_diagnostic_bundles`; `dry_run=false` executes that cleanup and records a `lifecycle_cleanup` operational event. It does not delete chats, memories, uploaded documents, or workspace files.
+Lifecycle cleanup is intentionally conservative. `POST /api/system/maintenance/lifecycle?dry_run=true` reports expired operational events, audit log rows, terminal background job records, and diagnostic bundles according to `ops.ops_event_retention_days`, `ops.audit_log_retention_days`, `ops.task_job_retention_days`, `ops.diagnostic_retention_days`, and `ops.max_diagnostic_bundles`; `dry_run=false` executes that cleanup and records a `lifecycle_cleanup` operational event. It does not delete chats, memories, uploaded documents, task history, checkpoints, events, or workspace files.
 
 ```bash
 curl -fsS http://localhost:8080/api/system/health -H "Authorization: Bearer <token>"

@@ -91,10 +91,26 @@ def _audit_log(
 # ==================== 配置 ====================
 
 
+def shutdown():
+    import scheduler
+    from scheduler import get_runner
+    r = get_runner()
+    if r:
+        r.stop()
+    scheduler._runner = None
+
+    import ops.maintenance
+    from ops.maintenance import get_maintenance_runner
+    ops_runner = get_maintenance_runner()
+    if ops_runner:
+        ops_runner.stop()
+    ops.maintenance._runner = None
+
 @contextlib.asynccontextmanager
 async def lifespan(app_: FastAPI):
     await startup()
     yield
+    shutdown()
 
 
 app = FastAPI(
@@ -358,6 +374,8 @@ async def startup():
 
     # 初始化 RAG 引擎
     hybrid_cfg = kb_config.hybrid_search
+    reranker_cfg = getattr(kb_config, "reranker", None)
+
     _rag_engine = init_rag_engine(
         persist_directory=kb_config.persist_directory,
         embedding_function=embedding_function,
@@ -370,8 +388,10 @@ async def startup():
         bm25_persist_path=hybrid_cfg.get("bm25_persist_path", "./data/bm25_index.pkl") if hybrid_cfg else "./data/bm25_index.pkl",
         chunk_strategy=hybrid_cfg.get("chunk_strategy", "size") if hybrid_cfg else "size",
         enable_graph=kb_config.enable_graph,
-        graph_persist_path=kb_config.graph_persist_path,
+        graph_config=kb_config,
         manifest_path=kb_config.manifest_path,
+        reranker_enabled=getattr(reranker_cfg, "enabled", False) if reranker_cfg else False,
+        reranker_model=getattr(reranker_cfg, "model", "cross-encoder/ms-marco-MiniLM-L-6-v2") if reranker_cfg else "cross-encoder/ms-marco-MiniLM-L-6-v2",
     )
 
     # 预热嵌入模型（避免首次请求时延迟）
@@ -380,7 +400,10 @@ async def startup():
 
     # 初始化持久化存储（需要在 Worker 创建之前，以便 Worker 从 DB 恢复 token 用量）
     db_path = Path(_config.knowledge_base.persist_directory).parent / "memox.db"
-    init_store(db_path)
+    store = init_store(db_path)
+    interrupted = store.mark_incomplete_tasks_interrupted()
+    if interrupted:
+        logger.warning(f"   - {interrupted} 个未完成后台任务已标记为中断")
     logger.info(f"   - 持久化存储: {db_path}")
 
     # 确保技能目录存在
@@ -448,6 +471,12 @@ async def startup():
             broadcast=_ws_broadcast,
         )
         _workflow_engine = WorkflowEngine(worker_pool, coordinator_provider, _workflow_persistence)
+        from web.routers.tasks import init_task_job_runner
+
+        task_job_runner = init_task_job_runner(_orchestrator, _task_planner, store, _task_results, config=_config)
+        recovered = task_job_runner.recover_pending()
+        if recovered:
+            logger.warning(f"   - 已恢复 {len(recovered)} 个未完成后台任务")
 
     # 初始化分组存储
     global _group_store
@@ -484,16 +513,7 @@ async def startup():
 
     # 注册优雅停机
     import atexit
-    def _stop_background_runners():
-        from scheduler import get_runner
-        r = get_runner()
-        if r:
-            r.stop()
-        from ops.maintenance import get_maintenance_runner
-        ops_runner = get_maintenance_runner()
-        if ops_runner:
-            ops_runner.stop()
-    atexit.register(_stop_background_runners)
+    atexit.register(shutdown)
 
     # 初始化文生图客户端
     img_cfg = _config.image_generation if _config else None

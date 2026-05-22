@@ -12,6 +12,7 @@ from typing import Any
 class LifecyclePolicy:
     ops_event_retention_days: int = 90
     audit_log_retention_days: int = 180
+    task_job_retention_days: int = 30
     diagnostic_retention_days: int = 30
     max_diagnostic_bundles: int = 20
 
@@ -119,14 +120,17 @@ def run_lifecycle_cleanup(
     now = _utc_now()
     ops_cutoff = _cutoff_iso(policy.ops_event_retention_days, now=now)
     audit_cutoff = _cutoff_iso(policy.audit_log_retention_days, now=now)
+    task_job_cutoff = _cutoff_iso(policy.task_job_retention_days, now=now)
 
     tables: list[dict[str, Any]] = []
     if store is not None:
         ops_count = store.count_ops_events_before(ops_cutoff) if ops_cutoff else 0
         audit_count = store.count_audit_events_before(audit_cutoff) if audit_cutoff else 0
+        task_job_count = store.count_terminal_task_jobs_before(task_job_cutoff) if task_job_cutoff else 0
     else:
         ops_count = 0
         audit_count = 0
+        task_job_count = 0
 
     tables.append(
         _table_plan(
@@ -144,6 +148,14 @@ def run_lifecycle_cleanup(
             eligible_count=audit_count,
         )
     )
+    tables.append(
+        _table_plan(
+            name="task_jobs",
+            retention_days=policy.task_job_retention_days,
+            cutoff_iso=task_job_cutoff,
+            eligible_count=task_job_count,
+        )
+    )
 
     diagnostics = _diagnostic_candidates(root_path, archive_mirror_dir)
     diagnostic_deletions = _select_diagnostic_deletions(
@@ -158,6 +170,8 @@ def run_lifecycle_cleanup(
             tables[0]["deleted_count"] = store.delete_ops_events_before(ops_cutoff)
         if audit_cutoff:
             tables[1]["deleted_count"] = store.delete_audit_events_before(audit_cutoff)
+        if task_job_cutoff:
+            tables[2]["deleted_count"] = store.delete_terminal_task_jobs_before(task_job_cutoff)
 
     deleted_diagnostics: list[dict[str, Any]] = []
     if not dry_run:
@@ -182,6 +196,7 @@ def run_lifecycle_cleanup(
         "policy": {
             "ops_event_retention_days": policy.ops_event_retention_days,
             "audit_log_retention_days": policy.audit_log_retention_days,
+            "task_job_retention_days": policy.task_job_retention_days,
             "diagnostic_retention_days": policy.diagnostic_retention_days,
             "max_diagnostic_bundles": policy.max_diagnostic_bundles,
         },

@@ -17,9 +17,14 @@ from agents.inter_agent_protocol import InterAgentMessage, MessagePriority, Tool
 from agents.mail_bus import MailBus
 from agents.sandbox import SandboxManager
 from agents.worker_pool import Task, TaskStatus, WorkerPool
+from tools.catalog import select_allowed_tools
+from tools.database import DatabaseQueryTool
 from tools.filesystem import ListFilesTool, ReadFileTool, WriteFileTool
-from tools.mail import ReadMailTool, SendMailTool
+from tools.github import GitHubCreateIssueTool, GitHubSearchTool
+from tools.mail import BroadcastTool, ReadBroadcastsTool, ReadMailTool, SendMailTool
+from tools.playwright_crawler import PlaywrightCrawlerTool
 from tools.shell import ShellTool
+from tools.web import WebFetchTool, WebSearchTool
 
 
 @dataclass
@@ -356,15 +361,23 @@ class MultiAgentExecutor:
                 ShellTool(cwd=sandbox_dir),
                 SendMailTool(worker.config.name, self._mail_bus),
                 ReadMailTool(worker.config.name, self._mail_bus),
+                BroadcastTool(worker.config.name, self._mail_bus),
+                ReadBroadcastsTool(worker.config.name, self._mail_bus),
+                WebSearchTool(),
+                WebFetchTool(),
+                DatabaseQueryTool(),
+                GitHubCreateIssueTool(),
+                GitHubSearchTool(),
+                PlaywrightCrawlerTool(),
             ]
-            allowed = set(worker.config.tools or [])
-            if allowed:
-                for t in candidates:
-                    if t.name in allowed:
-                        registry.register(t)
-            else:
-                for t in candidates:
-                    registry.register(t)
+            selected_tools, unknown = select_allowed_tools(candidates, worker.config.tools)
+            if unknown:
+                logger.warning(
+                    f"[MultiAgentExecutor] worker {worker.config.name} 白名单含未知工具: "
+                    f"{sorted(unknown)} (已忽略)"
+                )
+            for tool in selected_tools:
+                registry.register(tool)
 
             if worker.config.skills:
                 skills_dir = Path(get_config().knowledge_base.skills_dir)

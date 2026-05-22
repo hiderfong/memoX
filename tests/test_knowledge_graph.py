@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.knowledge.knowledge_graph import (
-    KnowledgeGraph,
+    NetworkXKnowledgeGraph,
     Triple,
     _extract_triples_rule_based,
     get_knowledge_graph,
@@ -21,7 +21,7 @@ from src.knowledge.knowledge_graph import (
 def fresh_kg(tmp_path):
     """每个测试独立的 KG 实例（不同 persist_path）"""
     path = str(tmp_path / "test_kg.gml")
-    kg = KnowledgeGraph(persist_path=path, enabled=True)
+    kg = NetworkXKnowledgeGraph(persist_path=path, enabled=True)
     kg.clear()
     return kg
 
@@ -139,7 +139,7 @@ class TestKnowledgeGraphBasic:
         assert fresh_kg._graph.number_of_edges() == 0
 
     def test_disabled_graph_add_noop(self):
-        kg = KnowledgeGraph(enabled=False)
+        kg = NetworkXKnowledgeGraph(enabled=False)
         kg.add_triple(Triple("A", "是", "B"))
         assert kg._graph.number_of_nodes() == 0
 
@@ -152,18 +152,18 @@ class TestKnowledgeGraphBasic:
 class TestKnowledgeGraphPersistence:
     def test_save_and_reload(self, tmp_path):
         path = str(tmp_path / "persist_kg.gml")
-        kg1 = KnowledgeGraph(persist_path=path, enabled=True)
+        kg1 = NetworkXKnowledgeGraph(persist_path=path, enabled=True)
         kg1.add_triple(Triple("苹果", "是", "水果", "c1"))
         kg1.add_triple(Triple("苹果", "有", "苹果公司", "c1"))
         kg1.save()
 
-        kg2 = KnowledgeGraph(persist_path=path, enabled=True)
+        kg2 = NetworkXKnowledgeGraph(persist_path=path, enabled=True)
         assert kg2._graph.number_of_nodes() == 3  # 苹果, 水果, 苹果公司
         assert kg2._graph.number_of_edges() == 2
 
     def test_nonexistent_file_loads_empty(self, tmp_path):
         path = str(tmp_path / "nonexistent.gml")
-        kg = KnowledgeGraph(persist_path=path, enabled=True)
+        kg = NetworkXKnowledgeGraph(persist_path=path, enabled=True)
         assert kg._graph.number_of_nodes() == 0
 
 
@@ -207,7 +207,7 @@ class TestKnowledgeGraphSearch:
         assert result.connected_entities == sorted(["水果", "红色"])
 
     def test_disabled_graph_returns_none(self):
-        kg = KnowledgeGraph(enabled=False)
+        kg = NetworkXKnowledgeGraph(enabled=False)
         assert kg.search("苹果") is None
 
 
@@ -285,7 +285,7 @@ class TestKnowledgeGraphStats:
         assert stats["version"] == 1
 
     def test_stats_disabled(self):
-        kg = KnowledgeGraph(enabled=False)
+        kg = NetworkXKnowledgeGraph(enabled=False)
         stats = kg.stats()
         assert stats["enabled"] is False
 
@@ -337,7 +337,7 @@ class TestSearchWithGraph:
             vector_store=vs,
             hybrid_search_enabled=False,
             enable_graph=True,
-            graph_persist_path=str(tmp_path / "kg.gml"),
+            graph_config=MagicMock(enable_graph=True, graph_type='networkx', graph_persist_path=str(tmp_path / "kg.gml")),
         )
         engine._knowledge_graph.clear()
         return engine
@@ -355,7 +355,7 @@ class TestSearchWithGraph:
             vector_store=vs,
             hybrid_search_enabled=False,
             enable_graph=False,
-            graph_persist_path=str(tmp_path / "kg.gml"),
+            graph_config=MagicMock(enable_graph=False, graph_type='networkx', graph_persist_path=str(tmp_path / "kg.gml")),
         )
         result = engine._knowledge_graph  # None when disabled
         assert result is None
@@ -408,8 +408,9 @@ class TestSearchWithGraph:
 class TestKnowledgeGraphSingleton:
     def test_get_knowledge_graph_returns_same_instance(self, tmp_path):
         path = str(tmp_path / "singleton.gml")
-        kg1 = get_knowledge_graph(persist_path=path, enabled=True)
-        kg2 = get_knowledge_graph(persist_path=path, enabled=True)
+        cfg = MagicMock(enable_graph=True, graph_type='networkx', graph_persist_path=path)
+        kg1 = get_knowledge_graph(config=cfg)
+        kg2 = get_knowledge_graph(config=cfg)
         # 同一 path → 同实例
         assert kg1 is kg2
 
@@ -417,8 +418,10 @@ class TestKnowledgeGraphSingleton:
         # The module-level singleton is process-global.
         # Once instantiated, subsequent calls always return the SAME object.
         # This is intentional — one process, one knowledge graph.
-        kg1 = get_knowledge_graph(persist_path=str(tmp_path / "a.gml"), enabled=True)
-        kg2 = get_knowledge_graph(persist_path=str(tmp_path / "b.gml"), enabled=True)
+        cfg1 = MagicMock(enable_graph=True, graph_type='networkx', graph_persist_path=str(tmp_path / "a.gml"))
+        cfg2 = MagicMock(enable_graph=True, graph_type='networkx', graph_persist_path=str(tmp_path / "b.gml"))
+        kg1 = get_knowledge_graph(config=cfg1)
+        kg2 = get_knowledge_graph(config=cfg2)
         assert kg1 is kg2  # same singleton
 
     def test_singleton_persist_path_matches_first_path(self, tmp_path):
@@ -428,7 +431,8 @@ class TestKnowledgeGraphSingleton:
         this test records what the singleton path was set to on first creation
         (in earlier tests). It verifies the singleton path is stable.
         """
-        kg = get_knowledge_graph(persist_path=str(tmp_path / "any.gml"), enabled=True)
+        cfg = MagicMock(enable_graph=True, graph_type='networkx', graph_persist_path=str(tmp_path / "any.gml"))
+        kg = get_knowledge_graph(config=cfg)
         # The singleton persists across all tests; its path was set when it was first created.
         # We verify it's a Path object and the graph is functional.
         assert hasattr(kg, "persist_path")

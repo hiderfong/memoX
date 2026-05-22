@@ -64,6 +64,7 @@ def parse_workflow_yaml(yaml_content: str) -> Workflow:
             output_var=str(step_data.get("output", "result")),
             condition=condition,
             condition_expr=condition_expr or _build_condition_expr(step_data),
+            map_over=str(step_data.get("map_over", "")),
             timeout_seconds=int(step_data.get("timeout_seconds", 120)),
             retry_on_fail=int(step_data.get("retry_on_fail", 0)),
         )
@@ -117,7 +118,7 @@ def _build_condition_expr(step_data: dict) -> str:
 
 
 def resolve_template(template: str, context: dict[str, Any]) -> str:
-    """将 ${step.output} 模板替换为实际值"""
+    """将 ${step.output} 模板替换为实际值（返回字符串）"""
     def replacer(match: re.Match) -> str:
         key = match.group(1)
         # 支持 xxx.yyy 访问
@@ -134,3 +135,19 @@ def resolve_template(template: str, context: dict[str, Any]) -> str:
         return str(value) if value is not None else match.group(0)
 
     return re.sub(r'\$\{([^}]+)\}', replacer, template)
+
+
+def resolve_value(expression: str, context: dict[str, Any]) -> Any:
+    """解析单个表达式（如 "${xxx.yyy}"），返回其真实类型的值"""
+    if not expression.startswith("${") or not expression.endswith("}"):
+        return resolve_template(expression, context)
+
+    key = expression[2:-1]
+    parts = key.split(".")
+    value: Any = context
+    for part in parts:
+        if isinstance(value, dict) and part in value:
+            value = value[part]
+        else:
+            return None
+    return value

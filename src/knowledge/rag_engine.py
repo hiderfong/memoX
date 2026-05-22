@@ -17,7 +17,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from .bm25_indexer import get_bm25_indexer
 from .document_parser import DocumentParser
@@ -273,8 +273,10 @@ class RAGEngine:
         bm25_persist_path: str = "./data/bm25_index.pkl",
         chunk_strategy: str = "size",
         enable_graph: bool = False,
-        graph_persist_path: str = "./data/knowledge_graph.gml",
+        graph_config: Any = None,
         manifest_path: str = "./data/documents_manifest.json",
+        reranker_enabled: bool = False,
+        reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
     ):
         self.vector_store = vector_store or get_vector_store()
         self.document_parser = document_parser or DocumentParser(
@@ -301,11 +303,25 @@ class RAGEngine:
         # 知识图谱初始化（实验性）
         if self.enable_graph:
             self._knowledge_graph = get_knowledge_graph(
-                persist_path=graph_persist_path,
-                enabled=True,
+                config=graph_config,
             )
         else:
             self._knowledge_graph = None
+
+        # 重排序模型初始化
+        self.reranker_enabled = reranker_enabled
+        self.reranker_model_name = reranker_model
+        self._reranker = None
+        if self.reranker_enabled:
+            try:
+                from sentence_transformers import CrossEncoder
+                self._reranker = CrossEncoder(self.reranker_model_name)
+            except ImportError:
+                print("sentence-transformers is not installed. Run: uv add sentence-transformers torch")
+                self.reranker_enabled = False
+            except Exception as e:
+                print(f"Failed to load reranker model: {e}")
+                self.reranker_enabled = False
 
         # 内存存储会话（生产环境应使用数据库）
         self._sessions: dict[str, ChatSession] = {}
@@ -565,6 +581,7 @@ class RAGEngine:
         否则退化为纯向量检索。
         """
         k = top_k or self.top_k
+        fetch_k = k * 3 if self.reranker_enabled else k
 
         # 构建 ChromaDB 元数据过滤条件（用于向量检索）
         try:
@@ -594,17 +611,18 @@ class RAGEngine:
         else:
             filter_metadata = {"$and": conditions}
 
+        raw_results = []
         if self._hybrid_retriever is not None:
             # 混合检索路径：BM25 + 向量 + RRF 融合
             hybrid_results = await self._hybrid_retriever.search(
                 query=query,
                 collection_name=collection_name,
-                top_k=k,
+                top_k=fetch_k,
                 filter_metadata=filter_metadata,
             )
             # 过滤低分结果
             MIN_SCORE = 0.01
-            return [
+            raw_results = [
                 SearchResult(
                     id=r.chunk_id,
                     content=r.content,
@@ -614,20 +632,38 @@ class RAGEngine:
                 for r in hybrid_results
                 if r.score >= MIN_SCORE
             ]
+        else:
+            # 纯向量检索路径（hybrid_search_enabled=False）
+            results = await self.vector_store.search(query, fetch_k, collection_name, filter_metadata)
+            MIN_SCORE = 0.2
+            results = [r for r in results if (r.get("score") or 0) >= MIN_SCORE]
+            raw_results = [
+                SearchResult(
+                    id=r["id"],
+                    content=r["content"],
+                    score=r["score"],
+                    metadata=r.get("metadata", {}),
+                )
+                for r in results
+            ]
 
-        # 纯向量检索路径（hybrid_search_enabled=False）
-        results = await self.vector_store.search(query, k, collection_name, filter_metadata)
-        MIN_SCORE = 0.2
-        results = [r for r in results if (r.get("score") or 0) >= MIN_SCORE]
-        return [
-            SearchResult(
-                id=r["id"],
-                content=r["content"],
-                score=r["score"],
-                metadata=r.get("metadata", {}),
-            )
-            for r in results
-        ]
+        # 如果启用了 Reranker，进行重排序
+        if self.reranker_enabled and self._reranker is not None and raw_results:
+            pairs = [[query, r.content] for r in raw_results]
+            try:
+                scores = self._reranker.predict(pairs)
+                # 更新 score
+                for i, r in enumerate(raw_results):
+                    # 将 logits 转换为 0-1 范围，使用 sigmoid 近似
+                    import math
+                    r.score = 1 / (1 + math.exp(-scores[i]))
+                # 重新排序
+                raw_results.sort(key=lambda x: x.score, reverse=True)
+            except Exception as e:
+                print(f"[RAG] Reranking failed: {e}")
+
+        # 截断到 k 个结果
+        return raw_results[:k]
 
     async def search_with_graph(
         self,
@@ -841,8 +877,10 @@ def init_rag_engine(
     bm25_persist_path: str = "./data/bm25_index.pkl",
     chunk_strategy: str = "size",
     enable_graph: bool = False,
-    graph_persist_path: str = "./data/knowledge_graph.gml",
+    graph_config: Any = None,
     manifest_path: str = "./data/documents_manifest.json",
+    reranker_enabled: bool = False,
+    reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
 ) -> RAGEngine:
     """初始化 RAG 引擎"""
     global _rag_engine
@@ -858,7 +896,9 @@ def init_rag_engine(
         bm25_persist_path=bm25_persist_path,
         chunk_strategy=chunk_strategy,
         enable_graph=enable_graph,
-        graph_persist_path=graph_persist_path,
+        graph_config=graph_config,
         manifest_path=manifest_path,
+        reranker_enabled=reranker_enabled,
+        reranker_model=reranker_model,
     )
     return _rag_engine

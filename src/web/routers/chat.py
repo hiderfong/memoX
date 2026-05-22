@@ -763,24 +763,76 @@ async def chat_stream(request: Request, chat_req: ChatRequest):
             return
 
         try:
-            response = await provider.chat_stream(
-                messages=messages,
-                model=model,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                on_chunk=lambda c: None,
-            )
+            from agents.base_agent import LLMResponse
+            q = asyncio.Queue()
 
-            raw_text = response.content or ""
+            def _on_chunk(c: str):
+                q.put_nowait(c)
+
+            async def _run_stream():
+                try:
+                    resp = await provider.chat_stream(
+                        messages=messages,
+                        model=model,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        on_chunk=_on_chunk,
+                    )
+                    q.put_nowait(resp)
+                except Exception as exc:
+                    q.put_nowait(exc)
+
+            stream_task = asyncio.create_task(_run_stream())
+
+            raw_text_parts = []
+            buffer = ""
+            while True:
+                item = await q.get()
+                if isinstance(item, Exception):
+                    yield f"data: {_json.dumps({'type': 'error', 'message': str(item)})}\n\n"
+                    return
+                elif isinstance(item, LLMResponse):
+                    response = item
+                    if buffer:
+                        yield f"data: {_json.dumps({'type': 'chunk', 'content': buffer})}\n\n"
+                    break
+                else:
+                    chunk = item
+                    raw_text_parts.append(chunk)
+                    buffer += chunk
+
+                    while buffer:
+                        idx = buffer.find("[[")
+                        if idx == -1:
+                            if buffer:
+                                yield f"data: {_json.dumps({'type': 'chunk', 'content': buffer})}\n\n"
+                                buffer = ""
+                            break
+
+                        if idx > 0:
+                            yield f"data: {_json.dumps({'type': 'chunk', 'content': buffer[:idx]})}\n\n"
+                            buffer = buffer[idx:]
+
+                        end_idx = buffer.find("]]")
+                        if end_idx != -1:
+                            tag = buffer[:end_idx+2]
+                            if tag.startswith("[[IMAGE:") or tag.startswith("[[VIDEO:") or tag.startswith("[[I2V:"):
+                                pass
+                            else:
+                                yield f"data: {_json.dumps({'type': 'chunk', 'content': tag})}\n\n"
+                            buffer = buffer[end_idx+2:]
+                        else:
+                            if len(buffer) > 1000:
+                                yield f"data: {_json.dumps({'type': 'chunk', 'content': buffer[:2]})}\n\n"
+                                buffer = buffer[2:]
+                            else:
+                                break
+
+            raw_text = "".join(raw_text_parts)
             image_prompts = _re.findall(r"\[\[IMAGE:\s*(.+?)\]\]", raw_text, flags=_re.DOTALL)
             video_prompts = _re.findall(r"\[\[VIDEO:\s*(.+?)\]\]", raw_text, flags=_re.DOTALL)
             display_text = _re.sub(r"\[\[(IMAGE|VIDEO|I2V):\s*.+?\]\]", "", raw_text, flags=_re.DOTALL).strip()
             i2v_pairs = parse_i2v_markers(raw_text)
-
-            for i in range(0, len(display_text), 10):
-                chunk = display_text[i:i+10]
-                yield f"data: {_json.dumps({'type': 'chunk', 'content': chunk})}\n\n"
-                await asyncio.sleep(0.02)
 
             image_urls: list[str] = []
             if image_prompts and image_client:

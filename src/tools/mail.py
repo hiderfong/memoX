@@ -2,8 +2,8 @@
 
 from typing import Any
 
-from agents.base_agent import BaseTool
-from agents.mail_bus import MailBus
+from src.agents.base_agent import BaseTool
+from src.agents.mail_bus import MailBus
 
 
 class SendMailTool(BaseTool):
@@ -88,6 +88,80 @@ class ReadMailTool(BaseTool):
             )
             if msg.attachments:
                 part += f"\n\n附件: {', '.join(msg.attachments)}"
+            parts.append(part)
+
+        return "\n\n".join(parts)
+
+
+class BroadcastTool(BaseTool):
+    """向所有 Worker 广播消息"""
+
+    def __init__(self, agent_name: str, mail_bus: MailBus):
+        self._agent_name = agent_name
+        self._mail_bus = mail_bus
+
+    @property
+    def name(self) -> str:
+        return "broadcast_message"
+
+    @property
+    def description(self) -> str:
+        return "向当前任务的所有其他并行 Worker 广播一条消息（例如中间状态或发现）。"
+
+    @property
+    def input_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {
+                "content": {"type": "string", "description": "广播的消息内容"},
+            },
+            "required": ["content"],
+        }
+
+    async def execute(self, arguments: dict) -> Any:
+        msg_id = await self._mail_bus.broadcast_inter_agent(
+            sender=self._agent_name,
+            content=arguments["content"]
+        )
+        return f"消息已广播，ID: {msg_id}"
+
+
+class ReadBroadcastsTool(BaseTool):
+    """读取所有未读广播消息"""
+
+    def __init__(self, agent_name: str, mail_bus: MailBus):
+        self._agent_name = agent_name
+        self._mail_bus = mail_bus
+
+    @property
+    def name(self) -> str:
+        return "read_broadcasts"
+
+    @property
+    def description(self) -> str:
+        return "读取其他 Worker 发出的未读广播消息，以获取最新进展。"
+
+    @property
+    def input_schema(self) -> dict:
+        return {
+            "type": "object",
+            "properties": {},
+            "required": [],
+        }
+
+    async def execute(self, arguments: dict) -> Any:
+        messages = await self._mail_bus.get_inter_messages(agent_name=self._agent_name, unread_only=True)
+        if not messages:
+            return "(无未读广播消息)"
+
+        parts = []
+        for msg in messages:
+            part = (
+                f"=== 广播 ID: {msg.id} ===\n"
+                f"发送者: {msg.sender}\n"
+                f"时间: {msg.created_at}\n\n"
+                f"{msg.content}"
+            )
             parts.append(part)
 
         return "\n\n".join(parts)

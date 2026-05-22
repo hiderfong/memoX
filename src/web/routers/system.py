@@ -138,6 +138,7 @@ def _lifecycle_policy_from_config(config) -> LifecyclePolicy:
     return LifecyclePolicy(
         ops_event_retention_days=config.ops.ops_event_retention_days,
         audit_log_retention_days=config.ops.audit_log_retention_days,
+        task_job_retention_days=config.ops.task_job_retention_days,
         diagnostic_retention_days=config.ops.diagnostic_retention_days,
         max_diagnostic_bundles=config.ops.max_diagnostic_bundles,
     )
@@ -172,6 +173,7 @@ def _system_health_report(request: Request) -> dict:
     latest_index_repair = None
     latest_diagnostics_export = None
     latest_lifecycle_cleanup = None
+    task_job_stats = None
     try:
         from storage import get_store
 
@@ -183,6 +185,7 @@ def _system_health_report(request: Request) -> dict:
             latest_index_repair = store.get_latest_ops_event("index_repair")
             latest_diagnostics_export = store.get_latest_ops_event("diagnostics_export")
             latest_lifecycle_cleanup = store.get_latest_ops_event("lifecycle_cleanup")
+            task_job_stats = store.get_task_job_stats()
     except Exception:
         latest_event = None
         latest_restore_drill = None
@@ -208,9 +211,11 @@ def _system_health_report(request: Request) -> dict:
         "retention": {
             "ops_event_retention_days": _config.ops.ops_event_retention_days,
             "audit_log_retention_days": _config.ops.audit_log_retention_days,
+            "task_job_retention_days": _config.ops.task_job_retention_days,
             "diagnostic_retention_days": _config.ops.diagnostic_retention_days,
             "max_diagnostic_bundles": _config.ops.max_diagnostic_bundles,
         },
+        "task_jobs": task_job_stats,
         "maintenance_runner_active": bool(getattr(maintenance_runner, "running", False)),
         "last_backup_maintenance": latest_event,
         "last_restore_drill": latest_restore_drill,

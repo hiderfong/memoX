@@ -26,7 +26,7 @@ def test_dockerfile_builds_frontend_and_runs_memox() -> None:
 
     assert "AS frontend-build" in dockerfile
     assert "npm run build" in dockerfile
-    assert "COPY --from=frontend-build /app/frontend/dist ./frontend/dist" in dockerfile
+    assert "COPY --from=frontend-build /app/frontend_wip/dist ./frontend_wip/dist" in dockerfile
     assert "mkdir -p /app/data /app/workspace /app/backups" in dockerfile
     assert 'CMD ["memox"]' in dockerfile
 
@@ -39,6 +39,7 @@ def test_config_example_is_container_friendly() -> None:
     assert config["ops"]["archive_mirror_dir"] == ""
     assert config["ops"]["ops_event_retention_days"] == 90
     assert config["ops"]["audit_log_retention_days"] == 180
+    assert config["ops"]["task_job_retention_days"] == 30
     assert config["ops"]["diagnostic_retention_days"] == 30
     assert config["ops"]["max_diagnostic_bundles"] == 20
     assert "/api/docs" in config["auth"]["public_paths"]
@@ -70,6 +71,7 @@ def test_backup_artifacts_are_documented_and_ignored() -> None:
     assert "/api/system/maintenance/lifecycle" in deployment
     assert "dry_run=true" in deployment
     assert "lifecycle_cleanup" in deployment
+    assert "ops.task_job_retention_days" in deployment
     assert "SQLite schema version/migration records" in deployment
     assert "redacted config" in deployment
     assert "redacted tails" in deployment

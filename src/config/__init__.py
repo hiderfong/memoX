@@ -13,11 +13,15 @@ class ConfigError(ValueError):
 
 
 def resolve_env_value(value: Any) -> str:
-    """解析 ${VAR_NAME} 形式的环境变量引用。"""
+    """解析 ${VAR_NAME} 或 ${VAR_NAME:-default} 形式的环境变量引用。"""
     if value is None:
         return ""
     if isinstance(value, str) and value.startswith("${") and value.endswith("}"):
-        return os.getenv(value[2:-1], "")
+        inner = value[2:-1]
+        if ":-" in inner:
+            var_name, default_val = inner.split(":-", 1)
+            return os.getenv(var_name, default_val)
+        return os.getenv(inner, "")
     return str(value)
 
 
@@ -53,10 +57,20 @@ def validate_config(config: "Config") -> None:
         errors.append("ops.ops_event_retention_days 不能为负数")
     if config.ops.audit_log_retention_days < 0:
         errors.append("ops.audit_log_retention_days 不能为负数")
+    if config.ops.task_job_retention_days < 0:
+        errors.append("ops.task_job_retention_days 不能为负数")
     if config.ops.diagnostic_retention_days < 0:
         errors.append("ops.diagnostic_retention_days 不能为负数")
     if config.ops.max_diagnostic_bundles < 1:
         errors.append("ops.max_diagnostic_bundles 必须至少为 1")
+    if config.coordinator.task_auto_retry_max_attempts < 0:
+        errors.append("coordinator.task_auto_retry_max_attempts 不能为负数")
+    if config.coordinator.task_auto_retry_initial_delay_seconds < 0:
+        errors.append("coordinator.task_auto_retry_initial_delay_seconds 不能为负数")
+    if config.coordinator.task_auto_retry_max_delay_seconds < 0:
+        errors.append("coordinator.task_auto_retry_max_delay_seconds 不能为负数")
+    if config.coordinator.task_auto_retry_backoff_multiplier < 1:
+        errors.append("coordinator.task_auto_retry_backoff_multiplier 必须至少为 1")
 
     if errors:
         raise ConfigError("MemoX 配置无效:\n- " + "\n- ".join(errors))
@@ -104,6 +118,11 @@ class CoordinatorConfig:
     max_tokens: int = 4096
     max_workers: int = 5
     task_timeout: int = 300
+    task_auto_retry_enabled: bool = True
+    task_auto_retry_max_attempts: int = 2
+    task_auto_retry_initial_delay_seconds: float = 30.0
+    task_auto_retry_max_delay_seconds: float = 300.0
+    task_auto_retry_backoff_multiplier: float = 2.0
 
 
 @dataclass
@@ -118,6 +137,12 @@ class WorkerTemplate:
     icon: str = ""
     display_name: str = ""
 
+
+@dataclass
+class RerankerConfig:
+    """重排序配置"""
+    enabled: bool = False
+    model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
 @dataclass
 class KnowledgeBaseConfig:
@@ -137,12 +162,23 @@ class KnowledgeBaseConfig:
         "bm25_persist_path": "./data/bm25_index.pkl",
         "rrf_k": 60,
     })
-    # 知识图谱配置（实验性）
+    # 重排序配置
+    reranker: RerankerConfig = field(default_factory=RerankerConfig)
+    # 知识图谱配置
     enable_graph: bool = False
+    graph_type: str = "networkx" # 可选: networkx, neo4j
+    neo4j_uri: str = "bolt://localhost:7687"
+    neo4j_user: str = "neo4j"
+    neo4j_password: str = "password"
     graph_persist_path: str = "./data/knowledge_graph.gml"
     manifest_path: str = "./data/documents_manifest.json"
     graph_llm_provider: str = "dashscope"
     graph_llm_api_key: str = ""
+
+    def __post_init__(self):
+        self.neo4j_uri = resolve_env_value(self.neo4j_uri)
+        self.neo4j_user = resolve_env_value(self.neo4j_user)
+        self.neo4j_password = resolve_env_value(self.neo4j_password)
 
 
 @dataclass
@@ -227,6 +263,7 @@ class OpsConfig:
     archive_mirror_dir: str = ""
     ops_event_retention_days: int = 90
     audit_log_retention_days: int = 180
+    task_job_retention_days: int = 30
     diagnostic_retention_days: int = 30
     max_diagnostic_bundles: int = 20
 
@@ -271,7 +308,10 @@ class Config:
             for name, config in data.get("worker_templates", {}).items()
         }
 
-        knowledge_base = KnowledgeBaseConfig(**data.get("knowledge_base", {}))
+        kb_data = data.get("knowledge_base", {})
+        if "reranker" in kb_data:
+            kb_data["reranker"] = RerankerConfig(**kb_data["reranker"])
+        knowledge_base = KnowledgeBaseConfig(**kb_data)
 
         auth_data = data.get("auth", {})
         auth_users = [

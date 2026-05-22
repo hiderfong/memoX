@@ -15,12 +15,12 @@ venv/
 env/
 
 # ---- Node / Frontend ----
-frontend/node_modules/
-frontend/dist/
-frontend/data/
-frontend/frontend.log
-frontend/.vite/
-frontend/*.log
+frontend_wip/node_modules/
+frontend_wip/dist/
+frontend_wip/data/
+frontend_wip/frontend.log
+frontend_wip/.vite/
+frontend_wip/*.log
 node_modules/
 
 # ---- Runtime data (should never be committed) ----

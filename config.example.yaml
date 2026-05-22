@@ -27,6 +27,11 @@ coordinator:
   max_tokens: 4096
   max_workers: 5
   task_timeout: 300
+  task_auto_retry_enabled: true
+  task_auto_retry_max_attempts: 2
+  task_auto_retry_initial_delay_seconds: 30
+  task_auto_retry_max_delay_seconds: 300
+  task_auto_retry_backoff_multiplier: 2
 
 providers:
   dashscope:
@@ -133,6 +138,7 @@ ops:
   # or workspace files. Use the admin dry-run endpoint before executing cleanup.
   ops_event_retention_days: 90
   audit_log_retention_days: 180
+  task_job_retention_days: 30
   diagnostic_retention_days: 30
   max_diagnostic_bundles: 20
 

@@ -29,7 +29,7 @@ from typing import Any
 import httpx
 
 ROOT = Path(__file__).resolve().parents[1]
-FRONTEND_DIR = ROOT / "frontend"
+FRONTEND_DIR = ROOT / "frontend_wip"
 USERNAME = "admin"
 PASSWORD = "smoke-pass"
 
@@ -268,7 +268,7 @@ def start_frontend(data_dir: Path, port: int, timeout: float) -> ManagedProcess:
     _assert_port_free("127.0.0.1", port)
     vite_bin = FRONTEND_DIR / "node_modules" / ".bin" / "vite"
     if not vite_bin.exists():
-        raise RuntimeError("frontend dependencies are missing; run `npm ci` in frontend/ first")
+        raise RuntimeError("frontend dependencies are missing; run `npm ci` in frontend_wip/ first")
     managed = _popen(
         "frontend",
         ["npm", "run", "dev", "--", "--host", "127.0.0.1", "--port", str(port)],

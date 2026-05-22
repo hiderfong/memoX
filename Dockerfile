@@ -1,10 +1,10 @@
 # syntax=docker/dockerfile:1
 
 FROM node:20-bookworm-slim AS frontend-build
-WORKDIR /app/frontend
-COPY frontend/package*.json ./
+WORKDIR /app/frontend_wip
+COPY frontend_wip/package*.json ./
 RUN npm ci
-COPY frontend/ ./
+COPY frontend_wip/ ./
 RUN npm run build
 
 FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim AS runtime
@@ -27,7 +27,7 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY README.md ./
 COPY src/ ./src/
 COPY config.example.yaml ./config.yaml
-COPY --from=frontend-build /app/frontend/dist ./frontend/dist
+COPY --from=frontend-build /app/frontend_wip/dist ./frontend_wip/dist
 
 RUN uv sync --frozen --no-dev \
     && mkdir -p /app/data /app/workspace /app/backups

@@ -3,8 +3,8 @@
 from pathlib import Path
 from typing import Any
 
-from agents.base_agent import BaseTool
-from agents.sandbox import SandboxManager
+from src.agents.base_agent import BaseTool
+from src.agents.sandbox import SandboxManager
 
 
 class ReadFileTool(BaseTool):

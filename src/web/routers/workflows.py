@@ -27,6 +27,12 @@ class WorkflowRunRequest(BaseModel):
     context: dict | None = None
 
 
+class WorkflowRunStepRequest(BaseModel):
+    yaml_content: str
+    step_id: str
+    context: dict | None = None
+
+
 def get_workflow_engine() -> WorkflowEngine:
     global _workflow_engine, _workflow_persistence
     if _workflow_engine is None:
@@ -67,6 +73,15 @@ def _get_api_globals():
     )
 
 
+@router.get("/schema")
+async def get_workflow_schema() -> dict:
+    """获取工作流 YAML 的 JSON Schema，供前端动态表单使用"""
+    from pydantic import TypeAdapter
+
+    from workflow.dsl import Workflow
+    return TypeAdapter(Workflow).json_schema()
+
+
 @router.post("/validate")
 async def validate_workflow(request: WorkflowContentRequest) -> dict:
     """验证工作流 YAML 语法和 DAG 合法性"""
@@ -76,6 +91,16 @@ async def validate_workflow(request: WorkflowContentRequest) -> dict:
         return {"valid": len(errors) == 0, "errors": errors, "step_count": len(wf.steps)}
     except Exception as e:
         return {"valid": False, "errors": [str(e)], "step_count": 0}
+
+
+@router.post("/visualize")
+async def visualize_workflow(request: WorkflowContentRequest) -> dict:
+    """将工作流 YAML 转换为 React Flow 可视化格式"""
+    try:
+        wf = parse_workflow_yaml(request.yaml_content)
+        return wf.to_react_flow()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"解析失败: {str(e)}") from e
 
 
 @router.post("/run")
@@ -92,6 +117,39 @@ async def run_workflow(request: WorkflowRunRequest) -> dict:
             "status": run.status.value,
             "context_keys": list(run.context.keys()),
             "step_count": len(run.step_records),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.post("/run_step")
+async def run_workflow_step(request: WorkflowRunStepRequest) -> dict:
+    """单独执行工作流中的某个步骤（供前端画布右键执行调试使用）"""
+    try:
+        from workflow.dsl import Workflow
+        wf = parse_workflow_yaml(request.yaml_content)
+
+        # 查找目标步骤
+        target_step = wf.get_step(request.step_id)
+        if not target_step:
+            raise HTTPException(status_code=404, detail=f"未找到步骤: {request.step_id}")
+
+        # 构造只包含该步骤的临时工作流
+        single_step_wf = Workflow(name=f"mock_{request.step_id}", steps=[target_step])
+
+        _wf_engine, _ = _get_api_globals()
+        engine = _wf_engine if _wf_engine else get_workflow_engine()
+
+        # 执行临时工作流
+        run = await engine.execute(single_step_wf, context=request.context or {})
+
+        record = run.get_step_record(request.step_id)
+        return {
+            "step_id": request.step_id,
+            "status": record.status.value if record else "failed",
+            "output": record.output if record else None,
+            "error": record.error if record else "Not executed",
+            "duration_ms": record.duration_ms if record else 0
         }
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
