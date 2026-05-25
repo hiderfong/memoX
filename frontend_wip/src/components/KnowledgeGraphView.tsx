@@ -39,7 +39,7 @@ export const KnowledgeGraphView: React.FC = () => {
   }
 
   return (
-    <Card bodyStyle={{ padding: 0, height: '600px' }}>
+    <Card styles={{ body: { padding: 0, height: '600px' } }}>
       <ForceGraph2D
         ref={fgRef}
         graphData={graphData}

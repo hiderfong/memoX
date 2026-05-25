@@ -189,7 +189,7 @@ export const DocumentsPage: React.FC = () => {
 
   return (
     <div>
-      <Card style={{ marginBottom: 16 }} bodyStyle={{ padding: '12px 16px' }}>
+      <Card style={{ marginBottom: 16 }} styles={{ body: { padding: '12px 16px' } }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 16 }}>
           <Input.Search
             placeholder="搜索文档内容..."
@@ -216,7 +216,7 @@ export const DocumentsPage: React.FC = () => {
       ) : (
         <>
       {/* 分组标签栏 */}
-      <Card style={{ marginBottom: 16 }} bodyStyle={{ padding: '12px 16px' }}>
+      <Card style={{ marginBottom: 16 }} styles={{ body: { padding: '12px 16px' } }}>
         <Space wrap>
           <Tag
             color={activeGroupFilter === 'all' ? '#1890ff' : 'default'}
@@ -569,4 +569,3 @@ export const DocumentsPage: React.FC = () => {
     </div>
   );
 };
-

@@ -481,7 +481,7 @@ export const ChatPage: React.FC = () => {
         title="会话历史"
         size="small"
         style={{ width: 260, flexShrink: 0, display: 'flex', flexDirection: 'column' }}
-        bodyStyle={{ flex: 1, overflowY: 'auto', padding: '8px 0' }}
+        styles={{ body: { flex: 1, overflowY: 'auto', padding: '8px 0' } }}
         extra={<Button size="small" type="primary" onClick={handleNewSession}>新对话</Button>}
       >
         <Tabs
@@ -561,7 +561,7 @@ export const ChatPage: React.FC = () => {
       {/* 原有聊天主区域 */}
       <Card
         style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}
-        bodyStyle={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' }}
+        styles={{ body: { flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0, overflow: 'hidden' } }}
       >
         {sessionId && messages.length > 0 && (
           <div style={{ display: 'flex', justifyContent: 'flex-end', paddingBottom: 8, borderBottom: '1px solid #f0f0f0', gap: 8 }}>
@@ -964,4 +964,3 @@ export const ChatPage: React.FC = () => {
     </div>
   );
 };
-

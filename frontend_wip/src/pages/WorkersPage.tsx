@@ -192,7 +192,7 @@ export const WorkerLogViewer: React.FC<{ workers: any[]; onRefresh: () => void }
 
       {selectedWorker ? (
         <Card
-          bodyStyle={{ padding: 0, background: '#1e1e1e', maxHeight: 480, overflow: 'auto' }}
+          styles={{ body: { padding: 0, background: '#1e1e1e', maxHeight: 480, overflow: 'auto' } }}
           size="small"
         >
           {loading && logs.length === 0 ? (
@@ -995,4 +995,3 @@ export const WorkersPage: React.FC = () => {
     </Card>
   );
 };
-

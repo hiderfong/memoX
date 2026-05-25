@@ -416,10 +416,10 @@ export const WorkflowCanvas = ({ yamlContent, activeRunData, onYamlChange }: { y
         {selectedNodeData ? (
           <Form layout="vertical" form={editNodeForm}>
             <Form.Item label="节点 ID">
-              <Input value={selectedNodeData.label} readOnly bordered={false} />
+              <Input value={selectedNodeData.label} readOnly variant="borderless" />
             </Form.Item>
             <Form.Item label="Worker">
-              <Input value={selectedNodeData.worker} readOnly bordered={false} />
+              <Input value={selectedNodeData.worker} readOnly variant="borderless" />
             </Form.Item>
             <Form.Item label="描述 (Description)" name="description">
               <TextArea rows={2} placeholder="节点描述" />

@@ -43,7 +43,7 @@ export const LoginPage: React.FC = () => {
     }}>
       <Card
         style={{ width: 400, borderRadius: 12, boxShadow: '0 8px 32px rgba(0,0,0,0.3)' }}
-        bordered={false}
+        variant="borderless"
       >
         <div style={{ textAlign: 'center', marginBottom: 32 }}>
           <Avatar
@@ -85,5 +85,4 @@ export const LoginPage: React.FC = () => {
     </div>
   );
 };
-
 

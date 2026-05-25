@@ -105,7 +105,7 @@ export const WorkflowsPage: React.FC = () => {
                 </Button>
               </Space>
             }
-            bodyStyle={{ padding: 0 }}
+            styles={{ body: { padding: 0 } }}
           >
             <TextArea
               value={yamlInput}
@@ -124,7 +124,7 @@ export const WorkflowsPage: React.FC = () => {
           </Card>
         </Col>
         <Col xs={24} lg={16}>
-          <Card title="React Flow 画布" size="small" bodyStyle={{ padding: 0 }}>
+          <Card title="React Flow 画布" size="small" styles={{ body: { padding: 0 } }}>
             <WorkflowCanvas 
             yamlContent={visualizeYaml} 
             activeRunData={activeRunData} 
