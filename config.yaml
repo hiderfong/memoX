@@ -110,6 +110,18 @@ worker_templates:
     skills: ["docx", "pdf"]
     tools: ["filesystem"]
 
+tool_policy:
+  network:
+    allow_internal_hosts: []
+  database:
+    default_access_mode: "read_only"
+    allow_raw_connection_strings: true
+    allow_write: true
+    allow_ddl: false
+    allow_multiple_statements: false
+    max_result_rows: 200
+    data_sources: {}
+
 
 # 知识库配置
 knowledge_base:

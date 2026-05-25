@@ -72,6 +72,17 @@ def validate_config(config: "Config") -> None:
     if config.coordinator.task_auto_retry_backoff_multiplier < 1:
         errors.append("coordinator.task_auto_retry_backoff_multiplier 必须至少为 1")
 
+    database_policy = config.tool_policy.database
+    if database_policy.default_access_mode not in {"read_only", "write", "admin"}:
+        errors.append("tool_policy.database.default_access_mode 必须是 read_only、write 或 admin")
+    if database_policy.max_result_rows < 1:
+        errors.append("tool_policy.database.max_result_rows 必须至少为 1")
+    for name, connection_string in database_policy.data_sources.items():
+        if not str(name).strip():
+            errors.append("tool_policy.database.data_sources 不能包含空数据源名称")
+        if not resolve_env_value(connection_string).strip():
+            errors.append(f"tool_policy.database.data_sources.{name} 连接字符串不能为空")
+
     if errors:
         raise ConfigError("MemoX 配置无效:\n- " + "\n- ".join(errors))
 
@@ -136,6 +147,31 @@ class WorkerTemplate:
     mcp: dict[str, Any] = field(default_factory=dict)
     icon: str = ""
     display_name: str = ""
+
+
+@dataclass
+class NetworkToolPolicyConfig:
+    """Network tool policy."""
+    allow_internal_hosts: list[str] = field(default_factory=list)
+
+
+@dataclass
+class DatabaseToolPolicyConfig:
+    """Database tool policy."""
+    default_access_mode: str = "read_only"
+    allow_raw_connection_strings: bool = True
+    allow_write: bool = True
+    allow_ddl: bool = False
+    allow_multiple_statements: bool = False
+    max_result_rows: int = 200
+    data_sources: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class ToolPolicyConfig:
+    """High-permission tool safety policy."""
+    network: NetworkToolPolicyConfig = field(default_factory=NetworkToolPolicyConfig)
+    database: DatabaseToolPolicyConfig = field(default_factory=DatabaseToolPolicyConfig)
 
 
 @dataclass
@@ -279,6 +315,7 @@ class Config:
     knowledge_base: KnowledgeBaseConfig
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     ops: OpsConfig = field(default_factory=OpsConfig)
+    tool_policy: ToolPolicyConfig = field(default_factory=ToolPolicyConfig)
     auth: AuthConfig = field(default_factory=AuthConfig)
     image_generation: ImageGenerationConfig = field(default_factory=ImageGenerationConfig)
     video_generation: VideoGenerationConfig = field(default_factory=VideoGenerationConfig)
@@ -327,6 +364,10 @@ class Config:
 
         memory = MemoryConfig(**data.get("memory", {}))
         ops = OpsConfig(**data.get("ops", {}))
+        tool_policy_data = data.get("tool_policy", {})
+        network_policy = NetworkToolPolicyConfig(**tool_policy_data.get("network", {}))
+        database_policy = DatabaseToolPolicyConfig(**tool_policy_data.get("database", {}))
+        tool_policy = ToolPolicyConfig(network=network_policy, database=database_policy)
 
         image_generation = ImageGenerationConfig(**data.get("image_generation", {}))
         video_generation = VideoGenerationConfig(**data.get("video_generation", {}))
@@ -341,6 +382,7 @@ class Config:
             knowledge_base=knowledge_base,
             memory=memory,
             ops=ops,
+            tool_policy=tool_policy,
             auth=auth,
             image_generation=image_generation,
             video_generation=video_generation,

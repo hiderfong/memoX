@@ -86,6 +86,29 @@ def test_validate_config_rejects_invalid_ops_backup_settings() -> None:
         validate_config(cfg)
 
 
+def test_validate_config_rejects_invalid_database_policy() -> None:
+    cfg = Config._from_dict(
+        {
+            "app": {},
+            "server": {},
+            "coordinator": {},
+            "providers": {},
+            "worker_templates": {},
+            "knowledge_base": {},
+            "auth": {"enabled": False, "users": []},
+            "tool_policy": {
+                "database": {
+                    "default_access_mode": "owner",
+                    "max_result_rows": 0,
+                }
+            },
+        }
+    )
+
+    with pytest.raises(ConfigError, match="tool_policy.database.default_access_mode"):
+        validate_config(cfg)
+
+
 def test_config_example_is_valid_with_required_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MEMOX_ADMIN_PASSWORD", "dev-password")
     monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-key")
