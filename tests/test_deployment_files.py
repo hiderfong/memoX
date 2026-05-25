@@ -51,12 +51,20 @@ def test_backup_artifacts_are_documented_and_ignored() -> None:
     gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
     dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
     deployment = (ROOT / "docs" / "DEPLOYMENT.md").read_text(encoding="utf-8")
+    readiness = (ROOT / "docs" / "RELEASE_READINESS.md").read_text(encoding="utf-8")
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
     assert "backups/" in gitignore
     assert "backups" in dockerignore
+    assert "docs/RELEASE_READINESS.md" in readme
     assert "docs/RECOVERY_RUNBOOK.md" in readme
+    assert "RELEASE_READINESS.md" in deployment
     assert "RECOVERY_RUNBOOK.md" in deployment
+    assert "Release Gate" in readiness
+    assert "Tool Permission Review" in readiness
+    assert "Background Task Checks" in readiness
+    assert "Browser Smoke Path" in readiness
+    assert "Go/No-Go Decision" in readiness
     assert "scripts/backup_restore.py create" in deployment
     assert "scripts/backup_restore.py restore" in deployment
     assert "scripts/backup_restore.py prune" in deployment
@@ -66,6 +74,8 @@ def test_backup_artifacts_are_documented_and_ignored() -> None:
     assert "/api/system/health" in deployment
     assert "/api/system/backups" in deployment
     assert "/api/system/events" in deployment
+    assert "/api/system/tool-audit" in deployment
+    assert "/api/system/tool-policy" in deployment
     assert "/api/system/diagnostics/export" in deployment
     assert "/api/system/indexes/repair" in deployment
     assert "/api/system/maintenance/lifecycle" in deployment

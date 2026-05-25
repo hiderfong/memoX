@@ -62,6 +62,7 @@ curl -fsS "$MEMOX_URL/api/health"
 curl -fsS "$MEMOX_URL/api/system/health" -H "Authorization: Bearer $MEMOX_TOKEN"
 curl -fsS "$MEMOX_URL/api/system/backups" -H "Authorization: Bearer $MEMOX_TOKEN"
 curl -fsS "$MEMOX_URL/api/system/events?limit=50" -H "Authorization: Bearer $MEMOX_TOKEN"
+curl -fsS "$MEMOX_URL/api/system/tool-audit?limit=50" -H "Authorization: Bearer $MEMOX_TOKEN"
 curl -fsS -OJ "$MEMOX_URL/api/system/diagnostics/export" -H "Authorization: Bearer $MEMOX_TOKEN"
 ```
 
@@ -224,6 +225,7 @@ Use:
 
 ```bash
 curl -fsS "$MEMOX_URL/api/system/events?limit=20" -H "Authorization: Bearer $MEMOX_TOKEN"
+curl -fsS "$MEMOX_URL/api/system/tool-audit?status=error&limit=20" -H "Authorization: Bearer $MEMOX_TOKEN"
 curl -fsS -X POST "$MEMOX_URL/api/system/maintenance/backup?force=true" -H "Authorization: Bearer $MEMOX_TOKEN"
 ```
 

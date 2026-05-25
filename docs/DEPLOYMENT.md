@@ -1,6 +1,10 @@
 # MemoX Deployment
 
-This guide describes the current single-node deployment path for long-running user trials.
+This guide describes the current single-node deployment path for long-running
+user trials. Before shipping a build to real users, complete
+[RELEASE_READINESS.md](RELEASE_READINESS.md) and keep
+[RECOVERY_RUNBOOK.md](RECOVERY_RUNBOOK.md) ready for maintenance windows and
+incidents.
 
 ## Prerequisites
 
@@ -188,6 +192,8 @@ Lifecycle cleanup is intentionally conservative. `POST /api/system/maintenance/l
 curl -fsS http://localhost:8080/api/system/health -H "Authorization: Bearer <token>"
 curl -fsS http://localhost:8080/api/system/backups -H "Authorization: Bearer <token>"
 curl -fsS "http://localhost:8080/api/system/events?limit=20" -H "Authorization: Bearer <token>"
+curl -fsS "http://localhost:8080/api/system/tool-audit?limit=20" -H "Authorization: Bearer <token>"
+curl -fsS "http://localhost:8080/api/system/tool-policy" -H "Authorization: Bearer <token>"
 curl -fsS -OJ "http://localhost:8080/api/system/diagnostics/export" -H "Authorization: Bearer <token>"
 curl -fsS -X POST "http://localhost:8080/api/system/indexes/repair" -H "Authorization: Bearer <token>"
 curl -fsS -X POST "http://localhost:8080/api/system/backups/<backup-file>.tar.gz/verify" -H "Authorization: Bearer <token>"
