@@ -9,14 +9,15 @@ sys.path.insert(0, str(Path(__file__).parent))
 import uvicorn
 from loguru import logger
 
-from .config import load_config
+from .config import default_config_path, load_config, validate_config
 
 
 def main():
     """主函数"""
     # 加载配置
-    config_path = Path(__file__).parent.parent / "config.yaml"
+    config_path = default_config_path()
     config = load_config(config_path)
+    validate_config(config)
 
     # 配置日志
     logger.remove()
@@ -28,6 +29,7 @@ def main():
 
     # 启动服务器
     logger.info(f"🚀 启动 {config.app.name}...")
+    logger.info(f"🧾 配置文件: {config_path}")
     logger.info(f"📂 工作目录: {config.app.workspace}")
     logger.info(f"🔧 最大 Worker 数: {config.coordinator.max_workers}")
 

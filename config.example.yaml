@@ -1,0 +1,210 @@
+# MemoX - example configuration
+#
+# To create a local config:
+#   cp config.example.yaml config.yaml
+#   export MEMOX_ADMIN_PASSWORD=...
+#   export DASHSCOPE_API_KEY=...
+
+app:
+  name: "MemoX"
+  debug: false
+  log_level: "INFO"
+  workspace: "./workspace"
+
+server:
+  host: "0.0.0.0"
+  port: 8080
+  cors_origins:
+    - "http://localhost:3000"
+    - "http://127.0.0.1:3000"
+    - "http://localhost:8080"
+    - "http://127.0.0.1:8080"
+
+coordinator:
+  provider: "dashscope"
+  model: "qwen3.6-plus"
+  temperature: 0.7
+  max_tokens: 4096
+  max_workers: 5
+  task_timeout: 300
+  task_auto_retry_enabled: true
+  task_auto_retry_max_attempts: 2
+  task_auto_retry_initial_delay_seconds: 30
+  task_auto_retry_max_delay_seconds: 300
+  task_auto_retry_backoff_multiplier: 2
+
+providers:
+  dashscope:
+    api_key: "${DASHSCOPE_API_KEY}"
+    base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  openai:
+    api_key: "${OPENAI_API_KEY}"
+    base_url: "https://api.openai.com/v1"
+  anthropic:
+    api_key: "${ANTHROPIC_API_KEY}"
+    base_url: "https://api.anthropic.com"
+  google:
+    api_key: "${GOOGLE_API_KEY}"
+    base_url: "https://generativelanguage.googleapis.com"
+  minimax:
+    api_key: "${MINIMAX_API_KEY}"
+    base_url: "https://api.minimaxi.com/anthropic/v1"
+  kimi:
+    api_key: "${KIMI_API_KEY}"
+    base_url: "https://api.kimi.com/coding/v1"
+    headers:
+      User-Agent: "claude-code/0.1.0"
+
+worker_templates:
+  code_worker:
+    provider: "kimi"
+    model: "kimi-latest"
+    temperature: 0.7
+    icon: "💻"
+    display_name: "代码专家"
+    skills:
+      - "code-review"
+      - "frontend-design-3"
+    tools:
+      - "filesystem"
+      - "shell"
+      - "git"
+
+  research_worker:
+    provider: "minimax"
+    model: "MiniMax-M2.7-highspeed"
+    temperature: 0.3
+    icon: "🔎"
+    display_name: "研究助手"
+    skills:
+      - "data-analysis"
+      - "doc-coauthoring"
+    tools:
+      - "web_search"
+      - "web_fetch"
+
+  writer_worker:
+    provider: "kimi"
+    model: "kimi-coder"
+    temperature: 0.9
+    icon: "✍️"
+    display_name: "写作助手"
+    skills:
+      - "docx"
+      - "pdf"
+    tools:
+      - "filesystem"
+
+tool_policy:
+  network:
+    # Keep empty for public-web-only access. Add exact hosts or host:port values
+    # only when a trusted worker must inspect local/dev services.
+    allow_internal_hosts: []
+  database:
+    # Default mode stays read-only; write operations must ask for access_mode: write.
+    # DDL/admin commands remain off by default.
+    default_access_mode: "read_only"
+    allow_raw_connection_strings: true
+    allow_write: true
+    allow_ddl: false
+    allow_multiple_statements: false
+    max_result_rows: 200
+    data_sources: {}
+
+knowledge_base:
+  vector_store: "chroma"
+  persist_directory: "./data/chroma"
+  upload_directory: "./data/uploads"
+  skills_dir: "./data/skills"
+  # 可选: "dashscope" (生产默认), "openai", "sentence-transformer", "hash" (仅 smoke/demo)
+  embedding_provider: "dashscope"
+  embedding_model: "text-embedding-v3"
+  chunk_size: 500
+  chunk_overlap: 50
+  top_k: 5
+  hybrid_search:
+    enabled: true
+    bm25_persist_path: "./data/bm25_index.pkl"
+    rrf_k: 60
+    chunk_strategy: "size"
+  enable_graph: false
+  graph_persist_path: "./data/knowledge_graph.gml"
+  graph_llm_provider: "dashscope"
+  graph_llm_api_key: "${DASHSCOPE_API_KEY}"
+
+memory:
+  enabled: true
+  max_turns_before_compress: 10
+  summary_max_chars: 500
+  recent_messages_to_keep: 4
+
+ops:
+  auto_backup_enabled: true
+  auto_backup_interval_hours: 24
+  auto_backup_startup_delay_seconds: 300
+  auto_backup_include:
+    - "config.yaml"
+    - "data"
+    - "workspace"
+  max_backups: 14
+  # Optional: mirror backups and diagnostics to an external or mounted directory.
+  # Relative paths are resolved from the deployment root; leave empty to disable.
+  archive_mirror_dir: ""
+  # Lifecycle cleanup is conservative: it never deletes chats, memories, uploads,
+  # or workspace files. Use the admin dry-run endpoint before executing cleanup.
+  ops_event_retention_days: 90
+  audit_log_retention_days: 180
+  task_job_retention_days: 30
+  diagnostic_retention_days: 30
+  max_diagnostic_bundles: 20
+
+auth:
+  enabled: true
+  public_paths:
+    - "/api/auth/login"
+    - "/api/health"
+    - "/api/docs"
+    - "/api/redoc"
+    - "/api/openapi.json"
+    - "/api/files/"
+  users:
+    - username: "admin"
+      password: "${MEMOX_ADMIN_PASSWORD}"
+      role: "admin"
+      display_name: "管理员"
+
+image_generation:
+  enabled: false
+  provider: "dashscope"
+  model: "qwen-image-2.0-pro"
+  api_key: "${DASHSCOPE_API_KEY}"
+  default_size: "1024*1024"
+
+video_generation:
+  enabled: false
+  provider: "dashscope"
+  model: "wan2.7-t2v"
+  api_key: "${DASHSCOPE_API_KEY}"
+  default_resolution: "720P"
+  default_ratio: "16:9"
+  default_duration: 5
+
+image_to_video:
+  enabled: false
+  provider: "dashscope"
+  model: "wan2.7-i2v"
+  api_key: "${DASHSCOPE_API_KEY}"
+  default_resolution: "720P"
+  default_duration: 5
+
+mcp:
+  github:
+    enabled: false
+  slack:
+    enabled: false
+
+channels:
+  web:
+    enabled: true
+  cli:
+    enabled: true

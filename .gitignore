@@ -15,12 +15,12 @@ venv/
 env/
 
 # ---- Node / Frontend ----
-frontend/node_modules/
-frontend/dist/
-frontend/data/
-frontend/frontend.log
-frontend/.vite/
-frontend/*.log
+frontend_wip/node_modules/
+frontend_wip/dist/
+frontend_wip/data/
+frontend_wip/frontend.log
+frontend_wip/.vite/
+frontend_wip/*.log
 node_modules/
 
 # ---- Runtime data (should never be committed) ----
@@ -36,6 +36,7 @@ data/skills/
 data/bm25_index.pkl
 data/knowledge_graph.gml
 data/documents_manifest.json
+workspace/
 
 # ---- Secrets & TLS ----
 ssl/
@@ -58,6 +59,8 @@ ssl/
 .claude/settings.local.json
 
 # ---- Test / scratch artifacts ----
+.docker-smoke/
+backups/
 test_output.txt
 *.log
 tests/__pycache__/

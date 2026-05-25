@@ -19,9 +19,11 @@ class WorkflowStep:
     id: str                          # 步骤唯一 ID（如 "search", "write"）
     worker: str                       # Worker 名称（如 "researcher"）
     input: str                        # 输入模板，支持 ${previous_step.output} 占位符
+    description: str = ""             # 节点描述
     output_var: str = "result"        # 输出变量名（供后续步骤引用）
     condition: StepCondition = StepCondition.ALWAYS  # 执行条件
-    condition_expr: str = ""         # 自定义条件表达式（如 "${search_results.relevant}"）
+    condition_expr: str = ""         # 自定义条件表达式（如 "${search_results.relevant} == True"）
+    map_over: str = ""               # 指定要循环遍历的列表变量引用（如 "${files}"）
     timeout_seconds: int = 120       # 超时时间
     retry_on_fail: int = 0           # 失败重试次数
 
@@ -115,3 +117,50 @@ class Workflow:
             errors.append("检测到循环依赖")
 
         return errors
+
+    def to_react_flow(self) -> dict:
+        """导出为 React Flow 兼容的节点和边"""
+        nodes = []
+        edges = []
+        step_ids = self.get_step_ids()
+
+        # 布局相关（简单网格分布，前端通常会用 dagre 或 elk.js 重新布局）
+        x_offset = 0
+        y_offset = 0
+
+        for i, s in enumerate(self.steps):
+            nodes.append({
+                "id": s.id,
+                "type": "workflowStep",
+                "position": {"x": x_offset, "y": y_offset + i * 100},
+                "data": {
+                    "label": s.id,
+                    "worker": s.worker,
+                    "description": s.description,
+                    "condition": s.condition.value,
+                    "condition_expr": s.condition_expr,
+                    "map_over": s.map_over,
+                    "input": s.input,
+                    "output_var": s.output_var,
+                    "timeout_seconds": s.timeout_seconds,
+                    "retry_on_fail": s.retry_on_fail,
+                }
+            })
+
+            # 解析依赖
+            deps = []
+            for ref in s.get_input_refs():
+                target = ref.split(".")[0]
+                if target in step_ids:
+                    deps.append(target)
+
+            # 去重依赖，生成边
+            for dep in set(deps):
+                edges.append({
+                    "id": f"e-{dep}-{s.id}",
+                    "source": dep,
+                    "target": s.id,
+                    "animated": True,
+                })
+
+        return {"nodes": nodes, "edges": edges}

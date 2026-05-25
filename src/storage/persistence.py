@@ -1,11 +1,18 @@
 """SQLite 持久化存储 - 会话与任务历史"""
 
+import contextlib
 import json
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from loguru import logger
+
+SCHEMA_VERSION = 6
+
+
+class SchemaMigrationError(RuntimeError):
+    """Raised when a SQLite database cannot be safely migrated."""
 
 
 class PersistenceStore:
@@ -16,11 +23,50 @@ class PersistenceStore:
         Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        self._guard_supported_schema_version()
         self._init_tables()
+
+    def close(self) -> None:
+        """关闭数据库连接"""
+        if self._conn:
+            self._conn.close()
+            self._conn = None
+
+    def __del__(self) -> None:
+        with contextlib.suppress(Exception):
+            self.close()
+
+    def _guard_supported_schema_version(self) -> None:
+        row = self._conn.execute("PRAGMA user_version").fetchone()
+        user_version = int(row[0]) if row else 0
+        future_versions: list[int] = []
+        has_migrations = self._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations'"
+        ).fetchone()
+        if has_migrations:
+            future_versions = [
+                int(r["version"])
+                for r in self._conn.execute(
+                    "SELECT version FROM schema_migrations WHERE version > ? ORDER BY version",
+                    (SCHEMA_VERSION,),
+                ).fetchall()
+            ]
+        if user_version > SCHEMA_VERSION or future_versions:
+            future_label = ", ".join(str(v) for v in future_versions) or str(user_version)
+            raise SchemaMigrationError(
+                "SQLite database was created by a newer MemoX schema "
+                f"(current={SCHEMA_VERSION}, found={future_label}); upgrade MemoX before opening it."
+            )
 
     def _init_tables(self) -> None:
         """初始化数据库表"""
         self._conn.executescript("""
+            CREATE TABLE IF NOT EXISTS schema_migrations (
+                version INTEGER PRIMARY KEY,
+                name TEXT NOT NULL,
+                applied_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS chat_sessions (
                 id TEXT PRIMARY KEY,
                 title TEXT NOT NULL DEFAULT '',
@@ -65,6 +111,40 @@ class PersistenceStore:
             CREATE INDEX IF NOT EXISTS idx_messages_session ON chat_messages(session_id);
             CREATE INDEX IF NOT EXISTS idx_task_created ON task_history(created_at);
 
+            CREATE TABLE IF NOT EXISTS task_jobs (
+                id TEXT PRIMARY KEY,
+                description TEXT NOT NULL,
+                context TEXT DEFAULT '{}',
+                generate_suggestions INTEGER NOT NULL DEFAULT 1,
+                active_group_ids TEXT DEFAULT 'null',
+                timeout_seconds INTEGER DEFAULT NULL,
+                lease_owner TEXT DEFAULT '',
+                lease_expires_at TEXT DEFAULT '',
+                recovery_count INTEGER NOT NULL DEFAULT 0,
+                last_recovered_at TEXT DEFAULT '',
+                auto_retry_count INTEGER NOT NULL DEFAULT 0,
+                next_retry_at TEXT DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_task_jobs_created ON task_jobs(created_at);
+
+            CREATE TABLE IF NOT EXISTS task_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                task_id TEXT NOT NULL,
+                event_type TEXT NOT NULL,
+                message TEXT DEFAULT '',
+                details TEXT DEFAULT '{}',
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_task_events_task_created ON task_events(task_id, created_at);
+
+            CREATE TABLE IF NOT EXISTS task_checkpoints (
+                task_id TEXT PRIMARY KEY,
+                checkpoint TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS scheduled_tasks (
                 id TEXT PRIMARY KEY,
                 description TEXT NOT NULL,
@@ -93,6 +173,18 @@ class PersistenceStore:
             CREATE INDEX IF NOT EXISTS idx_audit_timestamp ON audit_log(timestamp DESC);
             CREATE INDEX IF NOT EXISTS idx_audit_resource ON audit_log(resource, resource_id);
 
+            CREATE TABLE IF NOT EXISTS ops_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_type TEXT NOT NULL,
+                status TEXT NOT NULL,
+                action TEXT NOT NULL DEFAULT '',
+                message TEXT NOT NULL DEFAULT '',
+                details TEXT DEFAULT '{}',
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_ops_events_created ON ops_events(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_ops_events_type_created ON ops_events(event_type, created_at DESC);
+
             CREATE TABLE IF NOT EXISTS memories (
                 id TEXT PRIMARY KEY,
                 user_id TEXT,
@@ -109,33 +201,136 @@ class PersistenceStore:
             CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(category);
             CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at DESC);
         """)
-        # 旧库迁移：为 chat_sessions 补齐 archived 列
-        cols = {r["name"] for r in self._conn.execute("PRAGMA table_info(chat_sessions)").fetchall()}
+        self._run_migrations()
+        self._conn.commit()
+
+    def _column_names(self, table: str) -> set[str]:
+        return {r["name"] for r in self._conn.execute(f"PRAGMA table_info({table})").fetchall()}
+
+    def _run_migrations(self) -> None:
+        migrations = [
+            (1, "chat_sessions_archive_summary", self._migration_chat_sessions_archive_summary),
+            (2, "memories_table", self._migration_memories_table),
+            (3, "memories_fts", self._migration_memories_fts),
+            (4, "task_job_leases", self._migration_task_job_leases),
+            (5, "task_job_recovery_metadata", self._migration_task_job_recovery_metadata),
+            (6, "task_job_auto_retry_metadata", self._migration_task_job_auto_retry_metadata),
+        ]
+        applied = {
+            row["version"]
+            for row in self._conn.execute("SELECT version FROM schema_migrations").fetchall()
+        }
+        for version, name, migration in migrations:
+            if version in applied:
+                continue
+            try:
+                migration()
+                self._conn.execute(
+                    "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+                    (version, name, datetime.now().isoformat()),
+                )
+                self._conn.execute(f"PRAGMA user_version = {version}")
+                self._conn.commit()
+                logger.info(f"[PersistenceStore] Applied schema migration {version}: {name}")
+            except Exception:
+                self._conn.rollback()
+                raise
+        self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+    def _migration_chat_sessions_archive_summary(self) -> None:
+        cols = self._column_names("chat_sessions")
         if "archived" not in cols:
             self._conn.execute("ALTER TABLE chat_sessions ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
         if "summary" not in cols:
             self._conn.execute("ALTER TABLE chat_sessions ADD COLUMN summary TEXT DEFAULT ''")
-        # 旧库迁移：创建 memories 表（如不存在）
-        tables = {r["name"] for r in self._conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-        if "memories" not in tables:
-            self._conn.execute("""
-                CREATE TABLE memories (
-                    id TEXT PRIMARY KEY,
-                    user_id TEXT,
-                    content TEXT NOT NULL,
-                    category TEXT NOT NULL DEFAULT 'general',
-                    importance INTEGER NOT NULL DEFAULT 3,
-                    source_session_id TEXT,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    last_accessed_at TEXT NOT NULL,
-                    metadata TEXT DEFAULT '{}'
-                )
+
+    def _migration_memories_table(self) -> None:
+        self._conn.executescript("""
+            CREATE TABLE IF NOT EXISTS memories (
+                id TEXT PRIMARY KEY,
+                user_id TEXT,
+                content TEXT NOT NULL,
+                category TEXT NOT NULL DEFAULT 'general',
+                importance INTEGER NOT NULL DEFAULT 3,
+                source_session_id TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                last_accessed_at TEXT NOT NULL,
+                metadata TEXT DEFAULT '{}'
+            );
+            CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id);
+            CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(category);
+            CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at DESC);
+        """)
+
+    def _migration_memories_fts(self) -> None:
+        self._ensure_memories_fts()
+
+    def _migration_task_job_leases(self) -> None:
+        cols = self._column_names("task_jobs")
+        if "lease_owner" not in cols:
+            self._conn.execute("ALTER TABLE task_jobs ADD COLUMN lease_owner TEXT DEFAULT ''")
+        if "lease_expires_at" not in cols:
+            self._conn.execute("ALTER TABLE task_jobs ADD COLUMN lease_expires_at TEXT DEFAULT ''")
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_task_jobs_lease ON task_jobs(lease_expires_at)")
+
+    def _migration_task_job_recovery_metadata(self) -> None:
+        cols = self._column_names("task_jobs")
+        if "recovery_count" not in cols:
+            self._conn.execute("ALTER TABLE task_jobs ADD COLUMN recovery_count INTEGER NOT NULL DEFAULT 0")
+        if "last_recovered_at" not in cols:
+            self._conn.execute("ALTER TABLE task_jobs ADD COLUMN last_recovered_at TEXT DEFAULT ''")
+
+    def _migration_task_job_auto_retry_metadata(self) -> None:
+        cols = self._column_names("task_jobs")
+        if "auto_retry_count" not in cols:
+            self._conn.execute("ALTER TABLE task_jobs ADD COLUMN auto_retry_count INTEGER NOT NULL DEFAULT 0")
+        if "next_retry_at" not in cols:
+            self._conn.execute("ALTER TABLE task_jobs ADD COLUMN next_retry_at TEXT DEFAULT ''")
+        self._conn.execute("CREATE INDEX IF NOT EXISTS idx_task_jobs_next_retry ON task_jobs(next_retry_at)")
+
+    def schema_version(self) -> int:
+        row = self._conn.execute("PRAGMA user_version").fetchone()
+        return int(row[0]) if row else 0
+
+    def applied_migrations(self) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT version, name, applied_at FROM schema_migrations ORDER BY version"
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def _ensure_memories_fts(self) -> None:
+        """Keep runtime-created memory schema aligned with Alembic's FTS setup."""
+        try:
+            self._conn.executescript("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS memories_fts USING fts5(
+                    content,
+                    content='memories',
+                    content_rowid='rowid'
+                );
+
+                CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
+                    INSERT INTO memories_fts(rowid, content) VALUES (NEW.rowid, NEW.content);
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
+                    INSERT INTO memories_fts(memories_fts, rowid, content)
+                    VALUES('delete', OLD.rowid, OLD.content);
+                END;
+
+                CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE ON memories BEGIN
+                    INSERT INTO memories_fts(memories_fts, rowid, content)
+                    VALUES('delete', OLD.rowid, OLD.content);
+                    INSERT INTO memories_fts(rowid, content) VALUES (NEW.rowid, NEW.content);
+                END;
             """)
-            self._conn.execute("CREATE INDEX idx_memories_user ON memories(user_id)")
-            self._conn.execute("CREATE INDEX idx_memories_category ON memories(category)")
-            self._conn.execute("CREATE INDEX idx_memories_created ON memories(created_at DESC)")
-        self._conn.commit()
+            self._conn.execute("""
+                INSERT INTO memories_fts(rowid, content)
+                SELECT rowid, content FROM memories
+                WHERE rowid NOT IN (SELECT rowid FROM memories_fts)
+            """)
+        except sqlite3.OperationalError as e:
+            logger.warning(f"[PersistenceStore] FTS5 memory index unavailable: {e}")
 
     def save_session_summary(self, session_id: str, summary: str) -> None:
         """保存会话摘要（记忆压缩）。如果会话不存在，先创建它。"""
@@ -303,30 +498,76 @@ class PersistenceStore:
     def save_task(self, task_data: dict) -> None:
         """保存任务结果"""
         now = datetime.now().isoformat()
+        task_id = task_data.get("task_id", "")
+        if not task_id:
+            raise ValueError("task_id is required")
+
+        existing = self._conn.execute(
+            "SELECT created_at FROM task_history WHERE id=?", (task_id,)
+        ).fetchone()
+        created_at = task_data.get("created_at") or (existing["created_at"] if existing else now)
+        status = task_data.get("status", "completed")
+        if "completed_at" in task_data:
+            completed_at = task_data.get("completed_at")
+        else:
+            completed_at = now if status in {"completed", "failed", "cancelled", "timeout"} else None
+
         self._conn.execute(
             """INSERT INTO task_history (id, description, status, result_summary, final_score,
                                          iterations, mail_log, shared_dir, suggestions, created_at, completed_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(id) DO UPDATE SET
+                   description=excluded.description,
                    status=excluded.status, result_summary=excluded.result_summary,
                    final_score=excluded.final_score, iterations=excluded.iterations,
-                   mail_log=excluded.mail_log, suggestions=excluded.suggestions,
+                   mail_log=excluded.mail_log, shared_dir=excluded.shared_dir,
+                   suggestions=excluded.suggestions,
                    completed_at=excluded.completed_at""",
             (
-                task_data.get("task_id", ""),
+                task_id,
                 task_data.get("description", ""),
-                task_data.get("status", "completed"),
+                status,
                 task_data.get("result", ""),
                 task_data.get("final_score", 0.0),
                 json.dumps(task_data.get("iterations", []), ensure_ascii=False),
                 task_data.get("mail_log", ""),
                 task_data.get("shared_dir", ""),
                 json.dumps(task_data.get("suggestions", []), ensure_ascii=False),
-                now,
-                now,
+                created_at,
+                completed_at,
             ),
         )
         self._conn.commit()
+
+    def mark_incomplete_tasks_interrupted(self) -> int:
+        """Mark tasks that were active before process restart as interrupted."""
+        now = datetime.now().isoformat()
+        rows = self._conn.execute(
+            """SELECT id FROM task_history
+               WHERE status IN ('queued', 'pending', 'running')
+                 AND id NOT IN (SELECT id FROM task_jobs)"""
+        ).fetchall()
+        cursor = self._conn.execute(
+            """UPDATE task_history
+               SET status='failed',
+                   result_summary=CASE
+                       WHEN result_summary IS NULL OR result_summary=''
+                       THEN '(服务重启前任务未完成，已标记为中断)'
+                       ELSE result_summary
+                   END,
+                   completed_at=?
+               WHERE status IN ('queued', 'pending', 'running')
+                 AND id NOT IN (SELECT id FROM task_jobs)""",
+            (now,),
+        )
+        for row in rows:
+            self.add_task_event(
+                row["id"],
+                "interrupted",
+                "服务重启前任务未完成，且缺少可恢复请求，已标记为中断",
+            )
+        self._conn.commit()
+        return cursor.rowcount
 
     def get_task(self, task_id: str) -> dict | None:
         """获取任务详情"""
@@ -360,6 +601,428 @@ class PersistenceStore:
             "created_at": row["created_at"],
             "completed_at": row["completed_at"],
         }
+
+    def save_task_job_request(
+        self,
+        task_id: str,
+        description: str,
+        context: dict | None = None,
+        generate_suggestions: bool = True,
+        active_group_ids: list[str] | None = None,
+        timeout_seconds: int | None = None,
+        created_at: str | None = None,
+    ) -> None:
+        """Persist enough input data to recover an unfinished background task."""
+        now = datetime.now().isoformat()
+        created = created_at or now
+        self._conn.execute(
+            """INSERT INTO task_jobs
+               (id, description, context, generate_suggestions, active_group_ids,
+                timeout_seconds, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                   description=excluded.description,
+                   context=excluded.context,
+                   generate_suggestions=excluded.generate_suggestions,
+                   active_group_ids=excluded.active_group_ids,
+                   timeout_seconds=excluded.timeout_seconds,
+                   updated_at=excluded.updated_at""",
+            (
+                task_id,
+                description,
+                json.dumps(context or {}, ensure_ascii=False),
+                1 if generate_suggestions else 0,
+                json.dumps(active_group_ids, ensure_ascii=False),
+                timeout_seconds,
+                created,
+                now,
+            ),
+        )
+        self._conn.commit()
+
+    def acquire_task_job_lease(self, task_id: str, owner_id: str, lease_seconds: float) -> bool:
+        """Atomically claim a recoverable task job for one runner process."""
+        now = datetime.now()
+        now_iso = now.isoformat()
+        expires_at = (now + timedelta(seconds=lease_seconds)).isoformat()
+        cursor = self._conn.execute(
+            """UPDATE task_jobs
+               SET lease_owner=?,
+                   lease_expires_at=?,
+                   updated_at=?
+               WHERE id=?
+                 AND (
+                    lease_owner IS NULL OR lease_owner='' OR lease_owner=?
+                    OR lease_expires_at IS NULL OR lease_expires_at='' OR lease_expires_at<=?
+                 )""",
+            (owner_id, expires_at, now_iso, task_id, owner_id, now_iso),
+        )
+        self._conn.commit()
+        return cursor.rowcount == 1
+
+    def refresh_task_job_lease(self, task_id: str, owner_id: str, lease_seconds: float) -> bool:
+        now = datetime.now()
+        expires_at = (now + timedelta(seconds=lease_seconds)).isoformat()
+        cursor = self._conn.execute(
+            """UPDATE task_jobs
+               SET lease_expires_at=?,
+                   updated_at=?
+               WHERE id=?
+                 AND lease_owner=?""",
+            (expires_at, now.isoformat(), task_id, owner_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount == 1
+
+    def release_task_job_lease(self, task_id: str, owner_id: str) -> bool:
+        cursor = self._conn.execute(
+            """UPDATE task_jobs
+               SET lease_owner='',
+                   lease_expires_at='',
+                   updated_at=?
+               WHERE id=?
+                 AND lease_owner=?""",
+            (datetime.now().isoformat(), task_id, owner_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount == 1
+
+    def schedule_task_job_auto_retry(
+        self,
+        task_id: str,
+        next_retry_at: str,
+        max_attempts: int,
+    ) -> dict | None:
+        """Record the next automatic retry if the job still has retry budget."""
+        if max_attempts < 1:
+            return None
+        now = datetime.now().isoformat()
+        cursor = self._conn.execute(
+            """UPDATE task_jobs
+               SET auto_retry_count=COALESCE(auto_retry_count, 0) + 1,
+                   next_retry_at=?,
+                   updated_at=?
+               WHERE id=?
+                 AND COALESCE(auto_retry_count, 0) < ?""",
+            (next_retry_at, now, task_id, max_attempts),
+        )
+        self._conn.commit()
+        return self.get_task_job_request(task_id) if cursor.rowcount == 1 else None
+
+    def clear_task_job_auto_retry(self, task_id: str) -> bool:
+        cursor = self._conn.execute(
+            """UPDATE task_jobs
+               SET next_retry_at='',
+                   updated_at=?
+               WHERE id=?""",
+            (datetime.now().isoformat(), task_id),
+        )
+        self._conn.commit()
+        return cursor.rowcount == 1
+
+    def list_scheduled_task_job_retries(self, limit: int = 100) -> list[dict]:
+        rows = self._conn.execute(
+            """SELECT j.* FROM task_jobs j
+               JOIN task_history h ON h.id = j.id
+               WHERE h.status IN ('failed', 'timeout')
+                 AND j.next_retry_at IS NOT NULL
+                 AND j.next_retry_at != ''
+               ORDER BY j.next_retry_at ASC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        return [self._row_to_task_job(row) for row in rows]
+
+    def mark_task_job_recovered(self, task_id: str) -> dict | None:
+        """Record that a persisted job was picked up by startup recovery."""
+        now = datetime.now().isoformat()
+        self._conn.execute(
+            """UPDATE task_jobs
+               SET recovery_count=COALESCE(recovery_count, 0) + 1,
+                   last_recovered_at=?,
+                   updated_at=?
+               WHERE id=?""",
+            (now, now, task_id),
+        )
+        self._conn.commit()
+        return self.get_task_job_request(task_id)
+
+    def get_task_job_request(self, task_id: str) -> dict | None:
+        row = self._conn.execute(
+            "SELECT * FROM task_jobs WHERE id=?", (task_id,)
+        ).fetchone()
+        return self._row_to_task_job(row) if row else None
+
+    def list_recoverable_task_jobs(self, limit: int = 100) -> list[dict]:
+        rows = self._conn.execute(
+            """SELECT j.* FROM task_jobs j
+               JOIN task_history h ON h.id = j.id
+               WHERE h.status IN ('queued', 'pending', 'running')
+               ORDER BY j.created_at ASC
+               LIMIT ?""",
+            (limit,),
+        ).fetchall()
+        return [self._row_to_task_job(row) for row in rows]
+
+    def get_task_job_stats(self) -> dict:
+        now_dt = datetime.now()
+        now = now_dt.isoformat()
+        terminal_statuses = ("completed", "failed", "cancelled", "timeout")
+        active_statuses = ("queued", "pending", "running")
+        total = self._conn.execute("SELECT COUNT(*) AS count FROM task_jobs").fetchone()["count"]
+        status_counts = {
+            row["status"]: row["count"]
+            for row in self._conn.execute(
+                """SELECT h.status, COUNT(*) AS count FROM task_jobs j
+                   JOIN task_history h ON h.id=j.id
+                   GROUP BY h.status"""
+            ).fetchall()
+        }
+        active = self._conn.execute(
+            """SELECT COUNT(*) AS count FROM task_jobs j
+               JOIN task_history h ON h.id=j.id
+               WHERE h.status IN (?, ?, ?)""",
+            active_statuses,
+        ).fetchone()["count"]
+        terminal = self._conn.execute(
+            """SELECT COUNT(*) AS count FROM task_jobs j
+               JOIN task_history h ON h.id=j.id
+               WHERE h.status IN (?, ?, ?, ?)""",
+            terminal_statuses,
+        ).fetchone()["count"]
+        leased_active = self._conn.execute(
+            """SELECT COUNT(*) AS count FROM task_jobs
+               WHERE lease_owner IS NOT NULL AND lease_owner!=''
+                 AND lease_expires_at IS NOT NULL AND lease_expires_at!=''
+                 AND lease_expires_at>?""",
+            (now,),
+        ).fetchone()["count"]
+        expired_leases = self._conn.execute(
+            """SELECT COUNT(*) AS count FROM task_jobs
+               WHERE lease_owner IS NOT NULL AND lease_owner!=''
+                 AND lease_expires_at IS NOT NULL AND lease_expires_at!=''
+                 AND lease_expires_at<=?""",
+            (now,),
+        ).fetchone()["count"]
+        scheduled_retries = self._conn.execute(
+            """SELECT COUNT(*) AS count FROM task_jobs
+               WHERE next_retry_at IS NOT NULL AND next_retry_at!=''"""
+        ).fetchone()["count"]
+        recovered_jobs = self._conn.execute(
+            "SELECT COUNT(*) AS count FROM task_jobs WHERE recovery_count>0"
+        ).fetchone()["count"]
+        recovery_count_total = self._conn.execute(
+            "SELECT COALESCE(SUM(recovery_count), 0) AS count FROM task_jobs"
+        ).fetchone()["count"]
+        oldest_active_row = self._conn.execute(
+            """SELECT MIN(h.created_at) AS created_at FROM task_jobs j
+               JOIN task_history h ON h.id=j.id
+               WHERE h.status IN (?, ?, ?)""",
+            active_statuses,
+        ).fetchone()
+        oldest_active_created_at = oldest_active_row["created_at"] if oldest_active_row else ""
+        last_updated_row = self._conn.execute(
+            "SELECT MAX(updated_at) AS updated_at FROM task_jobs"
+        ).fetchone()
+        last_job_updated_at = last_updated_row["updated_at"] if last_updated_row else ""
+
+        def _age_seconds(value: str | None) -> int | None:
+            if not value:
+                return None
+            try:
+                return max(0, int((now_dt - datetime.fromisoformat(value)).total_seconds()))
+            except ValueError:
+                return None
+
+        failure_rows = self._conn.execute(
+            """SELECT h.status, j.next_retry_at, e.event_type, e.details
+               FROM task_jobs j
+               JOIN task_history h ON h.id=j.id
+               LEFT JOIN task_events e ON e.id = (
+                   SELECT te.id FROM task_events te
+                   WHERE te.task_id=j.id
+                     AND (
+                       te.event_type IN (
+                         'failed_retryable',
+                         'failed_non_retryable',
+                         'timeout',
+                         'lease_lost',
+                         'lease_lost_stopped',
+                         'auto_retry_exhausted'
+                       )
+                       OR te.details LIKE '%failure_type%'
+                     )
+                   ORDER BY te.id DESC
+                   LIMIT 1
+               )
+               WHERE h.status IN ('failed', 'timeout')"""
+        ).fetchall()
+        retryable_failures = 0
+        non_retryable_failures = 0
+        auto_retry_exhausted = 0
+        manual_retryable = 0
+        needs_intervention = 0
+        retryable_failure_types = {"timeout", "lease_lost", "retryable_exception"}
+        for row in failure_rows:
+            try:
+                details = json.loads(row["details"] or "{}")
+            except json.JSONDecodeError:
+                details = {}
+            failure_type = details.get("failure_type")
+            if not failure_type and row["status"] == "timeout":
+                failure_type = "timeout"
+            retryable = bool(
+                details.get("retryable")
+                or failure_type in retryable_failure_types
+            )
+            exhausted = row["event_type"] == "auto_retry_exhausted"
+            if exhausted:
+                auto_retry_exhausted += 1
+            if retryable:
+                retryable_failures += 1
+            else:
+                non_retryable_failures += 1
+            if retryable and not row["next_retry_at"]:
+                manual_retryable += 1
+            if exhausted or not retryable:
+                needs_intervention += 1
+
+        return {
+            "total": total,
+            "active": active,
+            "terminal": terminal,
+            "queued": status_counts.get("queued", 0),
+            "pending": status_counts.get("pending", 0),
+            "running": status_counts.get("running", 0),
+            "completed": status_counts.get("completed", 0),
+            "failed": status_counts.get("failed", 0),
+            "cancelled": status_counts.get("cancelled", 0),
+            "timeout": status_counts.get("timeout", 0),
+            "leased_active": leased_active,
+            "expired_leases": expired_leases,
+            "scheduled_retries": scheduled_retries,
+            "retryable_failures": retryable_failures,
+            "non_retryable_failures": non_retryable_failures,
+            "auto_retry_exhausted": auto_retry_exhausted,
+            "manual_retryable": manual_retryable,
+            "needs_intervention": needs_intervention,
+            "recovered_jobs": recovered_jobs,
+            "recovery_count_total": recovery_count_total,
+            "oldest_active_created_at": oldest_active_created_at or "",
+            "oldest_active_age_seconds": _age_seconds(oldest_active_created_at),
+            "last_job_updated_at": last_job_updated_at or "",
+        }
+
+    def count_terminal_task_jobs_before(self, cutoff_iso: str | None) -> int:
+        if not cutoff_iso:
+            return 0
+        row = self._conn.execute(
+            """SELECT COUNT(*) AS count FROM task_jobs j
+               JOIN task_history h ON h.id=j.id
+               WHERE h.status IN ('completed', 'failed', 'cancelled', 'timeout')
+                 AND COALESCE(h.completed_at, j.updated_at, j.created_at) < ?""",
+            (cutoff_iso,),
+        ).fetchone()
+        return int(row["count"]) if row else 0
+
+    def delete_terminal_task_jobs_before(self, cutoff_iso: str | None) -> int:
+        if not cutoff_iso:
+            return 0
+        cursor = self._conn.execute(
+            """DELETE FROM task_jobs
+               WHERE id IN (
+                   SELECT j.id FROM task_jobs j
+                   JOIN task_history h ON h.id=j.id
+                   WHERE h.status IN ('completed', 'failed', 'cancelled', 'timeout')
+                     AND COALESCE(h.completed_at, j.updated_at, j.created_at) < ?
+               )""",
+            (cutoff_iso,),
+        )
+        self._conn.commit()
+        return cursor.rowcount
+
+    def _row_to_task_job(self, row: sqlite3.Row) -> dict:
+        return {
+            "task_id": row["id"],
+            "description": row["description"],
+            "context": json.loads(row["context"] or "{}"),
+            "generate_suggestions": bool(row["generate_suggestions"]),
+            "active_group_ids": json.loads(row["active_group_ids"] or "null"),
+            "timeout_seconds": row["timeout_seconds"],
+            "lease_owner": row["lease_owner"],
+            "lease_expires_at": row["lease_expires_at"],
+            "recovery_count": row["recovery_count"],
+            "last_recovered_at": row["last_recovered_at"],
+            "auto_retry_count": row["auto_retry_count"],
+            "next_retry_at": row["next_retry_at"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    def add_task_event(
+        self,
+        task_id: str,
+        event_type: str,
+        message: str = "",
+        details: dict | None = None,
+        created_at: str | None = None,
+    ) -> None:
+        self._conn.execute(
+            """INSERT INTO task_events (task_id, event_type, message, details, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (
+                task_id,
+                event_type,
+                message,
+                json.dumps(details or {}, ensure_ascii=False),
+                created_at or datetime.now().isoformat(),
+            ),
+        )
+        self._conn.commit()
+
+    def list_task_events(self, task_id: str, limit: int = 200) -> list[dict]:
+        rows = self._conn.execute(
+            """SELECT id, task_id, event_type, message, details, created_at
+               FROM task_events
+               WHERE task_id=?
+               ORDER BY id ASC
+               LIMIT ?""",
+            (task_id, limit),
+        ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "task_id": row["task_id"],
+                "event_type": row["event_type"],
+                "message": row["message"],
+                "details": json.loads(row["details"] or "{}"),
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+
+    def save_task_checkpoint(self, task_id: str, checkpoint: dict) -> None:
+        now = datetime.now().isoformat()
+        self._conn.execute(
+            """INSERT INTO task_checkpoints (task_id, checkpoint, updated_at)
+               VALUES (?, ?, ?)
+               ON CONFLICT(task_id) DO UPDATE SET
+                   checkpoint=excluded.checkpoint,
+                   updated_at=excluded.updated_at""",
+            (task_id, json.dumps(checkpoint, ensure_ascii=False), now),
+        )
+        self._conn.commit()
+
+    def get_task_checkpoint(self, task_id: str) -> dict | None:
+        row = self._conn.execute(
+            "SELECT checkpoint, updated_at FROM task_checkpoints WHERE task_id=?",
+            (task_id,),
+        ).fetchone()
+        if not row:
+            return None
+        checkpoint = json.loads(row["checkpoint"] or "{}")
+        checkpoint["updated_at"] = row["updated_at"]
+        return checkpoint
 
     # ==================== 定时任务 ====================
 
@@ -475,11 +1138,6 @@ class PersistenceStore:
             "next_run_at": row["next_run_at"] or "",
         }
 
-    def close(self) -> None:
-        """关闭数据库连接"""
-        self._conn.close()
-
-
     # ==================== Worker Token 用量 ====================
 
     def get_worker_token_usage(self, worker_id: str) -> dict:
@@ -550,7 +1208,14 @@ class PersistenceStore:
         resource: str | None = None,
         action: str | None = None,
         username: str | None = None,
+        resource_id: str | None = None,
+        status: str | None = None,
+        worker_id: str | None = None,
+        task_id: str | None = None,
+        timestamp_from: str | None = None,
+        timestamp_to: str | None = None,
         limit: int = 100,
+        offset: int = 0,
     ) -> list[dict]:
         """分页查询审计日志"""
         query = "SELECT * FROM audit_log WHERE 1=1"
@@ -564,10 +1229,185 @@ class PersistenceStore:
         if username:
             query += " AND username=?"
             params.append(username)
-        query += " ORDER BY timestamp DESC LIMIT ?"
-        params.append(limit)
+        if resource_id:
+            query += " AND resource_id=?"
+            params.append(resource_id)
+        if status:
+            query += " AND json_extract(details, '$.status')=?"
+            params.append(status)
+        if worker_id:
+            query += " AND json_extract(details, '$.worker_id')=?"
+            params.append(worker_id)
+        if task_id:
+            query += " AND json_extract(details, '$.task_id')=?"
+            params.append(task_id)
+        if timestamp_from:
+            query += " AND timestamp>=?"
+            params.append(timestamp_from)
+        if timestamp_to:
+            query += " AND timestamp<=?"
+            params.append(timestamp_to)
+        query += " ORDER BY timestamp DESC, id DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
         rows = self._conn.execute(query, params).fetchall()
-        return [dict(r) for r in rows]
+        return [self._audit_event_row_to_dict(r) for r in rows]
+
+    def count_audit_events(
+        self,
+        resource: str | None = None,
+        action: str | None = None,
+        username: str | None = None,
+        resource_id: str | None = None,
+        status: str | None = None,
+        worker_id: str | None = None,
+        task_id: str | None = None,
+        timestamp_from: str | None = None,
+        timestamp_to: str | None = None,
+    ) -> int:
+        """统计审计日志数量。"""
+        query = "SELECT COUNT(*) FROM audit_log WHERE 1=1"
+        params: list = []
+        if resource:
+            query += " AND resource=?"
+            params.append(resource)
+        if action:
+            query += " AND action=?"
+            params.append(action)
+        if username:
+            query += " AND username=?"
+            params.append(username)
+        if resource_id:
+            query += " AND resource_id=?"
+            params.append(resource_id)
+        if status:
+            query += " AND json_extract(details, '$.status')=?"
+            params.append(status)
+        if worker_id:
+            query += " AND json_extract(details, '$.worker_id')=?"
+            params.append(worker_id)
+        if task_id:
+            query += " AND json_extract(details, '$.task_id')=?"
+            params.append(task_id)
+        if timestamp_from:
+            query += " AND timestamp>=?"
+            params.append(timestamp_from)
+        if timestamp_to:
+            query += " AND timestamp<=?"
+            params.append(timestamp_to)
+        row = self._conn.execute(query, params).fetchone()
+        return int(row[0]) if row else 0
+
+    @staticmethod
+    def _audit_event_row_to_dict(row: sqlite3.Row) -> dict:
+        event = dict(row)
+        try:
+            event["details"] = json.loads(event["details"]) if event.get("details") else {}
+        except json.JSONDecodeError:
+            event["details"] = {}
+        return event
+
+    def count_audit_events_before(self, cutoff_iso: str) -> int:
+        row = self._conn.execute(
+            "SELECT COUNT(*) FROM audit_log WHERE timestamp < ?",
+            (cutoff_iso,),
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+    def delete_audit_events_before(self, cutoff_iso: str) -> int:
+        cursor = self._conn.execute("DELETE FROM audit_log WHERE timestamp < ?", (cutoff_iso,))
+        self._conn.commit()
+        return cursor.rowcount
+
+    # ── 运维事件 ──────────────────────────────────────────────
+
+    @staticmethod
+    def _ops_event_row_to_dict(row: sqlite3.Row) -> dict:
+        return {
+            "id": row["id"],
+            "event_type": row["event_type"],
+            "status": row["status"],
+            "action": row["action"],
+            "message": row["message"],
+            "details": json.loads(row["details"]) if row["details"] else {},
+            "created_at": row["created_at"],
+        }
+
+    def record_ops_event(
+        self,
+        event_type: str,
+        status: str,
+        action: str = "",
+        message: str = "",
+        details: dict | None = None,
+    ) -> dict:
+        """记录后台运维事件，并返回新记录。"""
+        now = datetime.now().isoformat()
+        cursor = self._conn.execute(
+            """INSERT INTO ops_events
+               (event_type, status, action, message, details, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (event_type, status, action, message, json.dumps(details or {}, ensure_ascii=False), now),
+        )
+        self._conn.commit()
+        row = self._conn.execute("SELECT * FROM ops_events WHERE id=?", (cursor.lastrowid,)).fetchone()
+        return self._ops_event_row_to_dict(row)
+
+    def _ops_event_where_clause(
+        self,
+        *,
+        event_type: str | None = None,
+        status: str | None = None,
+    ) -> tuple[str, list]:
+        filters = []
+        params: list = []
+        if event_type:
+            filters.append("event_type=?")
+            params.append(event_type)
+        if status:
+            filters.append("status=?")
+            params.append(status)
+        if not filters:
+            return "", params
+        return " WHERE " + " AND ".join(filters), params
+
+    def count_ops_events(self, event_type: str | None = None, status: str | None = None) -> int:
+        where, params = self._ops_event_where_clause(event_type=event_type, status=status)
+        row = self._conn.execute(f"SELECT COUNT(*) FROM ops_events{where}", params).fetchone()
+        return int(row[0]) if row else 0
+
+    def list_ops_events(
+        self,
+        event_type: str | None = None,
+        limit: int = 20,
+        offset: int = 0,
+        status: str | None = None,
+    ) -> list[dict]:
+        query = "SELECT * FROM ops_events"
+        where, params = self._ops_event_where_clause(event_type=event_type, status=status)
+        query += where
+        query += " ORDER BY created_at DESC, id DESC LIMIT ?"
+        params.append(limit)
+        if offset > 0:
+            query += " OFFSET ?"
+            params.append(offset)
+        rows = self._conn.execute(query, params).fetchall()
+        return [self._ops_event_row_to_dict(row) for row in rows]
+
+    def get_latest_ops_event(self, event_type: str | None = None) -> dict | None:
+        events = self.list_ops_events(event_type=event_type, limit=1)
+        return events[0] if events else None
+
+    def count_ops_events_before(self, cutoff_iso: str) -> int:
+        row = self._conn.execute(
+            "SELECT COUNT(*) FROM ops_events WHERE created_at < ?",
+            (cutoff_iso,),
+        ).fetchone()
+        return int(row[0]) if row else 0
+
+    def delete_ops_events_before(self, cutoff_iso: str) -> int:
+        cursor = self._conn.execute("DELETE FROM ops_events WHERE created_at < ?", (cutoff_iso,))
+        self._conn.commit()
+        return cursor.rowcount
 
     # ==================== 跨会话记忆（memories）====================
 
@@ -600,10 +1440,19 @@ class PersistenceStore:
         now = datetime.now().isoformat()
         metadata_json = json.dumps(metadata or {}, ensure_ascii=False)
         self._conn.execute(
-            """INSERT OR REPLACE INTO memories
+            """INSERT INTO memories
                (id, user_id, content, category, importance, source_session_id,
                 created_at, updated_at, last_accessed_at, metadata)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                   user_id=excluded.user_id,
+                   content=excluded.content,
+                   category=excluded.category,
+                   importance=excluded.importance,
+                   source_session_id=excluded.source_session_id,
+                   updated_at=excluded.updated_at,
+                   last_accessed_at=excluded.last_accessed_at,
+                   metadata=excluded.metadata""",
             (memory_id, user_id, content, category, importance, source_session_id,
              now, now, now, metadata_json),
         )

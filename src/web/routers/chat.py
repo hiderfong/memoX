@@ -3,13 +3,18 @@ import asyncio
 import json as _json
 import re as _re
 import uuid
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, Request
+import httpx as _httpx
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from typing import Annotated, Literal
 
-from auth import AuthUser, get_current_user
+from agents.base_agent import create_provider
+from agents.worker_pool import get_worker_pool
+from auth import AuthUser, get_current_user, require_role
+from imaging import get_i2v_client, get_image_client, get_video_client
+from knowledge import SearchResult
 from web.state import get_store as _gs
 
 router = APIRouter(prefix="/api", tags=["chat"])
@@ -42,21 +47,6 @@ class MemoryConfigRequest(BaseModel):
     summary_max_chars: int | None = None
 
 
-class CreateMemoryRequest(BaseModel):
-    content: str
-    category: str = "general"
-    importance: int = 3
-    user_id: str | None = None
-    session_id: str | None = None
-
-
-class UpdateMemoryRequest(BaseModel):
-    content: str | None = None
-    category: str | None = None
-    importance: int | None = None
-    metadata: dict | None = None
-
-
 class SummarizeTaskRequest(BaseModel):
     task_type: str | None = None
 
@@ -87,14 +77,14 @@ def parse_i2v_markers(text: str) -> list[tuple[str, str]]:
 def _get_globals():
     import web.api as _api_module
     return (
-        getattr(_api_module, "_rag_engine"),
-        getattr(_api_module, "_orchestrator"),
-        getattr(_api_module, "_task_planner"),
-        getattr(_api_module, "_memory_manager"),
-        getattr(_api_module, "_preference_learner"),
-        getattr(_api_module, "_memory_recall"),
-        getattr(_api_module, "_config"),
-        getattr(_api_module, "_task_results"),
+        _api_module._rag_engine,
+        _api_module._orchestrator,
+        _api_module._task_planner,
+        _api_module._memory_manager,
+        _api_module._preference_learner,
+        _api_module._memory_recall,
+        _api_module._config,
+        _api_module._task_results,
     )
 
 
@@ -171,8 +161,6 @@ def _inject_history(messages: list[dict], session_id: str) -> list[dict]:
 
 
 def _resolve_chat_llm(worker_id: str | None):
-    from agents.base_agent import create_provider
-    from fastapi import HTTPException
     (
         _rag_engine, _orchestrator, _task_planner,
         _memory_manager, _preference_learner, _memory_recall,
@@ -180,7 +168,6 @@ def _resolve_chat_llm(worker_id: str | None):
     ) = _get_globals()
 
     if worker_id:
-        from agents.worker_pool import get_worker_pool
         worker_pool = get_worker_pool()
         if worker_pool and worker_id in worker_pool._workers:
             w = worker_pool._workers[worker_id]
@@ -216,10 +203,6 @@ def _resolve_chat_llm(worker_id: str | None):
 
 @router.post("/chat")
 async def chat(request: Request, chat_req: ChatRequest) -> dict:
-    from fastapi import HTTPException
-    import httpx as _httpx
-    from knowledge import SearchResult
-
     (
         _rag_engine, _orchestrator, _task_planner,
         _memory_manager, _preference_learner, _memory_recall,
@@ -279,12 +262,12 @@ async def chat(request: Request, chat_req: ChatRequest) -> dict:
         if isinstance(e, _httpx.HTTPStatusError):
             status = e.response.status_code
             if status == 401:
-                raise HTTPException(status_code=502, detail="LLM API Key 无效或已过期")
+                raise HTTPException(status_code=502, detail="LLM API Key 无效或已过期") from e
             elif status == 429:
-                raise HTTPException(status_code=429, detail="LLM API 请求频率超限，请稍后重试")
+                raise HTTPException(status_code=429, detail="LLM API 请求频率超限，请稍后重试") from e
             else:
-                raise HTTPException(status_code=502, detail=f"LLM 服务返回错误 {status}")
-        raise HTTPException(status_code=502, detail=f"LLM 调用失败: {type(e).__name__}: {str(e)}")
+                raise HTTPException(status_code=502, detail=f"LLM 服务返回错误 {status}") from e
+        raise HTTPException(status_code=502, detail=f"LLM 调用失败: {type(e).__name__}: {str(e)}") from e
 
     raw_answer = response.content or "抱歉，我无法回答这个问题。"
 
@@ -354,7 +337,7 @@ async def chat(request: Request, chat_req: ChatRequest) -> dict:
             title = chat_req.message[:30].strip()
             store.update_session_title(session_id, title)
         if _memory_manager and _orchestrator:
-            _memory_manager.compress_if_needed(session_id, _orchestrator._provider)
+            await _memory_manager.compress_if_needed_async(session_id, _orchestrator._provider)
 
     cited_ref_ids = _rag_engine.extract_citations_from_text(answer)
     citations: list[dict] = []
@@ -460,7 +443,7 @@ async def compress_session(session_id: str, force: bool = False) -> dict:
     if not provider:
         raise HTTPException(status_code=503, detail="LLM provider 未就绪")
     try:
-        new_summary, archived_count = _memory_manager.compress_if_needed(session_id, provider, force=force)
+        new_summary, archived_count = await _memory_manager.compress_if_needed_async(session_id, provider, force=force)
         return {
             "success": True,
             "session_id": session_id,
@@ -527,7 +510,10 @@ async def get_memory_config() -> dict:
 
 
 @router.patch("/memory/config")
-async def update_memory_config(req: MemoryConfigRequest) -> dict:
+async def update_memory_config(
+    req: MemoryConfigRequest,
+    _: Annotated[AuthUser, require_role("admin")],
+) -> dict:
     from fastapi import HTTPException
     (
         _rag_engine, _orchestrator, _task_planner,
@@ -568,121 +554,6 @@ async def clear_session_memory(
     return {"success": True, "session_id": session_id}
 
 
-# ── Cross-session memories ─────────────────────────────────────────────────
-
-@router.get("/memories")
-async def list_memories(
-    category: str | None = None,
-    user_id: str | None = None,
-    limit: int = 50,
-) -> dict:
-    from fastapi import HTTPException
-    (
-        _rag_engine, _orchestrator, _task_planner,
-        _memory_manager, _preference_learner, _memory_recall,
-        _config, _task_results,
-    ) = _get_globals()
-    if not _memory_recall:
-        raise HTTPException(status_code=503, detail="记忆召回未启用")
-    memories = _memory_recall.get_all(user_id=user_id, category=category, limit=limit)
-    return {"memories": memories, "total": len(memories)}
-
-
-@router.get("/memories/search")
-async def search_memories(
-    q: str,
-    user_id: str | None = None,
-    limit: int = 5,
-) -> dict:
-    from fastapi import HTTPException
-    (
-        _rag_engine, _orchestrator, _task_planner,
-        _memory_manager, _preference_learner, _memory_recall,
-        _config, _task_results,
-    ) = _get_globals()
-    if not _memory_recall:
-        raise HTTPException(status_code=503, detail="记忆召回未启用")
-    if len(q) < 2:
-        raise HTTPException(status_code=400, detail="查询关键词至少需要2个字符")
-    memories = _memory_recall.recall(query=q, user_id=user_id, limit=limit)
-    return {"memories": memories, "query": q, "count": len(memories)}
-
-
-@router.post("/memories")
-async def create_memory(req: CreateMemoryRequest) -> dict:
-    from fastapi import HTTPException
-    (
-        _rag_engine, _orchestrator, _task_planner,
-        _memory_manager, _preference_learner, _memory_recall,
-        _config, _task_results,
-    ) = _get_globals()
-    if not _memory_recall:
-        raise HTTPException(status_code=503, detail="记忆召回未启用")
-    if not req.content.strip():
-        raise HTTPException(status_code=400, detail="记忆内容不能为空")
-    memory_id = _memory_recall.save_memory(
-        content=req.content,
-        user_id=req.user_id,
-        category=req.category,
-        importance=req.importance,
-        session_id=req.session_id,
-    )
-    return {"success": True, "id": memory_id}
-
-
-@router.get("/memories/{memory_id}")
-async def get_memory(memory_id: str) -> dict:
-    from fastapi import HTTPException
-    (
-        _rag_engine, _orchestrator, _task_planner,
-        _memory_manager, _preference_learner, _memory_recall,
-        _config, _task_results,
-    ) = _get_globals()
-    if not _memory_recall:
-        raise HTTPException(status_code=503, detail="记忆召回未启用")
-    memory = _memory_recall.get_memory(memory_id)
-    if not memory:
-        raise HTTPException(status_code=404, detail="记忆不存在")
-    return memory
-
-
-@router.patch("/memories/{memory_id}")
-async def update_memory(memory_id: str, req: UpdateMemoryRequest) -> dict:
-    from fastapi import HTTPException
-    (
-        _rag_engine, _orchestrator, _task_planner,
-        _memory_manager, _preference_learner, _memory_recall,
-        _config, _task_results,
-    ) = _get_globals()
-    if not _memory_recall:
-        raise HTTPException(status_code=503, detail="记忆召回未启用")
-    updates = {k: v for k, v in req.model_dump().items() if v is not None}
-    if not updates:
-        raise HTTPException(status_code=400, detail="没有需要更新的字段")
-    success = _memory_recall.update_memory(memory_id, updates)
-    if not success:
-        raise HTTPException(status_code=404, detail="记忆不存在")
-    return {"success": True}
-
-
-@router.delete("/memories/{memory_id}")
-async def delete_memory(
-    memory_id: str,
-    user: Annotated[AuthUser, Depends(get_current_user)],
-) -> dict:
-    from fastapi import HTTPException
-    (
-        _rag_engine, _orchestrator, _task_planner,
-        _memory_manager, _preference_learner, _memory_recall,
-        _config, _task_results,
-    ) = _get_globals()
-    if not _memory_recall:
-        raise HTTPException(status_code=503, detail="记忆召回未启用")
-    if not _memory_recall.delete_memory(memory_id):
-        raise HTTPException(status_code=404, detail="记忆不存在")
-    return {"success": True, "id": memory_id}
-
-
 @router.post("/chat/sessions/{session_id}/extract-memories")
 async def extract_memories_from_session(session_id: str) -> dict:
     from fastapi import HTTPException
@@ -700,7 +571,7 @@ async def extract_memories_from_session(session_id: str) -> dict:
     if not messages:
         raise HTTPException(status_code=404, detail="会话不存在或无消息")
     provider = _orchestrator._provider if _orchestrator else None
-    count = _memory_recall.save_from_conversation(
+    count = await _memory_recall.save_from_conversation_async(
         messages=messages,
         session_id=session_id,
         llm_provider=provider,
@@ -828,10 +699,6 @@ async def summarize_session_as_task(session_id: str, request: SummarizeTaskReque
 
 @router.post("/chat/stream")
 async def chat_stream(request: Request, chat_req: ChatRequest):
-    from fastapi import HTTPException
-    from imaging import get_image_client, get_video_client, get_i2v_client
-    from knowledge import SearchResult
-
     (
         _rag_engine, _orchestrator, _task_planner,
         _memory_manager, _preference_learner, _memory_recall,
@@ -896,24 +763,75 @@ async def chat_stream(request: Request, chat_req: ChatRequest):
             return
 
         try:
-            response = await provider.chat_stream(
-                messages=messages,
-                model=model,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                on_chunk=lambda c: None,
-            )
+            from agents.base_agent import LLMResponse
+            q = asyncio.Queue()
 
-            raw_text = response.content or ""
+            def _on_chunk(c: str):
+                q.put_nowait(c)
+
+            async def _run_stream():
+                try:
+                    resp = await provider.chat_stream(
+                        messages=messages,
+                        model=model,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        on_chunk=_on_chunk,
+                    )
+                    q.put_nowait(resp)
+                except Exception as exc:
+                    q.put_nowait(exc)
+
+            asyncio.create_task(_run_stream())
+
+            raw_text_parts = []
+            buffer = ""
+            while True:
+                item = await q.get()
+                if isinstance(item, Exception):
+                    yield f"data: {_json.dumps({'type': 'error', 'message': str(item)})}\n\n"
+                    return
+                elif isinstance(item, LLMResponse):
+                    if buffer:
+                        yield f"data: {_json.dumps({'type': 'chunk', 'content': buffer})}\n\n"
+                    break
+                else:
+                    chunk = item
+                    raw_text_parts.append(chunk)
+                    buffer += chunk
+
+                    while buffer:
+                        idx = buffer.find("[[")
+                        if idx == -1:
+                            if buffer:
+                                yield f"data: {_json.dumps({'type': 'chunk', 'content': buffer})}\n\n"
+                                buffer = ""
+                            break
+
+                        if idx > 0:
+                            yield f"data: {_json.dumps({'type': 'chunk', 'content': buffer[:idx]})}\n\n"
+                            buffer = buffer[idx:]
+
+                        end_idx = buffer.find("]]")
+                        if end_idx != -1:
+                            tag = buffer[:end_idx+2]
+                            if tag.startswith("[[IMAGE:") or tag.startswith("[[VIDEO:") or tag.startswith("[[I2V:"):
+                                pass
+                            else:
+                                yield f"data: {_json.dumps({'type': 'chunk', 'content': tag})}\n\n"
+                            buffer = buffer[end_idx+2:]
+                        else:
+                            if len(buffer) > 1000:
+                                yield f"data: {_json.dumps({'type': 'chunk', 'content': buffer[:2]})}\n\n"
+                                buffer = buffer[2:]
+                            else:
+                                break
+
+            raw_text = "".join(raw_text_parts)
             image_prompts = _re.findall(r"\[\[IMAGE:\s*(.+?)\]\]", raw_text, flags=_re.DOTALL)
             video_prompts = _re.findall(r"\[\[VIDEO:\s*(.+?)\]\]", raw_text, flags=_re.DOTALL)
             display_text = _re.sub(r"\[\[(IMAGE|VIDEO|I2V):\s*.+?\]\]", "", raw_text, flags=_re.DOTALL).strip()
             i2v_pairs = parse_i2v_markers(raw_text)
-
-            for i in range(0, len(display_text), 10):
-                chunk = display_text[i:i+10]
-                yield f"data: {_json.dumps({'type': 'chunk', 'content': chunk})}\n\n"
-                await asyncio.sleep(0.02)
 
             image_urls: list[str] = []
             if image_prompts and image_client:
@@ -976,7 +894,7 @@ async def chat_stream(request: Request, chat_req: ChatRequest):
                     title = _message[:30].strip()
                     store.update_session_title(_session_id, title)
                 if _memory_manager and _orchestrator:
-                    _memory_manager.compress_if_needed(_session_id, _orchestrator._provider)
+                    await _memory_manager.compress_if_needed_async(_session_id, _orchestrator._provider)
 
             cited_ref_ids = _rag_engine.extract_citations_from_text(answer)
             citations: list[dict] = []

@@ -1,10 +1,7 @@
 """Memories router — cross-session persistent memory"""
-import contextlib
-import json as _json
-from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from auth import AuthUser, get_current_user
@@ -33,11 +30,11 @@ class UpdateMemoryRequest(BaseModel):
 def _get_globals():
     import web.api as _api_module
     return (
-        getattr(_api_module, "_memory_recall"),
-        getattr(_api_module, "_rag_engine"),
-        getattr(_api_module, "_orchestrator"),
-        getattr(_api_module, "_memory_manager"),
-        getattr(_api_module, "_config"),
+        _api_module._memory_recall,
+        _api_module._rag_engine,
+        _api_module._orchestrator,
+        _api_module._memory_manager,
+        _api_module._config,
     )
 
 

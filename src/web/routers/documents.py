@@ -1,9 +1,8 @@
 """Documents and groups router"""
-from typing import Annotated
+from typing import Annotated, Literal
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel
-from typing import Literal
 
 from auth import AuthUser, require_role
 
@@ -94,9 +93,8 @@ async def upload_document(
     """上传文档"""
     import asyncio
     import contextlib
-    import traceback
-    from pathlib import Path
     import uuid
+    from pathlib import Path
 
     from web.api import _config, _rag_engine
 
@@ -171,16 +169,71 @@ async def upload_document(
         raise HTTPException(status_code=500, detail=f"文档处理失败: {type(e).__name__}: {str(e)}") from e
 
 
+
+
+
+@router.get("/knowledge/graph")
+async def get_knowledge_graph(
+    depth: int = Query(2, description="查询深度"),
+    limit: int = Query(1000, description="最大返回节点数"),
+):
+    """获取知识图谱可视化数据"""
+    from web.api import _rag_engine
+
+    if not _rag_engine or not getattr(_rag_engine, "_knowledge_graph", None):
+        raise HTTPException(status_code=503, detail="知识图谱未初始化或未启用")
+
+    kg = _rag_engine._knowledge_graph
+    if not kg.enabled:
+        raise HTTPException(status_code=400, detail="知识图谱功能已禁用")
+
+    stats = kg.stats()
+    if stats.get("nodes", 0) == 0:
+        return {"nodes": [], "links": []}
+
+    # 获取三元组并转换为 nodes 和 links 格式
+    triples = kg.export_triples()
+
+    nodes_dict = {}
+    links = []
+
+    for t in triples[:limit]:
+        subj = t["subject"]
+        obj = t["object"]
+        pred = t["predicate"]
+
+        if subj not in nodes_dict:
+            nodes_dict[subj] = {"id": subj, "name": subj, "val": 1}
+        else:
+            nodes_dict[subj]["val"] += 1
+
+        if obj not in nodes_dict:
+            nodes_dict[obj] = {"id": obj, "name": obj, "val": 1}
+        else:
+            nodes_dict[obj]["val"] += 1
+
+        links.append({
+            "source": subj,
+            "target": obj,
+            "label": pred,
+            "confidence": t.get("confidence", 1.0)
+        })
+
+    return {
+        "nodes": list(nodes_dict.values()),
+        "links": links
+    }
+
+
 @router.post("/documents/url")
 async def import_url(request: URLRequest) -> DocumentResponse:
     """从 URL 抓取网页并导入知识库"""
-    import re
     import asyncio
     import datetime
+    import re
     import uuid
 
-    from web.api import _rag_engine
-    from knowledge.document_parser import WebPageParser
+    from web.api import WebPageParser, _rag_engine
 
     url = request.url.strip()
     if not re.match(r"^https?://", url):
@@ -202,16 +255,19 @@ async def import_url(request: URLRequest) -> DocumentResponse:
         raise HTTPException(status_code=400, detail=f"网页抓取失败: {type(e).__name__}: {str(e)}") from e
 
     chunks = await parser.chunk(doc_info_raw, chunk_size=500, overlap=50)
+    created_at = datetime.datetime.now().isoformat()
+    file_size = len(doc_info_raw.content.encode())
     for chunk in chunks:
         chunk.metadata["doc_id"] = doc_id
         chunk.metadata["filename"] = url
         chunk.metadata["type"] = "webpage"
         chunk.metadata["group_id"] = "ungrouped"
+        chunk.metadata["created_at"] = created_at
+        chunk.metadata["file_size"] = file_size
+        chunk.metadata["chunk_count"] = len(chunks)
 
     if chunks:
-        BATCH_SIZE = 100
-        for i in range(0, len(chunks), BATCH_SIZE):
-            await _rag_engine.vector_store.add_chunks(chunks[i:i + BATCH_SIZE])
+        await _rag_engine._index_document_chunks(chunks, "documents")
 
     from knowledge import DocumentInfo
     doc_info = DocumentInfo(
@@ -219,8 +275,8 @@ async def import_url(request: URLRequest) -> DocumentResponse:
         filename=url,
         type="webpage",
         chunk_count=len(chunks),
-        created_at=datetime.datetime.now().isoformat(),
-        size=len(doc_info_raw.content.encode()),
+        created_at=created_at,
+        size=file_size,
     )
     _rag_engine._documents[doc_id] = doc_info
 
@@ -307,8 +363,8 @@ async def delete_group(
     user: Annotated[AuthUser, require_role("admin")],
 ) -> dict:
     """删除分组，其下文档自动归回未分组（仅管理员）"""
-    from web.api import _group_store, _rag_engine
     from knowledge.group_store import UNGROUPED_ID
+    from web.api import _group_store, _rag_engine
 
     try:
         docs = _rag_engine.list_documents()

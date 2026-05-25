@@ -7,14 +7,24 @@
 import asyncio
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 from loguru import logger
 
-from agents.base_agent import LLMProvider
+from agents.base_agent import LLMProvider, ToolRegistry
 from agents.inter_agent_protocol import InterAgentMessage, MessagePriority, ToolResult
 from agents.mail_bus import MailBus
+from agents.sandbox import SandboxManager
 from agents.worker_pool import Task, TaskStatus, WorkerPool
+from tools.catalog import select_allowed_tools
+from tools.database import DatabaseQueryTool
+from tools.filesystem import ListFilesTool, ReadFileTool, WriteFileTool
+from tools.github import GitHubCreateIssueTool, GitHubSearchTool
+from tools.mail import BroadcastTool, ReadBroadcastsTool, ReadMailTool, SendMailTool
+from tools.playwright_crawler import PlaywrightCrawlerTool
+from tools.shell import ShellTool
+from tools.web import WebFetchTool, WebSearchTool
 
 
 @dataclass
@@ -118,12 +128,13 @@ class ResultAggregator:
 直接输出总结，不要有其他解释性文字。"""
 
         try:
-            response = await self.provider.complete(
-                model=self.model,
+            response = await self.provider.chat(
                 messages=[{"role": "user", "content": prompt}],
+                model=self.model,
                 temperature=0.3,
+                max_tokens=1024,
             )
-            content = response.strip()
+            content = (response.content or "").strip()
 
             # 简单置信度评估：成功率高 + 输出非空 → 高置信度
             success_rate = len(successful) / len(results) if results else 0
@@ -165,12 +176,14 @@ class MultiAgentExecutor:
         provider: LLMProvider,
         mail_bus: MailBus,
         model: str = "claude-sonnet-4-20250514",
+        base_workspace: str | Path = "data/workspace",
         result_aggregator: ResultAggregator | None = None,
     ):
         self._worker_pool = worker_pool
         self._provider = provider
         self._mail_bus = mail_bus
         self._model = model
+        self._sandbox_mgr = SandboxManager(base_workspace)
         self._aggregator = result_aggregator or ResultAggregator(provider, model)
 
     async def execute_parallel(
@@ -193,25 +206,14 @@ class MultiAgentExecutor:
         if refinement_instructions:
             ctx["refinement_instructions"] = refinement_instructions
 
-        task_workspace = ctx.get("_task_workspace")
-        from agents.sandbox import SandboxManager
-        if task_workspace:
-            SandboxManager(task_workspace)
-        else:
-            SandboxManager()
-
         # 准备 Worker 工具
+        self._sandbox_mgr.create_task_workspace(task.id)
         self._prepare_workers(task)
 
         start_time = datetime.now()
 
-        # 阶段 1: 并行执行所有就绪的子任务（无依赖或依赖已满足）
-        ready_subtasks = [
-            st for st in task.sub_tasks
-            if all(d in {r.subtask_id for r in []} for d in st.dependencies)  # 空依赖 = 立即执行
-        ]
-        # 实际按 subtask_id 匹配已完成结果
-        list(task.sub_tasks)
+        pending = list(task.sub_tasks)
+        completed: dict[str, SubTaskResult] = {}
         subtask_results: list[SubTaskResult] = []
 
         async def run_single(st: Any, context: dict) -> SubTaskResult:
@@ -220,70 +222,111 @@ class MultiAgentExecutor:
             t0 = time.perf_counter()
 
             worker = self._worker_pool.get_worker_for(st)
-            if not worker:
+            if not worker and not getattr(self._worker_pool, "_workers", {}):
                 return SubTaskResult(
                     subtask_id=st.id,
                     worker_name="unknown",
                     error=f"No worker found for subtask {st.id}",
                     success=False,
                 )
+            worker_name = worker.config.name if worker else (st.assigned_agent or "unknown")
 
             st.status = TaskStatus.RUNNING
             st.started_at = datetime.now().isoformat()
 
             try:
                 result_str, error = await self._worker_pool.execute_task(st, context)
+                worker_name = st.assigned_agent or worker_name
 
                 duration_ms = (time.perf_counter() - t0) * 1000
                 res = SubTaskResult(
                     subtask_id=st.id,
-                    worker_name=worker.config.name,
+                    worker_name=worker_name,
                     content=result_str or "",
                     error=error or "",
-                    success=error is None,
+                    success=not error,
                     duration_ms=duration_ms,
                 )
+                st.status = TaskStatus.FAILED if error else TaskStatus.COMPLETED
+                st.result = result_str
+                st.error = error
+                st.completed_at = datetime.now().isoformat()
 
                 # 广播结果给所有 Agent
                 inter_msg = res.to_inter_message()
                 await self._mail_bus.send_inter_agent(inter_msg)
-                logger.info(f"[MultiAgentExecutor] {worker.config.name} 完成，广播: {inter_msg.to_summary()}")
+                logger.info(f"[MultiAgentExecutor] {worker_name} 完成，广播: {inter_msg.to_summary()}")
 
                 return res
 
             except Exception as e:
                 duration_ms = (time.perf_counter() - t0) * 1000
+                st.status = TaskStatus.FAILED
+                st.error = str(e)
+                st.completed_at = datetime.now().isoformat()
                 return SubTaskResult(
                     subtask_id=st.id,
-                    worker_name=worker.config.name,
+                    worker_name=worker_name,
                     error=str(e),
                     success=False,
                     duration_ms=duration_ms,
                 )
 
-        # 并行执行
-        if ready_subtasks:
+        # 按依赖批次执行：同一批次并行，下一批拿到 dependency_results。
+        while pending:
+            ready_subtasks = [
+                st for st in pending
+                if all(dep in completed for dep in st.dependencies)
+            ]
+            if not ready_subtasks:
+                error = f"Cyclic or unsatisfied dependencies: {[st.id for st in pending]}"
+                logger.error(f"[MultiAgentExecutor] {error}")
+                for st in pending:
+                    st.status = TaskStatus.FAILED
+                    st.error = error
+                    st.completed_at = datetime.now().isoformat()
+                    res = SubTaskResult(
+                        subtask_id=st.id,
+                        worker_name=st.assigned_agent or "unknown",
+                        error=error,
+                        success=False,
+                    )
+                    subtask_results.append(res)
+                    completed[st.id] = res
+                break
+
             logger.info(
                 f"[MultiAgentExecutor] 启动 {len(ready_subtasks)} 个并行子任务: "
                 f"{[st.id for st in ready_subtasks]}"
             )
             contexts = {
-                st.id: {**ctx, "dependency_results": {}} for st in ready_subtasks
+                st.id: {
+                    **ctx,
+                    "dependency_results": {
+                        dep: completed[dep].content or completed[dep].error
+                        for dep in st.dependencies
+                    },
+                }
+                for st in ready_subtasks
             }
             coros = [run_single(st, contexts[st.id]) for st in ready_subtasks]
             results = await asyncio.gather(*coros, return_exceptions=True)
 
-            for r in results:
-                if isinstance(r, Exception):
+            for st, r in zip(ready_subtasks, results, strict=False):
+                result: SubTaskResult
+                if isinstance(r, BaseException):
                     logger.error(f"[MultiAgentExecutor] 子任务异常: {r}")
-                    subtask_results.append(SubTaskResult(
-                        subtask_id="unknown",
+                    result = SubTaskResult(
+                        subtask_id=st.id,
                         worker_name="unknown",
                         error=str(r),
                         success=False,
-                    ))
+                    )
                 else:
-                    subtask_results.append(r)
+                    result = r
+                subtask_results.append(result)
+                completed[st.id] = result
+                pending.remove(st)
 
         total_duration_ms = (datetime.now() - start_time).total_seconds() * 1000
 
@@ -302,40 +345,39 @@ class MultiAgentExecutor:
 
     def _prepare_workers(self, task: Task) -> None:
         """为每个子任务绑定工具（从 IterativeOrchestrator 复制逻辑）"""
-        from pathlib import Path
-
-        from agents.sandbox import SandboxManager
         from config import get_config
         from skills.tool import LoadSkillTool
-        from tools.filesystem import ListFilesTool, ReadFileTool, WriteFileTool
-        from tools.mail import ReadMailTool, SendMailTool
-        from tools.shell import ShellTool
 
-        for subtask in task.sub_tasks:
-            worker = self._worker_pool.get_worker_for(subtask)
-            if not worker:
-                continue
+        workers = list(getattr(self._worker_pool, "_workers", {}).values())
 
-            sandbox_dir = Path("data/workspace") / task.id / worker.config.name
-            from agents.tool_registry import ToolRegistry
+        for worker in workers:
+            sandbox_dir = self._sandbox_mgr.get_agent_sandbox(task.id, worker.config.name)
 
             registry = ToolRegistry()
             candidates = [
-                ReadFileTool(sandbox_dir, task.id, SandboxManager("data/workspace")),
+                ReadFileTool(sandbox_dir, task.id, self._sandbox_mgr),
                 WriteFileTool(sandbox_dir),
                 ListFilesTool(sandbox_dir),
                 ShellTool(cwd=sandbox_dir),
                 SendMailTool(worker.config.name, self._mail_bus),
                 ReadMailTool(worker.config.name, self._mail_bus),
+                BroadcastTool(worker.config.name, self._mail_bus),
+                ReadBroadcastsTool(worker.config.name, self._mail_bus),
+                WebSearchTool(),
+                WebFetchTool(),
+                DatabaseQueryTool(),
+                GitHubCreateIssueTool(),
+                GitHubSearchTool(),
+                PlaywrightCrawlerTool(),
             ]
-            allowed = set(worker.config.tools or [])
-            if allowed:
-                for t in candidates:
-                    if t.name in allowed:
-                        registry.register(t)
-            else:
-                for t in candidates:
-                    registry.register(t)
+            selected_tools, unknown = select_allowed_tools(candidates, worker.config.tools)
+            if unknown:
+                logger.warning(
+                    f"[MultiAgentExecutor] worker {worker.config.name} 白名单含未知工具: "
+                    f"{sorted(unknown)} (已忽略)"
+                )
+            for tool in selected_tools:
+                registry.register(tool)
 
             if worker.config.skills:
                 skills_dir = Path(get_config().knowledge_base.skills_dir)

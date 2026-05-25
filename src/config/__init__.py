@@ -8,6 +8,85 @@ from typing import Any
 import yaml
 
 
+class ConfigError(ValueError):
+    """配置无效。"""
+
+
+def resolve_env_value(value: Any) -> str:
+    """解析 ${VAR_NAME} 或 ${VAR_NAME:-default} 形式的环境变量引用。"""
+    if value is None:
+        return ""
+    if isinstance(value, str) and value.startswith("${") and value.endswith("}"):
+        inner = value[2:-1]
+        if ":-" in inner:
+            var_name, default_val = inner.split(":-", 1)
+            return os.getenv(var_name, default_val)
+        return os.getenv(inner, "")
+    return str(value)
+
+
+def validate_config(config: "Config") -> None:
+    """校验启动时必须满足的配置约束。"""
+    errors: list[str] = []
+
+    if config.auth.enabled:
+        if not config.auth.users:
+            errors.append("auth.enabled=true 时至少需要配置一个 auth.users 用户")
+
+        seen_usernames: set[str] = set()
+        for user in config.auth.users:
+            if user.username in seen_usernames:
+                errors.append(f"auth.users 中存在重复用户名: {user.username}")
+            seen_usernames.add(user.username)
+
+            if not resolve_env_value(user.password).strip():
+                errors.append(
+                    f"用户 {user.username!r} 的密码为空；请设置对应环境变量或在 config.yaml 中提供非空密码"
+                )
+
+    if config.ops.auto_backup_enabled:
+        if config.ops.auto_backup_interval_hours <= 0:
+            errors.append("ops.auto_backup_interval_hours 必须大于 0")
+        if config.ops.auto_backup_startup_delay_seconds < 0:
+            errors.append("ops.auto_backup_startup_delay_seconds 不能为负数")
+        if config.ops.max_backups < 1:
+            errors.append("ops.max_backups 必须至少为 1")
+        if not config.ops.auto_backup_include:
+            errors.append("ops.auto_backup_include 不能为空")
+    if config.ops.ops_event_retention_days < 0:
+        errors.append("ops.ops_event_retention_days 不能为负数")
+    if config.ops.audit_log_retention_days < 0:
+        errors.append("ops.audit_log_retention_days 不能为负数")
+    if config.ops.task_job_retention_days < 0:
+        errors.append("ops.task_job_retention_days 不能为负数")
+    if config.ops.diagnostic_retention_days < 0:
+        errors.append("ops.diagnostic_retention_days 不能为负数")
+    if config.ops.max_diagnostic_bundles < 1:
+        errors.append("ops.max_diagnostic_bundles 必须至少为 1")
+    if config.coordinator.task_auto_retry_max_attempts < 0:
+        errors.append("coordinator.task_auto_retry_max_attempts 不能为负数")
+    if config.coordinator.task_auto_retry_initial_delay_seconds < 0:
+        errors.append("coordinator.task_auto_retry_initial_delay_seconds 不能为负数")
+    if config.coordinator.task_auto_retry_max_delay_seconds < 0:
+        errors.append("coordinator.task_auto_retry_max_delay_seconds 不能为负数")
+    if config.coordinator.task_auto_retry_backoff_multiplier < 1:
+        errors.append("coordinator.task_auto_retry_backoff_multiplier 必须至少为 1")
+
+    database_policy = config.tool_policy.database
+    if database_policy.default_access_mode not in {"read_only", "write", "admin"}:
+        errors.append("tool_policy.database.default_access_mode 必须是 read_only、write 或 admin")
+    if database_policy.max_result_rows < 1:
+        errors.append("tool_policy.database.max_result_rows 必须至少为 1")
+    for name, connection_string in database_policy.data_sources.items():
+        if not str(name).strip():
+            errors.append("tool_policy.database.data_sources 不能包含空数据源名称")
+        if not resolve_env_value(connection_string).strip():
+            errors.append(f"tool_policy.database.data_sources.{name} 连接字符串不能为空")
+
+    if errors:
+        raise ConfigError("MemoX 配置无效:\n- " + "\n- ".join(errors))
+
+
 @dataclass
 class AppConfig:
     """应用配置"""
@@ -38,11 +117,7 @@ class ProviderConfig:
 
     def resolve_api_key(self) -> str:
         """解析环境变量"""
-        key = self.api_key
-        if key.startswith("${") and key.endswith("}"):
-            env_var = key[2:-1]
-            return os.getenv(env_var, "")
-        return key
+        return resolve_env_value(self.api_key)
 
 
 @dataclass
@@ -54,6 +129,11 @@ class CoordinatorConfig:
     max_tokens: int = 4096
     max_workers: int = 5
     task_timeout: int = 300
+    task_auto_retry_enabled: bool = True
+    task_auto_retry_max_attempts: int = 2
+    task_auto_retry_initial_delay_seconds: float = 30.0
+    task_auto_retry_max_delay_seconds: float = 300.0
+    task_auto_retry_backoff_multiplier: float = 2.0
 
 
 @dataclass
@@ -70,14 +150,45 @@ class WorkerTemplate:
 
 
 @dataclass
+class NetworkToolPolicyConfig:
+    """Network tool policy."""
+    allow_internal_hosts: list[str] = field(default_factory=list)
+
+
+@dataclass
+class DatabaseToolPolicyConfig:
+    """Database tool policy."""
+    default_access_mode: str = "read_only"
+    allow_raw_connection_strings: bool = True
+    allow_write: bool = True
+    allow_ddl: bool = False
+    allow_multiple_statements: bool = False
+    max_result_rows: int = 200
+    data_sources: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class ToolPolicyConfig:
+    """High-permission tool safety policy."""
+    network: NetworkToolPolicyConfig = field(default_factory=NetworkToolPolicyConfig)
+    database: DatabaseToolPolicyConfig = field(default_factory=DatabaseToolPolicyConfig)
+
+
+@dataclass
+class RerankerConfig:
+    """重排序配置"""
+    enabled: bool = False
+    model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+
+@dataclass
 class KnowledgeBaseConfig:
     """知识库配置"""
     vector_store: str = "chroma"
     persist_directory: str = "./data/chroma"
     upload_directory: str = "./data/uploads"
     skills_dir: str = "./data/skills"
-    embedding_provider: str = "sentence-transformer"  # 可选: sentence-transformer, openai, dashscope
-    embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    embedding_provider: str = "hash"  # 可选: hash, sentence-transformer, openai, dashscope
+    embedding_model: str = "hash"
     chunk_size: int = 500
     chunk_overlap: int = 50
     top_k: int = 5
@@ -87,12 +198,23 @@ class KnowledgeBaseConfig:
         "bm25_persist_path": "./data/bm25_index.pkl",
         "rrf_k": 60,
     })
-    # 知识图谱配置（实验性）
+    # 重排序配置
+    reranker: RerankerConfig = field(default_factory=RerankerConfig)
+    # 知识图谱配置
     enable_graph: bool = False
+    graph_type: str = "networkx" # 可选: networkx, neo4j
+    neo4j_uri: str = "bolt://localhost:7687"
+    neo4j_user: str = "neo4j"
+    neo4j_password: str = "password"
     graph_persist_path: str = "./data/knowledge_graph.gml"
     manifest_path: str = "./data/documents_manifest.json"
     graph_llm_provider: str = "dashscope"
     graph_llm_api_key: str = ""
+
+    def __post_init__(self):
+        self.neo4j_uri = resolve_env_value(self.neo4j_uri)
+        self.neo4j_user = resolve_env_value(self.neo4j_user)
+        self.neo4j_password = resolve_env_value(self.neo4j_password)
 
 
 @dataclass
@@ -109,7 +231,7 @@ class AuthConfig:
     """认证配置"""
     enabled: bool = True
     public_paths: list[str] = field(default_factory=lambda: [
-        "/api/auth/login", "/api/health", "/api/docs", "/api/openapi.json"
+        "/api/auth/login", "/api/health", "/api/docs", "/api/redoc", "/api/openapi.json"
     ])
     users: list[AuthUserConfig] = field(default_factory=list)
 
@@ -124,10 +246,7 @@ class ImageGenerationConfig:
     default_size: str = "1024*1024"
 
     def resolve_api_key(self) -> str:
-        key = self.api_key
-        if key.startswith("${") and key.endswith("}"):
-            return os.getenv(key[2:-1], "")
-        return key
+        return resolve_env_value(self.api_key)
 
 
 @dataclass
@@ -142,10 +261,7 @@ class VideoGenerationConfig:
     default_duration: int = 5
 
     def resolve_api_key(self) -> str:
-        key = self.api_key
-        if key.startswith("${") and key.endswith("}"):
-            return os.getenv(key[2:-1], "")
-        return key
+        return resolve_env_value(self.api_key)
 
 
 @dataclass
@@ -159,10 +275,7 @@ class ImageToVideoConfig:
     default_duration: int = 5
 
     def resolve_api_key(self) -> str:
-        key = self.api_key
-        if key.startswith("${") and key.endswith("}"):
-            return os.getenv(key[2:-1], "")
-        return key
+        return resolve_env_value(self.api_key)
 
 
 @dataclass
@@ -175,6 +288,23 @@ class MemoryConfig:
 
 
 @dataclass
+class OpsConfig:
+    """运维自动化配置"""
+
+    auto_backup_enabled: bool = True
+    auto_backup_interval_hours: float = 24.0
+    auto_backup_startup_delay_seconds: float = 300.0
+    auto_backup_include: list[str] = field(default_factory=lambda: ["config.yaml", "data", "workspace"])
+    max_backups: int = 14
+    archive_mirror_dir: str = ""
+    ops_event_retention_days: int = 90
+    audit_log_retention_days: int = 180
+    task_job_retention_days: int = 30
+    diagnostic_retention_days: int = 30
+    max_diagnostic_bundles: int = 20
+
+
+@dataclass
 class Config:
     """全局配置"""
     app: AppConfig
@@ -184,6 +314,8 @@ class Config:
     worker_templates: dict[str, WorkerTemplate]
     knowledge_base: KnowledgeBaseConfig
     memory: MemoryConfig = field(default_factory=MemoryConfig)
+    ops: OpsConfig = field(default_factory=OpsConfig)
+    tool_policy: ToolPolicyConfig = field(default_factory=ToolPolicyConfig)
     auth: AuthConfig = field(default_factory=AuthConfig)
     image_generation: ImageGenerationConfig = field(default_factory=ImageGenerationConfig)
     video_generation: VideoGenerationConfig = field(default_factory=VideoGenerationConfig)
@@ -213,7 +345,10 @@ class Config:
             for name, config in data.get("worker_templates", {}).items()
         }
 
-        knowledge_base = KnowledgeBaseConfig(**data.get("knowledge_base", {}))
+        kb_data = data.get("knowledge_base", {})
+        if "reranker" in kb_data:
+            kb_data["reranker"] = RerankerConfig(**kb_data["reranker"])
+        knowledge_base = KnowledgeBaseConfig(**kb_data)
 
         auth_data = data.get("auth", {})
         auth_users = [
@@ -222,12 +357,17 @@ class Config:
         auth = AuthConfig(
             enabled=auth_data.get("enabled", True),
             public_paths=auth_data.get("public_paths", [
-                "/api/auth/login", "/api/health", "/api/docs", "/api/openapi.json"
+                "/api/auth/login", "/api/health", "/api/docs", "/api/redoc", "/api/openapi.json"
             ]),
             users=auth_users,
         )
 
         memory = MemoryConfig(**data.get("memory", {}))
+        ops = OpsConfig(**data.get("ops", {}))
+        tool_policy_data = data.get("tool_policy", {})
+        network_policy = NetworkToolPolicyConfig(**tool_policy_data.get("network", {}))
+        database_policy = DatabaseToolPolicyConfig(**tool_policy_data.get("database", {}))
+        tool_policy = ToolPolicyConfig(network=network_policy, database=database_policy)
 
         image_generation = ImageGenerationConfig(**data.get("image_generation", {}))
         video_generation = VideoGenerationConfig(**data.get("video_generation", {}))
@@ -241,6 +381,8 @@ class Config:
             worker_templates=worker_templates,
             knowledge_base=knowledge_base,
             memory=memory,
+            ops=ops,
+            tool_policy=tool_policy,
             auth=auth,
             image_generation=image_generation,
             video_generation=video_generation,
@@ -251,11 +393,16 @@ class Config:
 _config: Config | None = None
 
 
-def load_config(config_path: str | Path = "config.yaml") -> Config:
+def default_config_path() -> Path:
+    """返回默认配置文件路径，可通过 MEMOX_CONFIG_PATH 覆盖。"""
+    return Path(os.getenv("MEMOX_CONFIG_PATH", "config.yaml"))
+
+
+def load_config(config_path: str | Path | None = None) -> Config:
     """加载配置（单例）"""
     global _config
     if _config is None:
-        _config = Config.from_yaml(config_path)
+        _config = Config.from_yaml(config_path or default_config_path())
     return _config
 
 

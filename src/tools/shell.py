@@ -1,23 +1,28 @@
 """Shell 工具 - 在沙箱内运行系统命令"""
 
 import re
+import shlex
 import subprocess
 from pathlib import Path
 from typing import Any
 
-from agents.base_agent import BaseTool
+from src.agents.base_agent import BaseTool
 
 DEFAULT_TIMEOUT = 60
 MAX_TIMEOUT = 300
 
-BLOCKED_PATTERNS = [
-    r"rm\s+-rf\s+/",       # 禁止删根目录
-    r"curl\s+.*http",       # 禁止外网 HTTP 请求
-    r"wget\s+.*http",
-    r">\s*/etc/",           # 禁止写系统目录
-    r"\bsudo\b",
-    r"chmod\s+777",
+ALLOWED_COMMANDS = [
+    "ls",
+    "cat",
+    "grep",
+    "pwd",
+    "echo",
+    "python",
+    "uv",
+    "pytest",
+    "ruff",
 ]
+SHELL_CONTROL_PATTERN = re.compile(r"[|;&<>`$()]")
 
 
 class ShellTool(BaseTool):
@@ -52,16 +57,27 @@ class ShellTool(BaseTool):
         command = arguments["command"]
         timeout = min(int(arguments.get("timeout", DEFAULT_TIMEOUT)), MAX_TIMEOUT)
 
-        for pattern in BLOCKED_PATTERNS:
-            if re.search(pattern, command):
-                return f"Error: 命令被安全策略阻止（规则: {pattern}）"
+        if SHELL_CONTROL_PATTERN.search(command):
+            return "Error: 不支持 shell 控制符、管道、重定向或命令替换"
+
+        try:
+            argv = shlex.split(command)
+        except ValueError as e:
+            return f"Error: 命令解析失败: {e}"
+
+        if not argv:
+            return "Error: 命令不能为空"
+
+        base_cmd = argv[0]
+        if base_cmd not in ALLOWED_COMMANDS:
+            return f"Error: 命令不在白名单内，不允许执行: {base_cmd}。允许的命令: {', '.join(ALLOWED_COMMANDS)}"
 
         self._cwd.mkdir(parents=True, exist_ok=True)
 
         try:
             result = subprocess.run(
-                command,
-                shell=True,
+                argv,
+                shell=False,
                 cwd=str(self._cwd),
                 capture_output=True,
                 text=True,

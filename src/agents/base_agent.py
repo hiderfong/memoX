@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import time
 import uuid
 from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import httpx
 
@@ -82,8 +84,13 @@ class BaseTool(ABC):
 class ToolRegistry:
     """工具注册表"""
 
-    def __init__(self):
+    def __init__(self, audit_context: dict[str, Any] | None = None):
         self._tools: dict[str, BaseTool] = {}
+        self._audit_context: dict[str, Any] = dict(audit_context or {})
+
+    def set_audit_context(self, context: dict[str, Any] | None) -> None:
+        """Set contextual metadata used when auditing tool calls."""
+        self._audit_context = dict(context or {})
 
     def register(self, tool: BaseTool) -> None:
         self._tools[tool.name] = tool
@@ -125,8 +132,213 @@ class ToolRegistry:
     async def execute(self, name: str, arguments: dict) -> Any:
         tool = self._tools.get(name)
         if not tool:
+            self._record_tool_audit(
+                name,
+                arguments,
+                status="error",
+                duration_ms=0,
+                error=f"Unknown tool: {name}",
+            )
             raise ValueError(f"Unknown tool: {name}")
-        return await tool.execute(arguments)
+
+        started = time.monotonic()
+        try:
+            result = await tool.execute(arguments)
+        except Exception as exc:
+            self._record_tool_audit(
+                name,
+                arguments,
+                status="error",
+                duration_ms=int((time.monotonic() - started) * 1000),
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            raise
+
+        self._record_tool_audit(
+            name,
+            arguments,
+            status=_classify_tool_result(result),
+            duration_ms=int((time.monotonic() - started) * 1000),
+            result=result,
+        )
+        return result
+
+    def _record_tool_audit(
+        self,
+        name: str,
+        arguments: dict,
+        *,
+        status: str,
+        duration_ms: int,
+        result: Any = None,
+        error: str = "",
+    ) -> None:
+        try:
+            store = _get_persistence_store()
+            if not store:
+                return
+
+            worker_id = str(self._audit_context.get("worker_id") or "")
+            store.log_audit_event(
+                action="tool_call",
+                resource="tool",
+                resource_id=name,
+                username=str(self._audit_context.get("username") or worker_id),
+                user_role=str(self._audit_context.get("user_role") or ("worker" if worker_id else "")),
+                details={
+                    **self._audit_context,
+                    "tool_name": name,
+                    "status": status,
+                    "duration_ms": duration_ms,
+                    "arguments": _summarize_tool_arguments(arguments),
+                    "result": _summarize_tool_result(result) if error == "" else None,
+                    "error": error,
+                },
+            )
+        except Exception:
+            pass
+
+
+SENSITIVE_ARGUMENT_KEYS = {
+    "api_key",
+    "authorization",
+    "auth",
+    "cookie",
+    "password",
+    "secret",
+    "token",
+}
+
+REJECTED_RESULT_PREFIXES = (
+    "Database query rejected:",
+    "Web fetch rejected:",
+    "Web search rejected:",
+    "Playwright crawler rejected:",
+    "GitHub tool rejected:",
+    "Shell command rejected:",
+)
+
+REJECTED_ERROR_MARKERS = (
+    "not allowed",
+    "blocked",
+    "rejected",
+    "不允许",
+    "拒绝",
+    "禁止",
+    "被拒绝",
+)
+
+
+def _get_persistence_store() -> Any:
+    try:
+        from storage import get_store
+    except ImportError:
+        from src.storage import get_store
+
+    return get_store()
+
+
+def _classify_tool_result(result: Any) -> str:
+    if isinstance(result, str):
+        first_line = result.strip().splitlines()[0] if result.strip() else ""
+        if first_line.startswith(REJECTED_RESULT_PREFIXES):
+            return "rejected"
+        if first_line.startswith("Error:"):
+            lowered = first_line.lower()
+            if any(marker in lowered for marker in REJECTED_ERROR_MARKERS):
+                return "rejected"
+            return "error"
+    return "success"
+
+
+def _summarize_connection_string(value: str) -> str:
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return "<redacted>"
+
+    if parsed.scheme.startswith("sqlite"):
+        return f"{parsed.scheme}:///<sqlite-db>"
+    if not parsed.scheme:
+        return "<redacted>"
+
+    host = parsed.hostname or ""
+    try:
+        port_number = parsed.port
+    except ValueError:
+        port_number = None
+    port = f":{port_number}" if port_number else ""
+    database = parsed.path.strip("/").split("/", 1)[0]
+    path = f"/{database}" if database else ""
+    return f"{parsed.scheme}://{host}{port}{path}"
+
+
+def _summarize_url(value: str) -> str:
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return "<invalid-url>"
+    try:
+        port_number = parsed.port
+    except ValueError:
+        port_number = None
+    host = parsed.hostname or ""
+    netloc = f"{host}:{port_number}" if port_number else host
+    return urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
+
+
+def _summarize_sql(value: str) -> dict[str, Any]:
+    stripped = value.lstrip()
+    verb = stripped.split(None, 1)[0].lower() if stripped else ""
+    return {"statement_type": verb, "length": len(value)}
+
+
+def _safe_preview(value: str, limit: int = 160) -> str:
+    single_line = " ".join(value.split())
+    return single_line[:limit] + ("..." if len(single_line) > limit else "")
+
+
+def _summarize_tool_arguments(arguments: dict) -> dict[str, Any]:
+    summary: dict[str, Any] = {}
+    for key, value in (arguments or {}).items():
+        key_text = str(key)
+        key_lower = key_text.lower()
+
+        if key_lower in SENSITIVE_ARGUMENT_KEYS or any(part in key_lower for part in SENSITIVE_ARGUMENT_KEYS):
+            summary[key_text] = "<redacted>"
+        elif key_lower == "connection_string":
+            summary[key_text] = _summarize_connection_string(str(value))
+        elif key_lower == "query":
+            summary[key_text] = _summarize_sql(str(value))
+        elif "url" in key_lower and isinstance(value, str):
+            summary[key_text] = _summarize_url(value)
+        elif key_lower in {"parameters", "params"} and isinstance(value, dict):
+            summary[key_text] = {"keys": sorted(str(k) for k in value)}
+        elif key_lower in {"content", "body"} and isinstance(value, str):
+            summary[key_text] = {"length": len(value)}
+        elif isinstance(value, str):
+            summary[key_text] = _safe_preview(value)
+        elif isinstance(value, (int, float, bool)) or value is None:
+            summary[key_text] = value
+        elif isinstance(value, list):
+            summary[key_text] = {"type": "list", "length": len(value)}
+        elif isinstance(value, dict):
+            summary[key_text] = {"type": "object", "keys": sorted(str(k) for k in value)}
+        else:
+            summary[key_text] = {"type": type(value).__name__}
+    return summary
+
+
+def _summarize_tool_result(result: Any) -> dict[str, Any]:
+    if isinstance(result, str):
+        return {"type": "string", "length": len(result), "preview": _safe_preview(result, 240)}
+    if isinstance(result, dict):
+        return {"type": "object", "keys": sorted(str(k) for k in result)}
+    if isinstance(result, list):
+        return {"type": "list", "length": len(result)}
+    if result is None:
+        return {"type": "none"}
+    return {"type": type(result).__name__}
 
 
 class LLMProvider(ABC):
@@ -518,6 +730,15 @@ class MiniMaxProvider(LLMProvider):
         )
 
 
+SUPPORTED_PROVIDER_TYPES = frozenset({
+    "anthropic",
+    "openai",
+    "minimax",
+    "kimi",
+    "dashscope",
+})
+
+
 def create_provider(
     provider_type: str,
     api_key: str,
@@ -539,9 +760,9 @@ def create_provider(
     }
 
     ptype = provider_type.lower()
-    provider_class = providers.get(ptype)
-    if not provider_class:
+    if ptype not in SUPPORTED_PROVIDER_TYPES:
         raise ValueError(f"Unknown provider: {provider_type}")
+    provider_class = providers.get(ptype)
 
     call_kwargs = dict(kwargs)
     if base_url:

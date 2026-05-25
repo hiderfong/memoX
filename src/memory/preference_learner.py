@@ -1,13 +1,17 @@
 """用户偏好学习器 — 从对话历史中自动学习用户偏好"""
 
+import asyncio
+import inspect
 import logging
 import uuid
-from typing import TYPE_CHECKING
+from collections.abc import Coroutine
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 if TYPE_CHECKING:
     from storage.persistence import PersistenceStore
 
 logger = logging.getLogger(__name__)
+_T = TypeVar("_T")
 
 
 class PreferenceLearner:
@@ -40,7 +44,31 @@ class PreferenceLearner:
     def __init__(self, store: "PersistenceStore"):
         self._store = store
 
+    @staticmethod
+    def _run_sync(coro: Coroutine[Any, Any, _T]) -> _T:
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(coro)
+        coro.close()
+        raise RuntimeError("当前处于异步上下文，请使用对应的 async 方法")
+
     def extract_and_save(
+        self,
+        messages: list[dict],
+        user_id: str | None = None,
+        llm_provider=None,
+    ) -> int:
+        """同步兼容包装。异步调用方应使用 extract_and_save_async。"""
+        return self._run_sync(
+            self.extract_and_save_async(
+                messages=messages,
+                user_id=user_id,
+                llm_provider=llm_provider,
+            )
+        )
+
+    async def extract_and_save_async(
         self,
         messages: list[dict],
         user_id: str | None = None,
@@ -73,7 +101,9 @@ class PreferenceLearner:
                     temperature=0.2,
                     max_tokens=384,
                 )
-                text = resp.content or ""
+                if inspect.isawaitable(resp):
+                    resp = await resp
+                text = str(resp.content or "")
                 start, end = text.find("{"), text.rfind("}") + 1
                 if start >= 0 and end > start:
                     data = _json.loads(text[start:end])
@@ -98,11 +128,11 @@ class PreferenceLearner:
         limit: int = 10,
     ) -> list[dict]:
         """获取用户已学习的偏好列表（category=preference）"""
-        return self._store.list_memories(
+        return cast(list[dict], self._store.list_memories(
             user_id=user_id,
             category="preference",
             limit=limit,
-        )
+        ))
 
     def format_for_system_prompt(self, preferences: list[dict]) -> str:
         """将偏好列表格式化为系统提示词片段"""

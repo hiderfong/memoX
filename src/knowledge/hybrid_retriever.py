@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 if TYPE_CHECKING:
     from .bm25_indexer import BM25Indexer
@@ -40,11 +40,11 @@ class RetrievedChunk:
 
     @property
     def doc_id(self) -> str:
-        return self.metadata.get("doc_id", "")
+        return cast(str, self.metadata.get("doc_id", ""))
 
     @property
     def filename(self) -> str:
-        return self.metadata.get("filename", "")
+        return cast(str, self.metadata.get("filename", ""))
 
 
 @dataclass
@@ -98,11 +98,13 @@ class HybridRetriever:
         """
         import asyncio
 
-        # 并行两路检索
+        # 并行两路检索。两路都应用相同 metadata 过滤，避免 BM25 混入非目标知识组。
         vector_task = self._vector_search(query, collection_name, top_k * 3, filter_metadata)
-        bm25_task = self._bm25_search(query, top_k * 3)
+        bm25_task = self._bm25_search(query, top_k * 3, filter_metadata)
 
-        vector_results, bm25_results = await asyncio.gather(vector_task, bm25_task)
+        vector_hits, bm25_results = await asyncio.gather(vector_task, bm25_task)
+        vector_results = [(r["id"], r.get("score", 0.0)) for r in vector_hits]
+        vector_hit_map = {r["id"]: r for r in vector_hits}
 
         # 构建排名映射 {chunk_id: rank}
         vector_ranks = {cid: rank + 1 for rank, cid in enumerate(cid for cid, _ in vector_results)}
@@ -134,19 +136,12 @@ class HybridRetriever:
         out: list[RetrievedChunk] = []
         for chunk_id in sorted_chunk_ids[:top_k]:
             bm25_entry = self.bm25_indexer.get_chunk(chunk_id)
-            metadata = bm25_entry.metadata if bm25_entry else {}
-
-            # 尝试从向量结果中补充 metadata（向量结果有完整的 metadata）
-            if chunk_id in vector_scores_map:
-                # 从向量结果重建 metadata（向量 store 返回的格式）
-                metadata.copy()  # 先用 BM25 的
-                # NOTE: 这里向量结果只返回了 content，没有额外 metadata 字段，
-                # 因为 ChromaDB search 返回的 documents + distances 本身不含额外 metadata。
-                # metadata 已在 ChromaDB 的 chunk 中，以 field 形式存在。
-                # 从 ChromaDB 的 get_by_id 或已缓存获取更完整的 metadata 是设计问题，
-                # 目前的折中方案是 metadata 优先取 BM25Indexer 存储的副本。
-            else:
-                pass
+            vector_hit = vector_hit_map.get(chunk_id, {})
+            metadata = {
+                **(bm25_entry.metadata if bm25_entry else {}),
+                **(vector_hit.get("metadata") or {}),
+            }
+            content = bm25_entry.content if bm25_entry else (vector_hit.get("content") or "")
 
             vec_score = float(vector_scores_map.get(chunk_id, 0.0))
             bm_score = float(bm25_scores_map.get(chunk_id, 0.0))
@@ -155,7 +150,7 @@ class HybridRetriever:
 
             out.append(RetrievedChunk(
                 chunk_id=chunk_id,
-                content=bm25_entry.content if bm25_entry else "",
+                content=content,
                 score=rrf_scores[chunk_id],
                 vector_score=vec_score,
                 bm25_score=bm_score,
@@ -186,19 +181,64 @@ class HybridRetriever:
         collection_name: str,
         top_k: int,
         filter_metadata: dict | None,
-    ) -> list[tuple[str, float]]:
-        """向量检索，返回 [(chunk_id, cosine_score)]"""
+    ) -> list[dict]:
+        """向量检索，返回 Chroma 格式结果并兜底执行 metadata 过滤。"""
         results = await self.vector_store.search(query, top_k, collection_name, filter_metadata)
-        # score = 1 - distance（distance 越小相似度越高）
-        return [(r["id"], r.get("score", 0.0)) for r in results]
+        return [
+            r for r in results
+            if self._metadata_matches(r.get("metadata") or {}, filter_metadata)
+        ]
 
     async def _bm25_search(
         self,
         query: str,
         top_k: int,
+        filter_metadata: dict | None = None,
     ) -> list[tuple[str, float]]:
         """BM25 检索，返回 [(chunk_id, bm25_score)]"""
-        return self.bm25_indexer.search(query, top_k)
+        search_limit = self.bm25_indexer.size if filter_metadata else top_k
+        raw_results = self.bm25_indexer.search(query, max(top_k, search_limit))
+        if not filter_metadata:
+            return raw_results[:top_k]
+
+        filtered: list[tuple[str, float]] = []
+        for chunk_id, score in raw_results:
+            entry = self.bm25_indexer.get_chunk(chunk_id)
+            if entry and self._metadata_matches(entry.metadata, filter_metadata):
+                filtered.append((chunk_id, score))
+            if len(filtered) >= top_k:
+                break
+        return filtered
+
+    @classmethod
+    def _metadata_matches(cls, metadata: dict, filter_metadata: dict | None) -> bool:
+        """Evaluate the subset of Chroma where syntax used by RAGEngine."""
+        if not filter_metadata:
+            return True
+
+        for key, expected in filter_metadata.items():
+            if key == "$and":
+                return all(cls._metadata_matches(metadata, item) for item in expected)
+            if key == "$or":
+                return any(cls._metadata_matches(metadata, item) for item in expected)
+            if key == "$not":
+                return not cls._metadata_matches(metadata, expected)
+
+            actual = metadata.get(key)
+            if isinstance(expected, dict):
+                for op, value in expected.items():
+                    if op == "$in" and actual not in value:
+                        return False
+                    if op == "$nin" and actual in value:
+                        return False
+                    if op == "$eq" and actual != value:
+                        return False
+                    if op == "$ne" and actual == value:
+                        return False
+                continue
+            if actual != expected:
+                return False
+        return True
 
     # ── 索引同步 ─────────────────────────────────────────────────────────────
 

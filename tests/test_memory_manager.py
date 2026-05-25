@@ -1,4 +1,5 @@
 """MemoryManager 单元测试"""
+import asyncio
 import os
 import sys
 from unittest.mock import MagicMock
@@ -23,6 +24,11 @@ class MockLLMProvider:
         response = MagicMock()
         response.content = self._response
         return response
+
+
+class AsyncMockLLMProvider(MockLLMProvider):
+    async def chat(self, messages, model=None, temperature=None, max_tokens=None):
+        return super().chat(messages, model=model, temperature=temperature, max_tokens=max_tokens)
 
 
 # ─── Fixtures ─────────────────────────────────────────────────────────────────
@@ -146,6 +152,23 @@ def test_compress_triggers_over_threshold_with_llm(tmp_path):
     # 验证 LLM 被调用了
     assert len(mock.calls) >= 1
     assert "对话记录" in mock.calls[-1]["messages"][0]["content"]
+
+
+def test_compress_async_provider(tmp_path):
+    """真实 provider.chat 是 async 时也能生成摘要。"""
+    store = PersistenceStore(tmp_path / "test.db")
+    mock = AsyncMockLLMProvider("【摘要】\n- 话题：异步摘要\n\n【摘要】")
+
+    for i in range(12):
+        store.save_message("s1", "user", f"问题{i}")
+        store.save_message("s1", "assistant", f"回答{i}")
+
+    manager = MemoryManager(store, max_turns=10, llm_provider=mock)
+    summary, archived = asyncio.run(manager.compress_if_needed_async("s1", mock))
+
+    assert "异步摘要" in summary
+    assert archived > 0
+    assert len(mock.calls) == 1
 
 
 def test_compress_fallback_when_no_provider(tmp_path):

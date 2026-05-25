@@ -1,10 +1,14 @@
 """SQLite 持久化存储测试"""
 import os
+import sqlite3
 import sys
+
+import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
-from storage.persistence import PersistenceStore
+from src.ops.readiness import _sqlite_quick_check
+from storage.persistence import SCHEMA_VERSION, PersistenceStore, SchemaMigrationError
 
 
 def test_session_create_and_list(tmp_path):
@@ -96,6 +100,162 @@ def test_task_upsert(tmp_path):
     store.close()
 
 
+def test_running_task_keeps_completed_at_empty(tmp_path):
+    store = PersistenceStore(tmp_path / "test.db")
+    store.save_task({"task_id": "running_1", "description": "run", "status": "running"})
+
+    task = store.get_task("running_1")
+    assert task["status"] == "running"
+    assert task["completed_at"] is None
+    store.close()
+
+
+def test_mark_incomplete_tasks_interrupted(tmp_path):
+    store = PersistenceStore(tmp_path / "test.db")
+    store.save_task({"task_id": "running_1", "description": "run", "status": "running"})
+    store.save_task({"task_id": "done_1", "description": "done", "status": "completed", "result": "ok"})
+
+    count = store.mark_incomplete_tasks_interrupted()
+
+    assert count == 1
+    interrupted = store.get_task("running_1")
+    assert interrupted["status"] == "failed"
+    assert "中断" in interrupted["result"]
+    assert store.get_task("done_1")["status"] == "completed"
+    store.close()
+
+
+def test_recoverable_task_job_is_not_marked_interrupted(tmp_path):
+    store = PersistenceStore(tmp_path / "test.db")
+    store.save_task({"task_id": "running_1", "description": "run", "status": "running"})
+    store.save_task_job_request("running_1", "run", context={"x": 1}, active_group_ids=["g1"], timeout_seconds=30)
+
+    count = store.mark_incomplete_tasks_interrupted()
+
+    assert count == 0
+    assert store.get_task("running_1")["status"] == "running"
+    recoverable = store.list_recoverable_task_jobs()
+    assert len(recoverable) == 1
+    assert recoverable[0]["task_id"] == "running_1"
+    assert recoverable[0]["context"] == {"x": 1}
+    assert recoverable[0]["active_group_ids"] == ["g1"]
+    assert recoverable[0]["timeout_seconds"] == 30
+    store.close()
+
+
+def test_task_events_round_trip(tmp_path):
+    store = PersistenceStore(tmp_path / "test.db")
+    store.save_task({"task_id": "task_events", "description": "events", "status": "queued"})
+    store.add_task_event("task_events", "queued", "入队", {"recoverable": True})
+    store.add_task_event("task_events", "running", "开始")
+
+    events = store.list_task_events("task_events")
+
+    assert [event["event_type"] for event in events] == ["queued", "running"]
+    assert events[0]["message"] == "入队"
+    assert events[0]["details"] == {"recoverable": True}
+    store.close()
+
+
+def test_task_job_auto_retry_schedule_round_trip(tmp_path):
+    store = PersistenceStore(tmp_path / "test.db")
+    store.save_task({"task_id": "retry_1", "description": "retry", "status": "timeout"})
+    store.save_task_job_request("retry_1", "retry")
+
+    scheduled = store.schedule_task_job_auto_retry("retry_1", "2026-05-21T10:00:00", max_attempts=2)
+
+    assert scheduled is not None
+    assert scheduled["auto_retry_count"] == 1
+    assert scheduled["next_retry_at"] == "2026-05-21T10:00:00"
+    retries = store.list_scheduled_task_job_retries()
+    assert [retry["task_id"] for retry in retries] == ["retry_1"]
+    stats = store.get_task_job_stats()
+    assert stats["scheduled_retries"] == 1
+    assert stats["timeout"] == 1
+    assert stats["retryable_failures"] == 1
+    assert stats["manual_retryable"] == 0
+    assert stats["needs_intervention"] == 0
+
+    assert store.clear_task_job_auto_retry("retry_1") is True
+    assert store.get_task_job_request("retry_1")["next_retry_at"] == ""
+    assert store.list_scheduled_task_job_retries() == []
+    store.close()
+
+
+def test_task_job_stats_classifies_failures_and_intervention(tmp_path):
+    store = PersistenceStore(tmp_path / "test.db")
+    created_at = "2026-05-21T10:00:00"
+
+    store.save_task({"task_id": "task_active", "description": "active", "status": "running", "created_at": created_at})
+    store.save_task_job_request("task_active", "active", created_at=created_at)
+
+    store.save_task({"task_id": "task_retryable", "description": "retryable", "status": "failed"})
+    store.save_task_job_request("task_retryable", "retryable")
+    store.add_task_event(
+        "task_retryable",
+        "failed_retryable",
+        "临时错误",
+        {"failure_type": "retryable_exception", "retryable": True},
+    )
+
+    store.save_task({"task_id": "task_fixed", "description": "fixed", "status": "failed"})
+    store.save_task_job_request("task_fixed", "fixed")
+    store.add_task_event(
+        "task_fixed",
+        "failed_non_retryable",
+        "配置错误",
+        {"failure_type": "non_retryable_exception", "retryable": False},
+    )
+
+    store.save_task({"task_id": "task_exhausted", "description": "exhausted", "status": "failed"})
+    store.save_task_job_request("task_exhausted", "exhausted")
+    store.add_task_event(
+        "task_exhausted",
+        "auto_retry_exhausted",
+        "自动重试已耗尽",
+        {"failure_type": "retryable_exception", "retryable": True},
+    )
+
+    stats = store.get_task_job_stats()
+
+    assert stats["active"] == 1
+    assert stats["running"] == 1
+    assert stats["failed"] == 3
+    assert stats["retryable_failures"] == 2
+    assert stats["non_retryable_failures"] == 1
+    assert stats["manual_retryable"] == 2
+    assert stats["needs_intervention"] == 2
+    assert stats["auto_retry_exhausted"] == 1
+    assert stats["oldest_active_created_at"] == created_at
+    assert isinstance(stats["oldest_active_age_seconds"], int)
+    assert stats["last_job_updated_at"]
+    store.close()
+
+
+def test_task_checkpoint_round_trip(tmp_path):
+    store = PersistenceStore(tmp_path / "test.db")
+    checkpoint = {
+        "task_id": "task_cp",
+        "status": "running",
+        "sub_tasks": [
+            {
+                "id": "sub_1",
+                "status": "completed",
+                "attempts": 1,
+            }
+        ],
+    }
+
+    store.save_task_checkpoint("task_cp", checkpoint)
+    loaded = store.get_task_checkpoint("task_cp")
+
+    assert loaded["task_id"] == "task_cp"
+    assert loaded["sub_tasks"][0]["status"] == "completed"
+    assert loaded["sub_tasks"][0]["attempts"] == 1
+    assert "updated_at" in loaded
+    store.close()
+
+
 def test_get_nonexistent_task(tmp_path):
     store = PersistenceStore(tmp_path / "test.db")
     assert store.get_task("nonexistent") is None
@@ -108,6 +268,277 @@ def test_update_session_title(tmp_path):
     store.update_session_title("s1", "新标题")
     sessions = store.list_sessions()
     assert sessions[0]["title"] == "新标题"
+    store.close()
+
+
+def test_runtime_schema_matches_memory_and_summary_migrations(tmp_path):
+    store = PersistenceStore(tmp_path / "test.db")
+
+    assert store.schema_version() == SCHEMA_VERSION
+    assert [item["version"] for item in store.applied_migrations()] == [1, 2, 3, 4, 5, 6]
+
+    session_cols = {
+        r["name"] for r in store._conn.execute("PRAGMA table_info(chat_sessions)").fetchall()
+    }
+    assert "summary" in session_cols
+    task_job_cols = {
+        r["name"] for r in store._conn.execute("PRAGMA table_info(task_jobs)").fetchall()
+    }
+    assert {
+        "lease_owner",
+        "lease_expires_at",
+        "recovery_count",
+        "last_recovered_at",
+        "auto_retry_count",
+        "next_retry_at",
+    }.issubset(task_job_cols)
+
+    tables = {
+        r["name"]
+        for r in store._conn.execute("SELECT name FROM sqlite_master WHERE type IN ('table', 'trigger')").fetchall()
+    }
+    assert "memories_fts" in tables
+    assert {"memories_ai", "memories_ad", "memories_au"}.issubset(tables)
+
+    store.save_memory("m1", "Python memory", category="fact")
+    fts_rows = store._conn.execute(
+        "SELECT rowid, content FROM memories_fts WHERE memories_fts MATCH ?",
+        ("Python",),
+    ).fetchall()
+    assert len(fts_rows) == 1
+
+    store.save_memory("m1", "Rust memory", category="fact")
+    assert store._conn.execute(
+        "SELECT rowid FROM memories_fts WHERE memories_fts MATCH ?",
+        ("Python",),
+    ).fetchall() == []
+    assert len(store._conn.execute(
+        "SELECT rowid FROM memories_fts WHERE memories_fts MATCH ?",
+        ("Rust",),
+    ).fetchall()) == 1
+    store.close()
+
+
+def test_legacy_database_is_migrated_without_losing_sessions(tmp_path):
+    db_path = tmp_path / "legacy.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("""
+        CREATE TABLE chat_sessions (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL DEFAULT '',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    """)
+    conn.execute(
+        "INSERT INTO chat_sessions (id, title, created_at, updated_at) VALUES (?, ?, ?, ?)",
+        ("legacy-session", "Legacy", "2024-01-01T00:00:00", "2024-01-01T00:00:00"),
+    )
+    conn.commit()
+    conn.close()
+
+    store = PersistenceStore(db_path)
+
+    cols = {r["name"] for r in store._conn.execute("PRAGMA table_info(chat_sessions)").fetchall()}
+    row = store._conn.execute("SELECT id, title, archived, summary FROM chat_sessions").fetchone()
+    assert {"archived", "summary"}.issubset(cols)
+    assert dict(row) == {
+        "id": "legacy-session",
+        "title": "Legacy",
+        "archived": 0,
+        "summary": "",
+    }
+    assert store.schema_version() == SCHEMA_VERSION
+    assert [item["version"] for item in store.applied_migrations()] == [1, 2, 3, 4, 5, 6]
+    store.close()
+
+    reopened = PersistenceStore(db_path)
+    assert [item["version"] for item in reopened.applied_migrations()] == [1, 2, 3, 4, 5, 6]
+    reopened.close()
+
+
+def test_legacy_task_jobs_table_gains_lease_columns(tmp_path):
+    db_path = tmp_path / "legacy_jobs.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA user_version = 3")
+    conn.execute("""
+        CREATE TABLE schema_migrations (
+            version INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            applied_at TEXT NOT NULL
+        )
+    """)
+    conn.executemany(
+        "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+        [
+            (1, "chat_sessions_archive_summary", "2026-01-01T00:00:00"),
+            (2, "memories_table", "2026-01-01T00:00:00"),
+            (3, "memories_fts", "2026-01-01T00:00:00"),
+        ],
+    )
+    conn.execute("""
+        CREATE TABLE task_jobs (
+            id TEXT PRIMARY KEY,
+            description TEXT NOT NULL,
+            context TEXT DEFAULT '{}',
+            generate_suggestions INTEGER NOT NULL DEFAULT 1,
+            active_group_ids TEXT DEFAULT 'null',
+            timeout_seconds INTEGER DEFAULT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+    """)
+    conn.execute(
+        """INSERT INTO task_jobs
+           (id, description, context, generate_suggestions, active_group_ids, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        ("task_legacy", "Legacy job", "{}", 1, "null", "2026-01-01T00:00:00", "2026-01-01T00:00:00"),
+    )
+    conn.commit()
+    conn.close()
+
+    store = PersistenceStore(db_path)
+
+    cols = {r["name"] for r in store._conn.execute("PRAGMA table_info(task_jobs)").fetchall()}
+    assert {
+        "lease_owner",
+        "lease_expires_at",
+        "recovery_count",
+        "last_recovered_at",
+        "auto_retry_count",
+        "next_retry_at",
+    }.issubset(cols)
+    request = store.get_task_job_request("task_legacy")
+    assert request["lease_owner"] == ""
+    assert request["lease_expires_at"] == ""
+    assert request["recovery_count"] == 0
+    assert request["last_recovered_at"] == ""
+    assert request["auto_retry_count"] == 0
+    assert request["next_retry_at"] == ""
+    assert [item["version"] for item in store.applied_migrations()] == [1, 2, 3, 4, 5, 6]
+    store.close()
+
+
+def test_sqlite_health_reports_schema_version_and_migrations(tmp_path):
+    db_path = tmp_path / "test.db"
+    store = PersistenceStore(db_path)
+    store.close()
+
+    result = _sqlite_quick_check(db_path)
+
+    assert result["status"] == "ok"
+    assert result["schema_version"] == SCHEMA_VERSION
+    assert [item["version"] for item in result["migrations"]] == [1, 2, 3, 4, 5, 6]
+
+
+def test_future_database_schema_is_rejected(tmp_path):
+    db_path = tmp_path / "future.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA user_version = 999")
+    conn.execute("""
+        CREATE TABLE schema_migrations (
+            version INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            applied_at TEXT NOT NULL
+        )
+    """)
+    conn.execute(
+        "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?, ?, ?)",
+        (999, "future_schema", "2030-01-01T00:00:00"),
+    )
+    conn.commit()
+    conn.close()
+
+    with pytest.raises(SchemaMigrationError, match="newer MemoX schema"):
+        PersistenceStore(db_path)
+
+
+def test_ops_event_record_and_latest(tmp_path):
+    store = PersistenceStore(tmp_path / "test.db")
+
+    first = store.record_ops_event(
+        event_type="backup_maintenance",
+        status="ok",
+        action="created",
+        message="created backup",
+        details={"archive": "backups/one.tar.gz"},
+    )
+    second = store.record_ops_event(
+        event_type="backup_maintenance",
+        status="error",
+        action="error",
+        message="backup failed",
+        details={"reason": "disk full"},
+    )
+
+    assert first["id"] != second["id"]
+    assert store.get_latest_ops_event("backup_maintenance")["id"] == second["id"]
+    events = store.list_ops_events("backup_maintenance")
+    assert [event["message"] for event in events] == ["backup failed", "created backup"]
+    assert events[0]["details"]["reason"] == "disk full"
+    store.record_ops_event(
+        event_type="restore_drill",
+        status="ok",
+        action="verified",
+        message="restore drill passed",
+        details={"name": "memox-backup-test.tar.gz"},
+    )
+    assert store.count_ops_events() == 3
+    assert store.count_ops_events(event_type="backup_maintenance", status="ok") == 1
+    assert [event["event_type"] for event in store.list_ops_events(limit=2)] == [
+        "restore_drill",
+        "backup_maintenance",
+    ]
+    assert store.list_ops_events(limit=1, offset=1)[0]["message"] == "backup failed"
+    assert store.list_ops_events(event_type="backup_maintenance", status="error")[0]["message"] == "backup failed"
+    store.close()
+
+
+def test_audit_event_filters_parse_details(tmp_path):
+    store = PersistenceStore(tmp_path / "test.db")
+    store.log_audit_event(
+        action="tool_call",
+        resource="tool",
+        resource_id="web_fetch",
+        username="researcher",
+        user_role="worker",
+        details={
+            "status": "success",
+            "worker_id": "researcher",
+            "task_id": "task_1",
+            "arguments": {"url": "https://example.com"},
+        },
+    )
+    store.log_audit_event(
+        action="tool_call",
+        resource="tool",
+        resource_id="database_query",
+        username="analyst",
+        user_role="worker",
+        details={
+            "status": "rejected",
+            "worker_id": "analyst",
+            "task_id": "task_2",
+            "error": "Write SQL requires access_mode='write'",
+        },
+    )
+    store.log_audit_event(
+        action="delete",
+        resource="worker",
+        resource_id="old-worker",
+        username="admin",
+        details={"status": "success"},
+    )
+
+    rejected = store.list_audit_events(resource="tool", action="tool_call", status="rejected")
+
+    assert len(rejected) == 1
+    assert rejected[0]["resource_id"] == "database_query"
+    assert rejected[0]["details"]["worker_id"] == "analyst"
+    assert store.count_audit_events(resource="tool", action="tool_call") == 2
+    assert store.count_audit_events(resource="tool", action="tool_call", worker_id="researcher") == 1
+    assert store.count_audit_events(resource="tool", action="tool_call", task_id="task_2") == 1
+    assert store.count_audit_events(resource="tool", action="tool_call", resource_id="missing") == 0
     store.close()
 
 

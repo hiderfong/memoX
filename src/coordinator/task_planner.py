@@ -64,14 +64,21 @@ class TaskPlanner:
         context: dict[str, Any] | None = None,
     ) -> tuple[Task, TaskComplexity]:
         """分析并规划任务"""
+        requested_task_id = self._requested_task_id(context)
+        prompt_context = self._prompt_context(context)
+        worker_hints, valid_workers = self._worker_capability_prompt()
+
         # 使用 LLM 分析任务复杂度并生成子任务
         analysis_prompt = f"""分析以下任务，确定：
 1. 任务复杂度（simple/parallel/sequential/mixed）
-2. 需要拆分的子任务列表
+2. 需要拆分的子任务列表、依赖关系、推荐执行 Worker 和验收标准
 
 任务：{task_description}
 
-{json.dumps(context, ensure_ascii=False, indent=2) if context else ''}
+{json.dumps(prompt_context, ensure_ascii=False, indent=2) if prompt_context else ''}
+
+可用 Worker（worker 字段只能从这些 id 中选择；无法判断则填 null）：
+{worker_hints}
 
 请以 JSON 格式返回：
 {{
@@ -80,7 +87,9 @@ class TaskPlanner:
     "sub_tasks": [
         {{
             "description": "子任务描述",
-            "dependencies": ["依赖的子任务ID，如果有的话"]
+            "worker": "推荐 worker id 或 null",
+            "dependencies": ["依赖的子任务ID，如果有的话"],
+            "acceptance_criteria": ["完成该子任务必须满足的可验证标准"]
         }}
     ]
 }}
@@ -93,7 +102,9 @@ class TaskPlanner:
 1. 如果任务可以并行执行多个部分，使用 parallel 模式
 2. 如果子任务有依赖关系，使用 sequential 模式
 3. 混合模式用于既有并行又有顺序的任务
-4. 简单任务不需要拆分"""},
+4. 简单任务不需要拆分
+5. 每个子任务优先分配给能力最匹配的 worker
+6. 每个子任务必须包含 1-3 条可验证的 acceptance_criteria"""},
             {"role": "user", "content": analysis_prompt},
         ]
 
@@ -162,16 +173,25 @@ class TaskPlanner:
                             resolved_deps.append(sub_task_ids[i - 1])
                         else:
                             logger.warning(f"[Planner] 无法解析依赖 '{dep}' (子任务数={len(sub_task_ids)}), 已跳过")
+                assigned_agent = self._resolve_worker_id(
+                    st_data.get("worker") or st_data.get("assigned_agent"),
+                    valid_workers,
+                )
+                criteria = self._normalize_criteria(
+                    st_data.get("acceptance_criteria") or st_data.get("expected_output")
+                )
                 sub_task = SubTask(
                     id=sub_task_ids[i],
                     description=st_data.get("description", ""),
                     dependencies=resolved_deps,
+                    acceptance_criteria=criteria,
+                    assigned_agent=assigned_agent,
                 )
                 sub_tasks.append(sub_task)
 
             # 创建主任务
             task = Task(
-                id=f"task_{uuid.uuid4().hex[:8]}",
+                id=requested_task_id or f"task_{uuid.uuid4().hex[:8]}",
                 description=task_description,
                 sub_tasks=sub_tasks if sub_tasks else [SubTask(
                     id=f"sub_{uuid.uuid4().hex[:6]}",
@@ -188,7 +208,7 @@ class TaskPlanner:
             logger.error(f"Failed to plan task: {e}")
             # 回退到简单任务
             task = Task(
-                id=f"task_{uuid.uuid4().hex[:8]}",
+                id=requested_task_id or f"task_{uuid.uuid4().hex[:8]}",
                 description=task_description,
                 sub_tasks=[SubTask(
                     id=f"sub_{uuid.uuid4().hex[:6]}",
@@ -197,6 +217,73 @@ class TaskPlanner:
             )
             self._tasks[task.id] = task
             return task, TaskComplexity.SIMPLE
+
+    @staticmethod
+    def _requested_task_id(context: dict[str, Any] | None) -> str | None:
+        if not context:
+            return None
+        value = context.get("_task_id") or context.get("task_id")
+        if not value:
+            return None
+        task_id = str(value).strip()
+        return task_id or None
+
+    @staticmethod
+    def _prompt_context(context: dict[str, Any] | None) -> dict[str, Any]:
+        if not context:
+            return {}
+        return {key: value for key, value in context.items() if not str(key).startswith("_")}
+
+    def _worker_capability_prompt(self) -> tuple[str, set[str]]:
+        """Build a compact worker capability list for planning."""
+        workers = []
+        try:
+            workers = self.worker_pool.list_workers()
+        except Exception:
+            workers = []
+
+        if not workers:
+            return "- (无已注册 Worker，worker 字段填 null)", set()
+
+        valid_workers = {str(w.get("id")) for w in workers if w.get("id")}
+        lines = []
+        for worker in workers:
+            worker_id = str(worker.get("id") or "")
+            if not worker_id:
+                continue
+            display_name = worker.get("display_name") or worker_id
+            skills = ", ".join(worker.get("skills") or []) or "无"
+            tools = ", ".join(worker.get("tools") or []) or "无"
+            provider = worker.get("provider") or "unknown"
+            model = worker.get("model") or "unknown"
+            lines.append(
+                f"- {worker_id}: {display_name}; provider={provider}; model={model}; "
+                f"skills=[{skills}]; tools=[{tools}]"
+            )
+        return "\n".join(lines) or "- (无已注册 Worker，worker 字段填 null)", valid_workers
+
+    @staticmethod
+    def _resolve_worker_id(raw_worker: Any, valid_workers: set[str]) -> str | None:
+        if raw_worker is None:
+            return None
+        worker = str(raw_worker).strip()
+        if not worker or worker.lower() in {"null", "none", "auto", "any"}:
+            return None
+        if worker in valid_workers:
+            return worker
+        logger.warning(f"[Planner] LLM 返回未知 worker '{worker}'，已改为自动分配")
+        return None
+
+    @staticmethod
+    def _normalize_criteria(raw: Any) -> list[str]:
+        if raw is None:
+            return []
+        if isinstance(raw, str):
+            text = raw.strip()
+            return [text] if text else []
+        if isinstance(raw, list):
+            return [str(item).strip() for item in raw if str(item).strip()]
+        return [str(raw).strip()] if str(raw).strip() else []
 
     async def execute_task(
         self,

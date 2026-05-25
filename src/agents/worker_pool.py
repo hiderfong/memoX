@@ -37,10 +37,12 @@ class SubTask:
     id: str
     description: str
     dependencies: list[str] = field(default_factory=list)  # 依赖的任务 ID
+    acceptance_criteria: list[str] = field(default_factory=list)
     status: TaskStatus = TaskStatus.PENDING
     result: str | None = None
     error: str | None = None
     assigned_agent: str | None = None
+    attempts: int = 0
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     started_at: str | None = None
     completed_at: str | None = None
@@ -181,6 +183,12 @@ class WorkerAgent:
         """执行子任务"""
         self._running = True
         self._current_task_id = task.id
+        self.tools.set_audit_context({
+            "worker_id": self.id,
+            "worker_name": self.config.name,
+            "task_id": task.id,
+            "subtask_id": task.id,
+        })
         self.add_log("info", f"任务开始: {task.description[:60]}...", {"task_id": task.id})
 
         logger.info(f"Worker {self.id} starting task {task.id}: {task.description[:50]}...")
@@ -191,6 +199,9 @@ class WorkerAgent:
 
             # 构建用户消息
             user_content = task.description
+            if task.acceptance_criteria:
+                criteria = "\n".join(f"- {item}" for item in task.acceptance_criteria)
+                user_content = f"{user_content}\n\n验收标准：\n{criteria}"
             if context:
                 context_str = json.dumps(context, ensure_ascii=False, indent=2)
                 user_content = f"""上下文信息：
@@ -211,6 +222,7 @@ class WorkerAgent:
 
             self._running = False
             self._current_task_id = None
+            self.tools.set_audit_context({})
             self.add_log("info", "任务完成", {"task_id": task.id, "result_len": len(result)})
 
             logger.info(f"Worker {self.id} completed task {task.id}")
@@ -223,6 +235,7 @@ class WorkerAgent:
 
             self._running = False
             self._current_task_id = None
+            self.tools.set_audit_context({})
 
             return "", error_msg
 

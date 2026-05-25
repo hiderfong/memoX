@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import math
 import secrets
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Annotated
 
@@ -20,15 +22,63 @@ class User:
     display_name: str = ""
 
 
+class AuthRateLimitError(RuntimeError):
+    """Too many failed login attempts for the same identity/client key."""
+
+    def __init__(self, retry_after_seconds: int) -> None:
+        self.retry_after_seconds = max(1, retry_after_seconds)
+        super().__init__(f"Too many failed login attempts; retry after {self.retry_after_seconds}s")
+
+
 class AuthManager:
     """内存用户存储 + Token 管理（开发模式）"""
 
     TOKEN_TTL = 24 * 3600  # token 有效期 24 小时
     PBKDF2_ITERATIONS = 100_000
+    LOGIN_FAILURE_LIMIT = 5
+    LOGIN_LOCK_SECONDS = 5 * 60
 
-    def __init__(self):
+    def __init__(self, now_fn: Callable[[], float] | None = None):
         self._users: dict[str, User] = {}
         self._tokens: dict[str, dict] = {}  # token -> {username, role, display_name, exp}
+        self._login_failures: dict[str, dict[str, float | int]] = {}
+        self._now_fn = now_fn or time.time
+
+    def _now(self) -> float:
+        return self._now_fn()
+
+    def _login_failure_key(self, username: str, client_key: str | None) -> str:
+        identity = (username or "").strip().lower()
+        client = (client_key or "").strip() or "unknown"
+        return f"{identity}:{client}"
+
+    def _record_login_failure(self, username: str, client_key: str | None) -> None:
+        now = self._now()
+        key = self._login_failure_key(username, client_key)
+        record = self._login_failures.get(key, {"count": 0, "locked_until": 0.0})
+        locked_until = float(record.get("locked_until", 0.0))
+        if locked_until and locked_until <= now:
+            record = {"count": 0, "locked_until": 0.0}
+        record["count"] = int(record.get("count", 0)) + 1
+        if int(record["count"]) >= self.LOGIN_FAILURE_LIMIT:
+            record["locked_until"] = now + self.LOGIN_LOCK_SECONDS
+        self._login_failures[key] = record
+
+    def _clear_login_failures(self, username: str, client_key: str | None) -> None:
+        self._login_failures.pop(self._login_failure_key(username, client_key), None)
+
+    def _raise_if_login_locked(self, username: str, client_key: str | None) -> None:
+        key = self._login_failure_key(username, client_key)
+        record = self._login_failures.get(key)
+        if not record:
+            return
+        now = self._now()
+        locked_until = float(record.get("locked_until", 0.0))
+        if locked_until and locked_until <= now:
+            self._login_failures.pop(key, None)
+            return
+        if locked_until > now:
+            raise AuthRateLimitError(math.ceil(locked_until - now))
 
     # ── 密码 ──────────────────────────────────────────────────
 
@@ -69,17 +119,20 @@ class AuthManager:
 
     # ── 登录 / Token ──────────────────────────────────────────
 
-    def login(self, username: str, password: str) -> str | None:
+    def login(self, username: str, password: str, *, client_key: str | None = None) -> str | None:
         """验证凭据，成功返回 token，失败返回 None"""
+        self._raise_if_login_locked(username, client_key)
         user = self._users.get(username)
         if not user or not self._verify_password(password, user.password_hash):
+            self._record_login_failure(username, client_key)
             return None
+        self._clear_login_failures(username, client_key)
         token = secrets.token_urlsafe(32)
         self._tokens[token] = {
             "username": user.username,
             "role": user.role,
             "display_name": user.display_name,
-            "exp": time.time() + self.TOKEN_TTL,
+            "exp": self._now() + self.TOKEN_TTL,
         }
         return token
 
@@ -90,7 +143,7 @@ class AuthManager:
         info = self._tokens.get(token)
         if not info:
             return None
-        if time.time() > info["exp"]:
+        if self._now() > info["exp"]:
             del self._tokens[token]
             return None
         return info
@@ -110,7 +163,7 @@ class AuthManager:
 
     def active_token_count(self) -> int:
         # 顺带清理过期 token
-        now = time.time()
+        now = self._now()
         expired = [t for t, v in self._tokens.items() if now > v["exp"]]
         for t in expired:
             del self._tokens[t]

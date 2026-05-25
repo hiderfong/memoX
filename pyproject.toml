@@ -42,9 +42,8 @@ dependencies = [
     "openpyxl>=3.1.0",
     "python-pptx>=0.6.21",
     "beautifulsoup4>=4.12.0",
-    # 向量存储与嵌入
+    # 向量存储
     "chromadb>=0.4.0",
-    "sentence-transformers>=2.2.0",
     # 全文检索（混合搜索）
     "rank-bm25>=0.2",
     # 知识图谱（实验性）
@@ -53,11 +52,21 @@ dependencies = [
     "apscheduler>=3.10.0",
     # 限流
     "slowapi>=0.1.9",
-    # Web UI (Streamlit 管理界面)
-    "streamlit>=1.30",
+    "sqlalchemy>=2.0.49",
+    "playwright>=1.60.0",
+    "pygithub>=2.9.1",
+    "neo4j>=6.2.0",
+    "sentence-transformers>=5.4.1",
+    "torch>=2.11.0",
 ]
 
 [project.optional-dependencies]
+local-embeddings = [
+    "sentence-transformers>=2.2.0",
+]
+ui = [
+    "streamlit>=1.30",
+]
 dev = [
     "pytest>=9.0.0",
     "pytest-asyncio>=1.0.0",
@@ -74,7 +83,7 @@ server = [
 ]
 
 [project.scripts]
-memox = "main:run"
+memox = "src.main:main"
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
@@ -82,7 +91,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["src/*"]
+include = ["src", "src.*"]
 
 [tool.ruff]
 target-version = "py310"
@@ -105,7 +114,7 @@ exclude = [
     "_build",
     "build",
     "dist",
-    "frontend",
+    "frontend_wip",
     "node_modules",
     "venv",
 ]
@@ -186,7 +195,7 @@ omit = [
     "*/tests/*",
     "*/test_*",
     "*/__pycache__/*",
-    "*/frontend/*",
+    "*/frontend_wip/*",
 ]
 
 [tool.coverage.report]

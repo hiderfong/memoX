@@ -19,6 +19,7 @@
     9. 多模态文档支持 (ImageParser)
 """
 import asyncio
+import contextlib
 import os
 import shutil
 import sys
@@ -66,24 +67,28 @@ def client(test_dirs):
     from knowledge.document_parser import DocumentParser
     from knowledge.group_store import GroupStore
     from knowledge.rag_engine import RAGEngine
-    from knowledge.vector_store import ChromaVectorStore, SentenceTransformerEmbedding
+    from knowledge.vector_store import ChromaVectorStore, HashEmbedding
     from storage import init_store
 
-    # 保存原始 startup，替换为空函数以阻止自动初始化
-    original_startup = api_module.startup
+    # 保存原始 lifespan，替换为空上下文以阻止自动初始化
+    original_lifespan = api_module.app.router.lifespan_context
 
-    async def noop_startup():
-        pass
+    @contextlib.asynccontextmanager
+    async def noop_lifespan(app):
+        yield
 
-    api_module.app.router.on_startup = [noop_startup]
+    api_module.app.router.lifespan_context = noop_lifespan
 
     # 初始化认证
-    init_auth([
-        {"username": "test", "password": "testpass", "role": "admin", "display_name": "Test User"},
-    ])
+    init_auth(
+        [
+            {"username": "test", "password": "testpass", "role": "admin", "display_name": "Test User"},
+        ],
+        app_state=api_module.app.state,
+    )
 
     # 嵌入函数
-    embedding = SentenceTransformerEmbedding()
+    embedding = HashEmbedding()
 
     # 向量存储 + RAG 引擎
     vector_store = ChromaVectorStore(
@@ -97,6 +102,7 @@ def client(test_dirs):
         chunk_size=200,
         chunk_overlap=20,
         top_k=5,
+        bm25_persist_path=os.path.join(test_dirs["base"], "bm25_index.pkl"),
         manifest_path=os.path.join(test_dirs["base"], "documents_manifest.json"),
     )
 
@@ -178,7 +184,7 @@ def client(test_dirs):
         yield c
 
     # 恢复
-    api_module.app.router.on_startup = [original_startup]
+    api_module.app.router.lifespan_context = original_lifespan
 
 
 @pytest.fixture(scope="module")

@@ -2,9 +2,12 @@
 """迭代协作编排器 - 多 Agent 迭代执行主循环"""
 
 import asyncio
+import inspect
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
@@ -13,14 +16,21 @@ from loguru import logger
 from agents.base_agent import LLMProvider, ToolRegistry
 from agents.mail_bus import MailBus
 from agents.sandbox import SandboxManager
-from agents.worker_pool import Task, TaskStatus, WorkerPool
+from agents.worker_pool import SubTask, Task, TaskStatus, WorkerPool
 from coordinator.task_planner import TaskPlanner
+from tools.catalog import select_allowed_tools
+from tools.database import DatabaseQueryTool
 from tools.filesystem import ListFilesTool, ReadFileTool, WriteFileTool
-from tools.mail import ReadMailTool, SendMailTool
+from tools.github import GitHubCreateIssueTool, GitHubSearchTool
+from tools.mail import BroadcastTool, ReadBroadcastsTool, ReadMailTool, SendMailTool
+from tools.playwright_crawler import PlaywrightCrawlerTool
 from tools.shell import ShellTool
+from tools.web import WebFetchTool, WebSearchTool
 
 MAX_ITERATIONS = 50
 QUALITY_THRESHOLD = 0.8
+SUBTASK_MAX_ATTEMPTS = 2
+TaskUpdateCallback = Callable[[Task, str, dict[str, Any]], Any]
 
 
 @dataclass
@@ -55,6 +65,7 @@ class IterativeOrchestrator:
         base_workspace: str | Path = "data/workspace",
         max_iterations: int = MAX_ITERATIONS,
         quality_threshold: float = QUALITY_THRESHOLD,
+        subtask_max_attempts: int = SUBTASK_MAX_ATTEMPTS,
         broadcast: Any = None,
         mode: Literal["iterative", "parallel"] = "iterative",
     ):
@@ -67,6 +78,7 @@ class IterativeOrchestrator:
         self._sandbox_mgr = SandboxManager(base_workspace)
         self._max_iterations = max_iterations
         self._quality_threshold = quality_threshold
+        self._subtask_max_attempts = max(1, subtask_max_attempts)
         self._running_tasks: dict[str, asyncio.Task] = {}  # task_id → asyncio.Task
         self._cancelled: set[str] = set()
         self._broadcast = broadcast  # async callable(dict) for WebSocket broadcast
@@ -109,28 +121,55 @@ class IterativeOrchestrator:
         description: str,
         context: dict[str, Any] | None = None,
         active_group_ids: list[str] | None = None,
+        task_id: str | None = None,
+        on_task_update: TaskUpdateCallback | None = None,
     ) -> IterationResult:
         """执行迭代协作任务，返回最终结果"""
         ctx = dict(context or {})
+        resume_checkpoint = ctx.pop("_resume_checkpoint", None)
+        if task_id:
+            ctx["_task_id"] = task_id
 
         # Step 1: RAG 检索注入
         await self._inject_rag_context(description, ctx, active_group_ids)
 
         # Step 2: 任务规划
-        task, complexity = await self._planner.plan_task(description, ctx)
-        logger.info(f"[Orchestrator] 任务 {task.id} 规划完成，复杂度: {complexity.value}，子任务数: {len(task.sub_tasks)}")
+        if self._is_resume_checkpoint(resume_checkpoint):
+            task = self._task_from_checkpoint(resume_checkpoint, description, task_id)
+            complexity_value = "resume"
+            logger.info(f"[Orchestrator] 任务 {task.id} 从检查点恢复，子任务数: {len(task.sub_tasks)}")
+        else:
+            task, complexity = await self._planner.plan_task(description, ctx)
+            complexity_value = complexity.value
+            logger.info(f"[Orchestrator] 任务 {task.id} 规划完成，复杂度: {complexity_value}，子任务数: {len(task.sub_tasks)}")
+        await self._emit_task_update(
+            on_task_update,
+            task,
+            "planned",
+            {
+                "complexity": complexity_value,
+                "subtask_count": len(task.sub_tasks),
+                "resumed_from_checkpoint": complexity_value == "resume",
+            },
+        )
 
         # 注册为运行中任务
         current_asyncio_task = asyncio.current_task()
         if current_asyncio_task:
             self._running_tasks[task.id] = current_asyncio_task
+        task.status = TaskStatus.RUNNING
+        task.started_at = datetime.now().isoformat()
+        await self._emit_task_update(on_task_update, task, "task_running", {})
 
         try:
             if self._mode == "parallel":
-                return await self._run_parallel(task, description, ctx)
-            return await self._run_iterations(task, description, ctx)
+                return await self._run_parallel(task, description, ctx, on_task_update)
+            return await self._run_iterations(task, description, ctx, on_task_update)
         except asyncio.CancelledError:
             logger.warning(f"[Orchestrator] 任务 {task.id} 已被取消")
+            task.status = TaskStatus.CANCELLED
+            task.completed_at = datetime.now().isoformat()
+            await self._emit_task_update(on_task_update, task, "task_cancelled", {})
             shared_dir = str(self._sandbox_mgr.get_shared_dir(task.id))
             return IterationResult(
                 task_id=task.id,
@@ -148,6 +187,7 @@ class IterativeOrchestrator:
         task: Task,
         description: str,
         ctx: dict[str, Any],
+        on_task_update: TaskUpdateCallback | None = None,
     ) -> IterationResult:
         """迭代执行主循环（可被取消）"""
         # Step 3: 创建沙箱 + MailBus
@@ -165,6 +205,7 @@ class IterativeOrchestrator:
                 raise asyncio.CancelledError()
 
             logger.info(f"[Orchestrator] 任务 {task.id} 第 {iteration + 1} 轮迭代")
+            await self._emit_task_update(on_task_update, task, "iteration_started", {"iteration": iteration})
 
             # Step 4: 为 Worker 绑定工具
             self._prepare_workers(task, mail_bus, refinement_instructions)
@@ -176,9 +217,15 @@ class IterativeOrchestrator:
                     st.status = TaskStatus.PENDING
                     st.result = None
                     st.error = None
+                    await self._emit_task_update(
+                        on_task_update,
+                        task,
+                        "subtask_pending",
+                        {"subtask_id": st.id, "iteration": iteration},
+                    )
 
             # Step 6: 带依赖注入地执行子任务
-            await self._execute_with_deps(task, ctx)
+            await self._execute_with_deps(task, ctx, on_task_update=on_task_update, iteration=iteration)
 
             # Step 7: 合并沙箱 → shared/
             merged_summary = self._merge(task)
@@ -230,6 +277,15 @@ class IterativeOrchestrator:
         except Exception as e:
             logger.warning(f"[Orchestrator] 邮件日志导出失败: {e}")
 
+        task.status = TaskStatus.COMPLETED
+        task.result = merged_summary[:2000]
+        task.completed_at = datetime.now().isoformat()
+        await self._emit_task_update(
+            on_task_update,
+            task,
+            "task_completed",
+            {"final_score": score, "iterations": len(history)},
+        )
         return IterationResult(
             task_id=task.id,
             shared_dir=str(shared_dir),
@@ -248,11 +304,15 @@ class IterativeOrchestrator:
         if not self._rag_engine:
             return
         try:
-            results = await self._rag_engine.search_with_graph(
+            raw_results = await self._rag_engine.search_with_graph(
                 description,
                 group_ids=active_group_ids,
                 top_k=3,
             )
+            if isinstance(raw_results, dict):
+                results = raw_results.get("search_results") or []
+            else:
+                results = raw_results or []
             if results:
                 context["knowledge_context"] = "\n".join(
                     f"[{r.metadata.get('filename', 'doc')}] {r.content[:300]}"
@@ -284,21 +344,23 @@ class IterativeOrchestrator:
                 ShellTool(cwd=sandbox_dir),
                 SendMailTool(worker.config.name, mail_bus),
                 ReadMailTool(worker.config.name, mail_bus),
+                BroadcastTool(worker.config.name, mail_bus),
+                ReadBroadcastsTool(worker.config.name, mail_bus),
+                WebSearchTool(),
+                WebFetchTool(),
+                DatabaseQueryTool(),
+                GitHubCreateIssueTool(),
+                GitHubSearchTool(),
+                PlaywrightCrawlerTool(),
             ]
-            allowed = set(worker.config.tools or [])
-            if allowed:
-                unknown = allowed - {t.name for t in candidates}
-                if unknown:
-                    logger.warning(
-                        f"[Orchestrator] worker {worker.config.name} 白名单含未知工具: "
-                        f"{sorted(unknown)} (已忽略)"
-                    )
-                for t in candidates:
-                    if t.name in allowed:
-                        registry.register(t)
-            else:
-                for t in candidates:
-                    registry.register(t)
+            selected_tools, unknown = select_allowed_tools(candidates, worker.config.tools)
+            if unknown:
+                logger.warning(
+                    f"[Orchestrator] worker {worker.config.name} 白名单含未知工具: "
+                    f"{sorted(unknown)} (已忽略)"
+                )
+            for tool in selected_tools:
+                registry.register(tool)
 
             # load_skill 不受 config.tools 白名单影响 — 它由 config.skills 单独控制
             if worker.config.skills:
@@ -317,6 +379,7 @@ class IterativeOrchestrator:
         task: Task,
         description: str,
         ctx: dict[str, Any],
+        on_task_update: TaskUpdateCallback | None = None,
     ) -> IterationResult:
         """P7-1: 并行执行模式（多 Agent + LLM 结果聚合）"""
         from coordinator.multi_agent_executor import MultiAgentExecutor
@@ -325,14 +388,14 @@ class IterativeOrchestrator:
         self._sandbox_mgr.create_task_workspace(task.id)
         mail_bus = MailBus(task_id=task.id)
 
-        # 懒加载 MultiAgentExecutor
-        if self._multi_executor is None:
-            self._multi_executor = MultiAgentExecutor(
-                worker_pool=self._worker_pool,
-                provider=self._provider,
-                mail_bus=mail_bus,
-                model=self._model,
-            )
+        # 每个任务拥有独立 MailBus，executor 也按任务创建以避免复用旧通信上下文。
+        self._multi_executor = MultiAgentExecutor(
+            worker_pool=self._worker_pool,
+            provider=self._provider,
+            mail_bus=mail_bus,
+            model=self._model,
+            base_workspace=self._sandbox_mgr.base_workspace,
+        )
 
         # 注册任务
         current = asyncio.current_task()
@@ -352,6 +415,15 @@ class IterativeOrchestrator:
             except Exception as e:
                 logger.warning(f"[Orchestrator] Agent 通信日志导出失败: {e}")
 
+            task.status = TaskStatus.COMPLETED
+            task.result = result.aggregated_content[:2000]
+            task.completed_at = datetime.now().isoformat()
+            await self._emit_task_update(
+                on_task_update,
+                task,
+                "task_completed",
+                {"final_score": result.final_score, "subtask_count": len(result.subtask_results)},
+            )
             return IterationResult(
                 task_id=task.id,
                 shared_dir=str(shared_dir),
@@ -367,6 +439,9 @@ class IterativeOrchestrator:
             )
         except asyncio.CancelledError:
             logger.warning(f"[Orchestrator] 任务 {task.id} 已被取消")
+            task.status = TaskStatus.CANCELLED
+            task.completed_at = datetime.now().isoformat()
+            await self._emit_task_update(on_task_update, task, "task_cancelled", {})
             shared_dir = str(self._sandbox_mgr.get_shared_dir(task.id))
             return IterationResult(
                 task_id=task.id,
@@ -379,12 +454,22 @@ class IterativeOrchestrator:
             self._running_tasks.pop(task.id, None)
             self._cancelled.discard(task.id)
 
-    async def _execute_with_deps(self, task: Task, base_context: dict) -> None:
+    async def _execute_with_deps(
+        self,
+        task: Task,
+        base_context: dict,
+        on_task_update: TaskUpdateCallback | None = None,
+        iteration: int = 0,
+    ) -> None:
         """按依赖顺序执行子任务，将依赖结果注入后续任务的 context"""
         from datetime import datetime
 
-        completed: dict[str, str] = {}
-        pending = list(task.sub_tasks)
+        completed: dict[str, str] = {
+            st.id: st.result or st.error or ""
+            for st in task.sub_tasks
+            if st.status == TaskStatus.COMPLETED
+        }
+        pending = [st for st in task.sub_tasks if st.status != TaskStatus.COMPLETED]
 
         while pending:
             ready = [st for st in pending if all(d in completed for d in st.dependencies)]
@@ -394,7 +479,14 @@ class IterativeOrchestrator:
 
             for st in ready:
                 st.status = TaskStatus.RUNNING
+                st.attempts += 1
                 st.started_at = datetime.now().isoformat()
+                await self._emit_task_update(
+                    on_task_update,
+                    task,
+                    "subtask_running",
+                    {"subtask_id": st.id, "attempt": st.attempts, "iteration": iteration},
+                )
 
             per_task_ctx = {
                 st.id: {
@@ -411,12 +503,41 @@ class IterativeOrchestrator:
             )
 
             for st, result, error in results:
+                if error and st.attempts < self._subtask_max_attempts:
+                    st.status = TaskStatus.PENDING
+                    st.result = None
+                    st.error = error
+                    await self._emit_task_update(
+                        on_task_update,
+                        task,
+                        "subtask_retry_scheduled",
+                        {
+                            "subtask_id": st.id,
+                            "attempt": st.attempts,
+                            "max_attempts": self._subtask_max_attempts,
+                            "error": error,
+                            "iteration": iteration,
+                        },
+                    )
+                    continue
+
                 st.status = TaskStatus.FAILED if error else TaskStatus.COMPLETED
                 st.result = result
                 st.error = error
                 st.completed_at = datetime.now().isoformat()
                 completed[st.id] = result or error or ""
                 pending.remove(st)
+                await self._emit_task_update(
+                    on_task_update,
+                    task,
+                    "subtask_failed" if error else "subtask_completed",
+                    {
+                        "subtask_id": st.id,
+                        "attempt": st.attempts,
+                        "error": error,
+                        "iteration": iteration,
+                    },
+                )
 
             # 清理：如果有任务被标记为 RUNNING 但从未被 dispatch（即在等待队列中）
             # 则重置为 PENDING 以便下次 iteration 重试；同时从 pending 中移除
@@ -429,10 +550,97 @@ class IterativeOrchestrator:
                     if worker and not worker.is_busy:
                         # worker 已空闲但任务状态仍为 RUNNING，说明从未被真正 dispatch
                         st.status = TaskStatus.PENDING
+                        await self._emit_task_update(
+                            on_task_update,
+                            task,
+                            "subtask_pending",
+                            {"subtask_id": st.id, "reason": "worker_idle_after_running", "iteration": iteration},
+                        )
                         # 不加入 still_pending，等 orchestrator 循环的状态重置
                     # 如果 worker 仍忙碌，不处理（下次 iteration 会继续等待）
                 # COMPLETED/FAILED 任务不重新加入 still_pending（它们已完成）
             # pending 在循环中会被重新赋值为 still_pending
+
+    @staticmethod
+    def _is_resume_checkpoint(checkpoint: Any) -> bool:
+        return isinstance(checkpoint, dict) and isinstance(checkpoint.get("sub_tasks"), list) and bool(
+            checkpoint["sub_tasks"]
+        )
+
+    @classmethod
+    def _task_from_checkpoint(
+        cls,
+        checkpoint: dict[str, Any],
+        fallback_description: str,
+        fallback_task_id: str | None,
+    ) -> Task:
+        task = Task(
+            id=str(fallback_task_id or checkpoint.get("task_id") or "task_resumed"),
+            description=str(checkpoint.get("description") or fallback_description),
+            sub_tasks=[
+                cls._subtask_from_checkpoint(raw)
+                for raw in checkpoint.get("sub_tasks", [])
+                if isinstance(raw, dict)
+            ],
+            status=cls._task_status_from_value(checkpoint.get("status"), TaskStatus.PENDING),
+            result=checkpoint.get("result"),
+            error=checkpoint.get("error"),
+            created_at=str(checkpoint.get("created_at") or datetime.now().isoformat()),
+            started_at=checkpoint.get("started_at"),
+            completed_at=checkpoint.get("completed_at"),
+        )
+        return task
+
+    @classmethod
+    def _subtask_from_checkpoint(cls, raw: dict[str, Any]) -> SubTask:
+        subtask = SubTask(
+            id=str(raw.get("id") or f"sub_{len(str(raw))}"),
+            description=str(raw.get("description") or ""),
+            dependencies=cls._string_list(raw.get("dependencies")),
+            acceptance_criteria=cls._string_list(raw.get("acceptance_criteria")),
+            status=cls._task_status_from_value(raw.get("status"), TaskStatus.PENDING),
+            result=raw.get("result"),
+            error=raw.get("error"),
+            assigned_agent=raw.get("assigned_agent"),
+            attempts=cls._safe_int(raw.get("attempts")),
+            created_at=str(raw.get("created_at") or datetime.now().isoformat()),
+            started_at=raw.get("started_at"),
+            completed_at=raw.get("completed_at"),
+        )
+        return subtask
+
+    @staticmethod
+    def _task_status_from_value(value: Any, default: TaskStatus) -> TaskStatus:
+        try:
+            return TaskStatus(str(value))
+        except ValueError:
+            return default
+
+    @staticmethod
+    def _string_list(value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [str(item) for item in value if item is not None]
+
+    @staticmethod
+    def _safe_int(value: Any) -> int:
+        try:
+            return max(0, int(value))
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    async def _emit_task_update(
+        on_task_update: TaskUpdateCallback | None,
+        task: Task,
+        event_type: str,
+        details: dict[str, Any] | None = None,
+    ) -> None:
+        if not on_task_update:
+            return
+        result = on_task_update(task, event_type, details or {})
+        if inspect.isawaitable(result):
+            await result
 
     def _merge(self, task: Task) -> str:
         """读取所有 Agent 沙箱文件，合并到 shared/，返回摘要"""

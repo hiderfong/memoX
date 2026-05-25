@@ -3,7 +3,6 @@
 import asyncio
 import contextlib
 import json
-import os
 import re as _re
 import sys
 import uuid
@@ -16,21 +15,24 @@ _src_dir = Path(__file__).parent.parent
 if str(_src_dir) not in sys.path:
     sys.path.insert(0, str(_src_dir))
 
-from typing import Annotated, Literal  # noqa: E402, I001
+# The app can be imported as either ``src.web.api`` or ``web.api`` depending on
+# how uvicorn/tests are started. Keep both names bound to this module so routers
+# that lazily read globals do not see a second, uninitialized module instance.
+_this_module = sys.modules[__name__]
+sys.modules["web.api"] = _this_module
+sys.modules["src.web.api"] = _this_module
+
+from typing import Literal  # noqa: E402, I001
 
 from fastapi import (  # noqa: E402
-    Depends,
     FastAPI,
-    File,
-    Form,
     HTTPException,
     Request,
-    UploadFile,
     WebSocket,
     WebSocketDisconnect,
 )
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
-from fastapi.responses import FileResponse, JSONResponse, StreamingResponse  # noqa: E402
+from fastapi.responses import FileResponse, JSONResponse  # noqa: E402
 from fastapi.staticfiles import StaticFiles  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 from slowapi import Limiter  # noqa: E402
@@ -39,21 +41,20 @@ from slowapi.util import get_remote_address  # noqa: E402
 
 from agents.base_agent import ToolRegistry, create_provider  # noqa: E402
 from agents.worker_pool import WorkerAgent, WorkerConfig, get_worker_pool, init_worker_pool  # noqa: E402
-from auth import AuthUser, _get_auth_from_request, get_auth_manager, get_current_user, init_auth, require_role  # noqa: E402
-from config import Config, load_config  # noqa: E402
-from memory import MemoryManager, MemoryRecall, PreferenceLearner  # noqa: E402
+from auth import AuthUser, _get_auth_from_request, init_auth  # noqa: E402
+from config import Config, default_config_path, load_config, resolve_env_value, validate_config  # noqa: E402
 from coordinator.iterative_orchestrator import IterativeOrchestrator  # noqa: E402
 from coordinator.task_planner import TaskPlanner, init_task_planner  # noqa: E402
+from memory import MemoryManager, MemoryRecall, PreferenceLearner  # noqa: E402
 from knowledge import (  # noqa: E402
-    DocumentInfo,
     RAGEngine,
-    SearchResult,
     init_rag_engine,
 )
-from knowledge.document_parser import WebPageParser  # noqa: E402
-from knowledge.group_store import UNGROUPED_ID, GroupStore  # noqa: E402
+from knowledge.document_parser import WebPageParser  # noqa: E402, F401
+from knowledge.group_store import GroupStore  # noqa: E402
 from knowledge.vector_store import (  # noqa: E402
     DashScopeEmbedding,
+    HashEmbedding,
     OpenAIEmbedding,
     SentenceTransformerEmbedding,
 )
@@ -61,7 +62,6 @@ from storage import get_store, init_store  # noqa: E402
 from workflow import (  # noqa: E402
     WorkflowEngine,
     WorkflowPersistence,
-    parse_workflow_yaml,
 )
 
 
@@ -90,7 +90,37 @@ def _audit_log(
 
 # ==================== 配置 ====================
 
-app = FastAPI(title="MemoX API", version="1.0.0")
+
+def shutdown():
+    import scheduler
+    from scheduler import get_runner
+    r = get_runner()
+    if r:
+        r.stop()
+    scheduler._runner = None
+
+    import ops.maintenance
+    from ops.maintenance import get_maintenance_runner
+    ops_runner = get_maintenance_runner()
+    if ops_runner:
+        ops_runner.stop()
+    ops.maintenance._runner = None
+
+@contextlib.asynccontextmanager
+async def lifespan(app_: FastAPI):
+    await startup()
+    yield
+    shutdown()
+
+
+app = FastAPI(
+    title="MemoX API",
+    version="1.0.0",
+    lifespan=lifespan,
+    docs_url="/api/docs",
+    redoc_url="/api/redoc",
+    openapi_url="/api/openapi.json",
+)
 
 # CORS 配置：允许本地开发端口和公网 IP 直接访问
 app.add_middleware(
@@ -133,6 +163,8 @@ _memory_manager: MemoryManager | None = None
 _memory_recall: MemoryRecall | None = None
 _preference_learner: PreferenceLearner | None = None
 _group_store: GroupStore | None = None
+_workflow_engine: WorkflowEngine | None = None
+_workflow_persistence: WorkflowPersistence | None = None
 _task_results: dict[str, dict] = {}  # task_id -> full result dict (for later retrieval)
 _ws_connections: set[WebSocket] = set()
 
@@ -175,6 +207,7 @@ _PUBLIC_PATHS: set[str] = {
     "/api/auth/login",
     "/api/health",
     "/api/docs",
+    "/api/redoc",
     "/api/openapi.json",
     "/docs",
     "/openapi.json",
@@ -271,25 +304,21 @@ class MoveDocumentGroup(BaseModel):
 
 # ==================== 初始化 ====================
 
-@app.on_event("startup")
 async def startup():
     """启动时初始化"""
     global _config, _rag_engine, _task_planner
 
     # 加载配置
     _config = load_config()
+    validate_config(_config)
 
     # 初始化认证
     if _config.auth.enabled:
-        def _resolve(v: str) -> str:
-            if isinstance(v, str) and v.startswith("${") and v.endswith("}"):
-                return os.getenv(v[2:-1], "")
-            return v
         init_auth(
             [
                 {
                     "username": u.username,
-                    "password": _resolve(u.password),
+                    "password": resolve_env_value(u.password),
                     "role": u.role,
                     "display_name": u.display_name,
                 }
@@ -306,7 +335,10 @@ async def startup():
     kb_config = _config.knowledge_base
     embedding_provider = kb_config.embedding_provider
 
-    if embedding_provider == "dashscope":
+    if embedding_provider in ("hash", "local-hash"):
+        embedding_function = HashEmbedding()
+        logger.info("   - 使用本地 Hash Embedding（仅适合 smoke/demo）")
+    elif embedding_provider == "dashscope":
         # 阿里云 DashScope
         dashscope_config = _config.providers.get("dashscope")
         if dashscope_config and dashscope_config.resolve_api_key():
@@ -342,6 +374,8 @@ async def startup():
 
     # 初始化 RAG 引擎
     hybrid_cfg = kb_config.hybrid_search
+    reranker_cfg = getattr(kb_config, "reranker", None)
+
     _rag_engine = init_rag_engine(
         persist_directory=kb_config.persist_directory,
         embedding_function=embedding_function,
@@ -354,8 +388,10 @@ async def startup():
         bm25_persist_path=hybrid_cfg.get("bm25_persist_path", "./data/bm25_index.pkl") if hybrid_cfg else "./data/bm25_index.pkl",
         chunk_strategy=hybrid_cfg.get("chunk_strategy", "size") if hybrid_cfg else "size",
         enable_graph=kb_config.enable_graph,
-        graph_persist_path=kb_config.graph_persist_path,
+        graph_config=kb_config,
         manifest_path=kb_config.manifest_path,
+        reranker_enabled=getattr(reranker_cfg, "enabled", False) if reranker_cfg else False,
+        reranker_model=getattr(reranker_cfg, "model", "cross-encoder/ms-marco-MiniLM-L-6-v2") if reranker_cfg else "cross-encoder/ms-marco-MiniLM-L-6-v2",
     )
 
     # 预热嵌入模型（避免首次请求时延迟）
@@ -364,7 +400,10 @@ async def startup():
 
     # 初始化持久化存储（需要在 Worker 创建之前，以便 Worker 从 DB 恢复 token 用量）
     db_path = Path(_config.knowledge_base.persist_directory).parent / "memox.db"
-    init_store(db_path)
+    store = init_store(db_path)
+    interrupted = store.mark_incomplete_tasks_interrupted()
+    if interrupted:
+        logger.warning(f"   - {interrupted} 个未完成后台任务已标记为中断")
     logger.info(f"   - 持久化存储: {db_path}")
 
     # 确保技能目录存在
@@ -372,6 +411,9 @@ async def startup():
 
     # 初始化 Worker 池
     worker_pool = init_worker_pool(max_workers=_config.coordinator.max_workers)
+    workflow_db_path = Path(_config.knowledge_base.persist_directory).parent / "workflows.db"
+    global _workflow_persistence, _workflow_engine
+    _workflow_persistence = WorkflowPersistence(str(workflow_db_path))
 
     # 注册 Worker（从模板）
     for name, template in _config.worker_templates.items():
@@ -428,6 +470,13 @@ async def startup():
             base_workspace=str(Path(_config.knowledge_base.persist_directory).parent / "workspace"),
             broadcast=_ws_broadcast,
         )
+        _workflow_engine = WorkflowEngine(worker_pool, coordinator_provider, _workflow_persistence)
+        from web.routers.tasks import init_task_job_runner
+
+        task_job_runner = init_task_job_runner(_orchestrator, _task_planner, store, _task_results, config=_config)
+        recovered = task_job_runner.recover_pending()
+        if recovered:
+            logger.warning(f"   - 已恢复 {len(recovered)} 个未完成后台任务")
 
     # 初始化分组存储
     global _group_store
@@ -444,14 +493,27 @@ async def startup():
         runner = init_runner(get_store(), _orchestrator)
         runner.start()
 
+    # 启动运维维护任务：自动备份与本地归档裁剪
+    if _config.ops.auto_backup_enabled:
+        from ops.maintenance import init_maintenance_runner
+
+        config_path = default_config_path()
+        if not config_path.is_absolute():
+            config_path = Path.cwd() / config_path
+        ops_runner = init_maintenance_runner(
+            root=config_path.resolve().parent,
+            include=tuple(_config.ops.auto_backup_include),
+            interval_hours=_config.ops.auto_backup_interval_hours,
+            startup_delay_seconds=_config.ops.auto_backup_startup_delay_seconds,
+            max_backups=_config.ops.max_backups,
+            archive_mirror_dir=_config.ops.archive_mirror_dir,
+            store=get_store(),
+        )
+        ops_runner.start()
+
     # 注册优雅停机
     import atexit
-    def _stop_scheduler():
-        from scheduler import get_runner
-        r = get_runner()
-        if r:
-            r.stop()
-    atexit.register(_stop_scheduler)
+    atexit.register(shutdown)
 
     # 初始化文生图客户端
     img_cfg = _config.image_generation if _config else None
@@ -515,7 +577,7 @@ async def startup():
 
 
 # ── Router imports ─────────────────────────────────────────────────────────
-from web.routers import (
+from web.routers import (  # noqa: E402
     auth_router,
     chat_router,
     documents_router,
@@ -523,6 +585,7 @@ from web.routers import (
     memories_router,
     scheduled_router,
     skills_router,
+    system_router,
     tasks_router,
     workers_router,
     workflows_router,
@@ -535,6 +598,7 @@ app.include_router(imaging_router)
 app.include_router(memories_router)
 app.include_router(scheduled_router)
 app.include_router(skills_router)
+app.include_router(system_router)
 app.include_router(tasks_router)
 app.include_router(workers_router)
 app.include_router(workflows_router)

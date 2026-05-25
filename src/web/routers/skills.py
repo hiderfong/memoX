@@ -5,7 +5,7 @@ import json as _json
 from pathlib import Path
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -33,8 +33,8 @@ class SkillLintRequest(BaseModel):
 def _get_globals():
     import web.api as _api_module
     return (
-        getattr(_api_module, "_config"),
-        getattr(_api_module, "_rag_engine"),
+        _api_module._config,
+        _api_module._rag_engine,
     )
 
 
@@ -133,7 +133,11 @@ async def search_skills(q: str = "", limit: int = 10) -> dict:
 
 
 @router.post("/install")
-async def install_skill(body: SkillInstallRequest):
+async def install_skill(
+    body: SkillInstallRequest,
+    request: Request,
+    user: Annotated[AuthUser, require_role("admin")],
+):
     """从 GitHub 安装 skill，以 SSE 流推送阶段进度。"""
     from skills.installer import install_from_github
 
@@ -181,6 +185,10 @@ async def install_skill(body: SkillInstallRequest):
                 "name": skill.name,
                 "description": skill.description,
             })
+            with contextlib.suppress(Exception):
+                import web.api as _api_module
+                _audit_log = getattr(_api_module, "_audit_log", lambda *a, **kw: None)
+                _audit_log(request, user, "install", "skill", skill.name)
         except FileExistsError as e:
             await queue.put({"stage": "error", "code": "exists", "message": str(e)})
         except FileNotFoundError as e:

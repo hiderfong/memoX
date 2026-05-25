@@ -221,6 +221,18 @@ class TestBM25IndexerPersistence:
         assert retrieved.size == 1
         assert retrieved.get_chunk("s1").content == "单例测试"
 
+    def test_singleton_reinitializes_when_path_changes(self, tmp_path: Path):
+        first = init_bm25_indexer(str(tmp_path / "first.pkl"))
+        first.add_chunks([
+            ChunkEntry(chunk_id="s1", doc_id="sd1", content="单例测试", metadata={}),
+        ])
+
+        second = get_bm25_indexer(str(tmp_path / "second.pkl"))
+
+        assert second is not first
+        assert second.persist_path == (tmp_path / "second.pkl").resolve()
+        assert second.size == 0
+
 
 # ── HybridRetriever 单元测试 ────────────────────────────────────────────────
 
@@ -346,6 +358,82 @@ class TestHybridRetrieverBasic:
         assert r.score >= 0.0
         assert r.metadata.get("filename") == "test.txt"
         assert r.doc_id == "d1"
+
+    def test_bm25_respects_metadata_filter(self, tmp_path: Path):
+        """BM25 分支也必须遵守 group/doc 过滤，避免跨知识组混入结果。"""
+        chunks = [
+            ChunkEntry(
+                chunk_id="c1",
+                doc_id="d1",
+                content="shared keyword from group one",
+                metadata={"doc_id": "d1", "group_id": "g1", "filename": "g1.txt"},
+            ),
+            ChunkEntry(
+                chunk_id="c2",
+                doc_id="d2",
+                content="shared keyword from group two",
+                metadata={"doc_id": "d2", "group_id": "g2", "filename": "g2.txt"},
+            ),
+        ]
+        bm25_indexer = BM25Indexer(persist_path=tmp_path / "bm25.pkl")
+        bm25_indexer.add_chunks(chunks)
+        vector_store = MockVectorStore([])
+
+        retriever = HybridRetriever(vector_store=vector_store, bm25_indexer=bm25_indexer)
+        results = asyncio.run(
+            retriever.search(
+                "shared keyword",
+                top_k=5,
+                filter_metadata={"group_id": {"$in": ["g1"]}},
+            )
+        )
+
+        assert [r.chunk_id for r in results] == ["c1"]
+
+    def test_vector_only_hit_keeps_content_and_metadata(self, tmp_path: Path):
+        """BM25 索引缺失时，vector-only 命中仍应返回正文和 metadata。"""
+        bm25_indexer = BM25Indexer(persist_path=tmp_path / "bm25.pkl")
+        vector_store = MockVectorStore([
+            {
+                "id": "c1",
+                "content": "Python vector only content",
+                "metadata": {"doc_id": "d1", "group_id": "g1", "filename": "vector.txt"},
+            },
+        ])
+
+        retriever = HybridRetriever(vector_store=vector_store, bm25_indexer=bm25_indexer)
+        results = asyncio.run(retriever.search("Python", top_k=3))
+
+        assert len(results) == 1
+        assert results[0].chunk_id == "c1"
+        assert results[0].content == "Python vector only content"
+        assert results[0].metadata["filename"] == "vector.txt"
+
+    def test_vector_results_are_filtered_even_if_store_does_not_filter(self, tmp_path: Path):
+        bm25_indexer = BM25Indexer(persist_path=tmp_path / "bm25.pkl")
+        vector_store = MockVectorStore([
+            {
+                "id": "c1",
+                "content": "Python content from group one",
+                "metadata": {"doc_id": "d1", "group_id": "g1"},
+            },
+            {
+                "id": "c2",
+                "content": "Python content from group two",
+                "metadata": {"doc_id": "d2", "group_id": "g2"},
+            },
+        ])
+
+        retriever = HybridRetriever(vector_store=vector_store, bm25_indexer=bm25_indexer)
+        results = asyncio.run(
+            retriever.search(
+                "Python",
+                top_k=5,
+                filter_metadata={"$and": [{"group_id": {"$in": ["g1"]}}, {"doc_id": {"$in": ["d1"]}}]},
+            )
+        )
+
+        assert [r.chunk_id for r in results] == ["c1"]
 
     def test_empty_corpus(self, tmp_path: Path):
         bm25_indexer = BM25Indexer(persist_path=tmp_path / "bm25.pkl")

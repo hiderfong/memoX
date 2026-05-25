@@ -14,8 +14,8 @@ def _bypass_auth(monkeypatch):
     mgr.validate_token.return_value = {
         "username": "t", "role": "admin", "display_name": "Test",
     }
-    app.state._auth_manager = mgr
-    app.dependency_overrides[_get_auth_from_request] = lambda request: mgr
+    monkeypatch.setattr(app.state, "_auth_manager", mgr, raising=False)
+    monkeypatch.setitem(app.dependency_overrides, _get_auth_from_request, lambda request: mgr)
 
 
 def test_files_route_serves_existing_file(tmp_path, monkeypatch):

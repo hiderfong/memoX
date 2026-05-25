@@ -1,8 +1,12 @@
 """Tools 模块"""
 
-from tools.filesystem import ListFilesTool, ReadFileTool, WriteFileTool
-from tools.mail import ReadMailTool, SendMailTool
-from tools.shell import ShellTool
+from .database import DatabaseQueryTool
+from .filesystem import ListFilesTool, ReadFileTool, WriteFileTool
+from .github import GitHubCreateIssueTool, GitHubSearchTool
+from .mail import ReadMailTool, SendMailTool
+from .playwright_crawler import PlaywrightCrawlerTool
+from .shell import ShellTool
+from .web import WebFetchTool, WebSearchTool
 
 __all__ = [
     "ReadFileTool",
@@ -11,4 +15,10 @@ __all__ = [
     "ShellTool",
     "SendMailTool",
     "ReadMailTool",
+    "WebSearchTool",
+    "WebFetchTool",
+    "DatabaseQueryTool",
+    "GitHubCreateIssueTool",
+    "GitHubSearchTool",
+    "PlaywrightCrawlerTool",
 ]

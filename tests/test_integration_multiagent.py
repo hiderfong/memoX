@@ -243,7 +243,7 @@ def test_refinement_hint_injected(tmp_path):
 
 
 def test_worker_tools_bound_per_iteration(tmp_path):
-    """_prepare_workers() 为每个 Worker 绑定全部 6 个工具"""
+    """_prepare_workers() 为每个 Worker 绑定全部可用工具"""
     from agents.mail_bus import MailBus
     from agents.worker_pool import SubTask, Task, WorkerAgent, WorkerConfig, WorkerPool
     from coordinator.iterative_orchestrator import IterativeOrchestrator
@@ -273,7 +273,67 @@ def test_worker_tools_bound_per_iteration(tmp_path):
     orchestrator._prepare_workers(task, mail_bus, "")
 
     tools = worker.tools.list_tools()
-    assert set(tools) == {"read_file", "write_file", "list_files", "run_shell", "send_mail", "read_mail"}
+    assert set(tools) == {
+        "read_file",
+        "write_file",
+        "list_files",
+        "run_shell",
+        "send_mail",
+        "read_mail",
+        "broadcast_message",
+        "read_broadcasts",
+        "web_search",
+        "web_fetch",
+        "database_query",
+        "github_create_issue",
+        "github_search",
+        "playwright_crawler",
+    }
+
+
+def test_worker_tool_aliases_bound_per_iteration(tmp_path):
+    """旧配置里的 filesystem/shell/git/mail 别名会映射到真实工具名"""
+    from agents.mail_bus import MailBus
+    from agents.worker_pool import SubTask, Task, WorkerAgent, WorkerConfig, WorkerPool
+    from coordinator.iterative_orchestrator import IterativeOrchestrator
+
+    config = WorkerConfig(
+        name="worker_aliases",
+        provider_type="openai",
+        api_key="fake",
+        model="fake",
+        tools=["filesystem", "shell", "git", "mail", "web_search"],
+    )
+    worker = WorkerAgent(config=config, provider=MagicMock())
+    pool = WorkerPool()
+    pool.register_worker(worker)
+
+    task = Task(id="task_aliases", description="test", sub_tasks=[SubTask(id="sub_t1", description="test")])
+    sandbox_mgr = SandboxManager(tmp_path)
+    sandbox_mgr.create_task_workspace("task_aliases")
+    mail_bus = MailBus(task_id="task_aliases")
+
+    orchestrator = IterativeOrchestrator(
+        planner=MagicMock(),
+        worker_pool=pool,
+        provider=MagicMock(),
+        rag_engine=None,
+        model="fake",
+        base_workspace=tmp_path,
+    )
+    orchestrator._sandbox_mgr = sandbox_mgr
+
+    orchestrator._prepare_workers(task, mail_bus, "")
+
+    assert set(worker.tools.list_tools()) == {
+        "read_file",
+        "write_file",
+        "list_files",
+        "run_shell",
+        "send_mail",
+        "read_mail",
+        "web_search",
+    }
 
 
 def test_smart_dispatch_by_assigned_agent():

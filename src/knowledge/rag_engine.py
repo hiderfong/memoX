@@ -8,13 +8,16 @@
 - manifest 在 RAGEngine 实例化时加载，保持内存缓存 + 定期写回
 """
 
+import asyncio
 import hashlib
 import json
+import os
+import tempfile
 import uuid
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from .bm25_indexer import get_bm25_indexer
 from .document_parser import DocumentParser
@@ -68,8 +71,36 @@ class _DocumentManifest:
             return
         self._path.parent.mkdir(parents=True, exist_ok=True)
         raw = {"version": self.MANIFEST_VERSION, "documents": self._data}
-        self._path.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        text = json.dumps(raw, ensure_ascii=False, indent=2) + "\n"
+        tmp_path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=self._path.parent,
+                prefix=f".{self._path.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as tmp:
+                tmp.write(text)
+                tmp.flush()
+                os.fsync(tmp.fileno())
+                tmp_path = Path(tmp.name)
+            os.replace(tmp_path, self._path)
+        finally:
+            if tmp_path and tmp_path.exists():
+                tmp_path.unlink(missing_ok=True)
         self._dirty = False
+
+    def snapshot(self) -> tuple[dict[str, dict], bool]:
+        """Return a shallow-safe snapshot for in-memory rollback."""
+        return ({key: dict(value) for key, value in self._data.items()}, self._dirty)
+
+    def restore(self, snapshot: tuple[dict[str, dict], bool]) -> None:
+        """Restore an in-memory snapshot after a failed manifest save."""
+        data, dirty = snapshot
+        self._data = {key: dict(value) for key, value in data.items()}
+        self._dirty = dirty
 
     # ── lookup ───────────────────────────────────────────────────────────────
 
@@ -242,8 +273,10 @@ class RAGEngine:
         bm25_persist_path: str = "./data/bm25_index.pkl",
         chunk_strategy: str = "size",
         enable_graph: bool = False,
-        graph_persist_path: str = "./data/knowledge_graph.gml",
+        graph_config: Any = None,
         manifest_path: str = "./data/documents_manifest.json",
+        reranker_enabled: bool = False,
+        reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
     ):
         self.vector_store = vector_store or get_vector_store()
         self.document_parser = document_parser or DocumentParser(
@@ -270,11 +303,25 @@ class RAGEngine:
         # 知识图谱初始化（实验性）
         if self.enable_graph:
             self._knowledge_graph = get_knowledge_graph(
-                persist_path=graph_persist_path,
-                enabled=True,
+                config=graph_config,
             )
         else:
             self._knowledge_graph = None
+
+        # 重排序模型初始化
+        self.reranker_enabled = reranker_enabled
+        self.reranker_model_name = reranker_model
+        self._reranker = None
+        if self.reranker_enabled:
+            try:
+                from sentence_transformers import CrossEncoder
+                self._reranker = CrossEncoder(self.reranker_model_name)
+            except ImportError:
+                print("sentence-transformers is not installed. Run: uv add sentence-transformers torch")
+                self.reranker_enabled = False
+            except Exception as e:
+                print(f"Failed to load reranker model: {e}")
+                self.reranker_enabled = False
 
         # 内存存储会话（生产环境应使用数据库）
         self._sessions: dict[str, ChatSession] = {}
@@ -282,8 +329,20 @@ class RAGEngine:
 
         # 文档增量更新 manifest
         self._manifest = _DocumentManifest(Path(manifest_path))
+        self._document_mutation_lock = asyncio.Lock()
 
     async def add_document(
+        self,
+        file_path: Path,
+        collection_name: str = "documents",
+        group_id: str = "ungrouped",
+        original_filename: str | None = None,
+    ) -> UpsertResult:
+        """添加文档到知识库，同一进程内串行化索引写操作。"""
+        async with self._document_mutation_lock:
+            return await self._add_document_unlocked(file_path, collection_name, group_id, original_filename)
+
+    async def _add_document_unlocked(
         self,
         file_path: Path,
         collection_name: str = "documents",
@@ -327,12 +386,9 @@ class RAGEngine:
                     )
                 return UpsertResult(doc_info=doc_info, action="skipped")
 
-        # Content 变化或无记录：完整解析并索引
-        # 若有旧记录，先删除旧 chunks
-        if manifest_entry is not None:
-            old_doc_id = manifest_entry["doc_id"]
-            print(f"[RAG] Document '{display_name}' content changed — deleting old doc_id={old_doc_id}.")
-            await self.delete_document(old_doc_id, collection_name)
+        old_doc_id = manifest_entry["doc_id"] if manifest_entry is not None else None
+        if old_doc_id is not None:
+            print(f"[RAG] Document '{display_name}' content changed — staging replacement for old doc_id={old_doc_id}.")
 
         doc_id = str(uuid.uuid4())[:8]
         print(f"[RAG] Starting to process document: {display_name}")
@@ -361,12 +417,6 @@ class RAGEngine:
             chunk.metadata["chunk_count"] = len(chunks)
             chunk.metadata["group_id"] = group_id
 
-        # 同步写入向量库 + BM25 索引
-        print(f"[RAG] Adding {len(chunks)} chunks to vector store and BM25 index...")
-        await self._index_document_chunks(chunks, collection_name)
-
-        print("[RAG] Successfully added all chunks")
-
         # 记录文档信息（内存缓存，同时 ChromaDB 已持久化）
         doc_info = DocumentInfo(
             id=doc_id,
@@ -377,19 +427,40 @@ class RAGEngine:
             size=file_size,
             group_id=group_id,
         )
-        self._documents[doc_id] = doc_info
 
-        # 更新 manifest（写入文件）
-        self._manifest.put(
-            filename=display_name,
-            file_size=file_size,
-            doc_id=doc_id,
-            content_hash=content_hash,
-            chunk_count=len(chunks),
-            created_at=created_at,
-            doc_type=document.metadata.get("type", "unknown"),
-        )
-        self._manifest.save()
+        # 同步写入向量库 + BM25 索引。任何后续步骤失败都应清理这个新 doc_id，
+        # 避免留下 manifest 不知道的半索引文档。
+        print(f"[RAG] Adding {len(chunks)} chunks to vector store and BM25 index...")
+        try:
+            await self._index_document_chunks(chunks, collection_name)
+        except Exception:
+            await self._discard_indexed_document(doc_id, collection_name)
+            raise
+
+        print("[RAG] Successfully added all chunks")
+
+        manifest_snapshot = self._manifest.snapshot()
+        try:
+            self._documents[doc_id] = doc_info
+
+            # 更新 manifest（写入文件）
+            self._manifest.put(
+                filename=display_name,
+                file_size=file_size,
+                doc_id=doc_id,
+                content_hash=content_hash,
+                chunk_count=len(chunks),
+                created_at=created_at,
+                doc_type=document.metadata.get("type", "unknown"),
+            )
+            self._manifest.save()
+        except Exception:
+            self._manifest.restore(manifest_snapshot)
+            await self._discard_indexed_document(doc_id, collection_name)
+            raise
+
+        if old_doc_id is not None:
+            await self._discard_indexed_document(old_doc_id, collection_name)
 
         print(f"[RAG] Document processing complete: {doc_info}")
         action = "updated" if manifest_entry is not None else "indexed"
@@ -436,7 +507,12 @@ class RAGEngine:
             self._knowledge_graph.save()
 
     async def delete_document(self, doc_id: str, collection_name: str = "documents") -> bool:
-        """从知识库删除文档，同时清理 manifest 记录"""
+        """从知识库删除文档，同时串行化索引/manifest 写操作。"""
+        async with self._document_mutation_lock:
+            return await self._delete_document_unlocked(doc_id, collection_name)
+
+    async def _discard_indexed_document(self, doc_id: str, collection_name: str = "documents") -> int:
+        """Remove indexed chunks/caches for a doc_id without touching manifest."""
         count = await self.vector_store.delete_by_document_id(doc_id, collection_name)
         if self._hybrid_retriever is not None:
             self._hybrid_retriever.bm25_indexer.delete_by_doc_id(doc_id)
@@ -444,6 +520,11 @@ class RAGEngine:
             self._knowledge_graph.remove_by_chunk_id(doc_id)
         if doc_id in self._documents:
             del self._documents[doc_id]
+        return count
+
+    async def _delete_document_unlocked(self, doc_id: str, collection_name: str = "documents") -> bool:
+        """从知识库删除文档，同时清理 manifest 记录"""
+        count = await self._discard_indexed_document(doc_id, collection_name)
         # 从 manifest 中移除
         self._manifest.remove_by_doc_id(doc_id)
         self._manifest.save()
@@ -500,6 +581,7 @@ class RAGEngine:
         否则退化为纯向量检索。
         """
         k = top_k or self.top_k
+        fetch_k = k * 3 if self.reranker_enabled else k
 
         # 构建 ChromaDB 元数据过滤条件（用于向量检索）
         try:
@@ -529,17 +611,18 @@ class RAGEngine:
         else:
             filter_metadata = {"$and": conditions}
 
+        raw_results = []
         if self._hybrid_retriever is not None:
             # 混合检索路径：BM25 + 向量 + RRF 融合
             hybrid_results = await self._hybrid_retriever.search(
                 query=query,
                 collection_name=collection_name,
-                top_k=k,
+                top_k=fetch_k,
                 filter_metadata=filter_metadata,
             )
             # 过滤低分结果
             MIN_SCORE = 0.01
-            return [
+            raw_results = [
                 SearchResult(
                     id=r.chunk_id,
                     content=r.content,
@@ -549,20 +632,38 @@ class RAGEngine:
                 for r in hybrid_results
                 if r.score >= MIN_SCORE
             ]
+        else:
+            # 纯向量检索路径（hybrid_search_enabled=False）
+            results = await self.vector_store.search(query, fetch_k, collection_name, filter_metadata)
+            MIN_SCORE = 0.2
+            results = [r for r in results if (r.get("score") or 0) >= MIN_SCORE]
+            raw_results = [
+                SearchResult(
+                    id=r["id"],
+                    content=r["content"],
+                    score=r["score"],
+                    metadata=r.get("metadata", {}),
+                )
+                for r in results
+            ]
 
-        # 纯向量检索路径（hybrid_search_enabled=False）
-        results = await self.vector_store.search(query, k, collection_name, filter_metadata)
-        MIN_SCORE = 0.2
-        results = [r for r in results if (r.get("score") or 0) >= MIN_SCORE]
-        return [
-            SearchResult(
-                id=r["id"],
-                content=r["content"],
-                score=r["score"],
-                metadata=r.get("metadata", {}),
-            )
-            for r in results
-        ]
+        # 如果启用了 Reranker，进行重排序
+        if self.reranker_enabled and self._reranker is not None and raw_results:
+            pairs = [[query, r.content] for r in raw_results]
+            try:
+                scores = self._reranker.predict(pairs)
+                # 更新 score
+                for i, r in enumerate(raw_results):
+                    # 将 logits 转换为 0-1 范围，使用 sigmoid 近似
+                    import math
+                    r.score = 1 / (1 + math.exp(-scores[i]))
+                # 重新排序
+                raw_results.sort(key=lambda x: x.score, reverse=True)
+            except Exception as e:
+                print(f"[RAG] Reranking failed: {e}")
+
+        # 截断到 k 个结果
+        return raw_results[:k]
 
     async def search_with_graph(
         self,
@@ -776,8 +877,10 @@ def init_rag_engine(
     bm25_persist_path: str = "./data/bm25_index.pkl",
     chunk_strategy: str = "size",
     enable_graph: bool = False,
-    graph_persist_path: str = "./data/knowledge_graph.gml",
+    graph_config: Any = None,
     manifest_path: str = "./data/documents_manifest.json",
+    reranker_enabled: bool = False,
+    reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
 ) -> RAGEngine:
     """初始化 RAG 引擎"""
     global _rag_engine
@@ -793,7 +896,9 @@ def init_rag_engine(
         bm25_persist_path=bm25_persist_path,
         chunk_strategy=chunk_strategy,
         enable_graph=enable_graph,
-        graph_persist_path=graph_persist_path,
+        graph_config=graph_config,
         manifest_path=manifest_path,
+        reranker_enabled=reranker_enabled,
+        reranker_model=reranker_model,
     )
     return _rag_engine
