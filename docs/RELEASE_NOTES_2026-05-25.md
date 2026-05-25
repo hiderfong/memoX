@@ -21,6 +21,8 @@ real-user deployments.
 - Moved local embedding model dependencies behind the `local-embeddings` extra
   so the production Docker image skips `sentence-transformers`/`torch` by
   default.
+- Added configurable Playwright crawler resource controls for concurrency,
+  queue wait, total timeout, page count, response size, and output size.
 - Added release readiness and changeset handoff docs.
 
 ## Operational Notes
@@ -37,13 +39,13 @@ real-user deployments.
 
 ## Validation
 
-Latest local verification on `codex/docker-image-slimming`:
+Latest local verification on `codex/playwright-resource-controls`:
 
 | Check | Result |
 |---|---|
 | `git diff --check` | Passed |
 | `uv run --extra dev ruff check .` | Passed |
-| `uv run --extra dev pytest` | `561 passed, 3 skipped` |
+| `uv run --extra dev pytest` | `565 passed, 3 skipped` |
 | `cd frontend_wip && npm run build` | Passed with known large chunk warning |
 | `uv run --extra dev python scripts/smoke_test.py --frontend` | Passed |
 | `uv run --extra dev python scripts/docker_smoke_test.py` | Passed; rebuilt `memox:local` at `1.81GB` |
@@ -60,8 +62,6 @@ GitHub PR checks:
 
 - Split large frontend bundles if load time becomes user-visible on slower
   networks.
-- Add deployment-level CPU, memory, timeout, and concurrency controls around
-  Playwright crawling.
 - Replace the current knowledge graph LLM extraction fallback with a real
   provider-backed batch extractor when that feature becomes a product priority.
 - Consider CSV or diagnostic-bundle export for tool audit events if support

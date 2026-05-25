@@ -41,6 +41,18 @@ class NetworkToolPolicyRequest(BaseModel):
     allow_internal_hosts: list[str] = Field(default_factory=list, max_length=100)
 
 
+class PlaywrightCrawlerPolicyRequest(BaseModel):
+    max_concurrency: int = Field(default=2, ge=1, le=20)
+    queue_timeout_seconds: float = Field(default=10.0, ge=0, le=300)
+    total_timeout_seconds: float = Field(default=45.0, ge=1, le=600)
+    navigation_timeout_ms: int = Field(default=30000, ge=1000, le=300000)
+    selector_timeout_ms: int = Field(default=10000, ge=0, le=300000)
+    idle_wait_ms: int = Field(default=2000, ge=0, le=60000)
+    max_pages: int = Field(default=1, ge=1, le=10)
+    max_response_bytes: int = Field(default=5_000_000, ge=1024, le=100_000_000)
+    max_output_chars: int = Field(default=8000, ge=100, le=200000)
+
+
 class DatabaseToolPolicyDataSourceRequest(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     connection_string: str = Field(min_length=1, max_length=2048)
@@ -59,6 +71,7 @@ class DatabaseToolPolicyRequest(BaseModel):
 
 class ToolPolicyUpdateRequest(BaseModel):
     network: NetworkToolPolicyRequest = Field(default_factory=NetworkToolPolicyRequest)
+    playwright_crawler: PlaywrightCrawlerPolicyRequest = Field(default_factory=PlaywrightCrawlerPolicyRequest)
     database: DatabaseToolPolicyRequest = Field(default_factory=DatabaseToolPolicyRequest)
 
 
@@ -205,6 +218,17 @@ def _tool_policy_payload(policy: ToolPolicyConfig) -> dict:
         "network": {
             "allow_internal_hosts": list(policy.network.allow_internal_hosts),
         },
+        "playwright_crawler": {
+            "max_concurrency": policy.playwright_crawler.max_concurrency,
+            "queue_timeout_seconds": policy.playwright_crawler.queue_timeout_seconds,
+            "total_timeout_seconds": policy.playwright_crawler.total_timeout_seconds,
+            "navigation_timeout_ms": policy.playwright_crawler.navigation_timeout_ms,
+            "selector_timeout_ms": policy.playwright_crawler.selector_timeout_ms,
+            "idle_wait_ms": policy.playwright_crawler.idle_wait_ms,
+            "max_pages": policy.playwright_crawler.max_pages,
+            "max_response_bytes": policy.playwright_crawler.max_response_bytes,
+            "max_output_chars": policy.playwright_crawler.max_output_chars,
+        },
         "database": {
             "default_access_mode": policy.database.default_access_mode,
             "allow_raw_connection_strings": policy.database.allow_raw_connection_strings,
@@ -239,6 +263,17 @@ def _tool_policy_section_from_request(body: ToolPolicyUpdateRequest, existing: d
     return {
         "network": {
             "allow_internal_hosts": _validate_internal_host_allowlist(body.network.allow_internal_hosts),
+        },
+        "playwright_crawler": {
+            "max_concurrency": body.playwright_crawler.max_concurrency,
+            "queue_timeout_seconds": body.playwright_crawler.queue_timeout_seconds,
+            "total_timeout_seconds": body.playwright_crawler.total_timeout_seconds,
+            "navigation_timeout_ms": body.playwright_crawler.navigation_timeout_ms,
+            "selector_timeout_ms": body.playwright_crawler.selector_timeout_ms,
+            "idle_wait_ms": body.playwright_crawler.idle_wait_ms,
+            "max_pages": body.playwright_crawler.max_pages,
+            "max_response_bytes": body.playwright_crawler.max_response_bytes,
+            "max_output_chars": body.playwright_crawler.max_output_chars,
         },
         "database": {
             "default_access_mode": body.database.default_access_mode,

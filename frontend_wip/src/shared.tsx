@@ -142,6 +142,17 @@ export interface ToolPolicyResponse {
   network: {
     allow_internal_hosts: string[];
   };
+  playwright_crawler: {
+    max_concurrency: number;
+    queue_timeout_seconds: number;
+    total_timeout_seconds: number;
+    navigation_timeout_ms: number;
+    selector_timeout_ms: number;
+    idle_wait_ms: number;
+    max_pages: number;
+    max_response_bytes: number;
+    max_output_chars: number;
+  };
   database: {
     default_access_mode: 'read_only' | 'write' | 'admin';
     allow_raw_connection_strings: boolean;

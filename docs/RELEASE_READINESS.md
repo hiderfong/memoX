@@ -47,6 +47,9 @@ radius controlled.
 - Add explicit `tool_policy.network.allow_internal_hosts` entries for local
   services that Workers must reach, such as `127.0.0.1:3000` or an internal
   search gateway.
+- Review `tool_policy.playwright_crawler` against host capacity. Keep
+  `max_concurrency`, `total_timeout_seconds`, `max_pages`, and
+  `max_response_bytes` conservative on shared deployments.
 - Prefer named database sources in `tool_policy.database.data_sources`.
 - Keep `allow_raw_connection_strings=false` for shared deployments unless there
   is a short-lived operator need.

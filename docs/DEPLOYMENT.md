@@ -231,6 +231,10 @@ The production Docker image intentionally skips heavy optional extras such as `s
 - Keep `auth.enabled=true` for any shared deployment. Startup fails if the configured admin password resolves to an empty value.
 - Repeated failed logins for the same username and client are temporarily locked and return HTTP `429` with `Retry-After`; wait for the lock window instead of restarting the service.
 - Restrict access to Worker management APIs. Creating, updating, or deleting Workers persists changes into `config.yaml`.
+- Tune `tool_policy.playwright_crawler` for the host. The defaults allow two
+  concurrent browser crawls with bounded queue wait, total timeout, page count,
+  response size, and output size; raise them only when the deployment has
+  enough CPU and memory headroom.
 - Use a reverse proxy with TLS for internet-facing use. The bundled container exposes plain HTTP on port `8080`.
 - Treat `data/`, `workspace/`, `.env`, and `config.yaml` as sensitive. They may contain uploaded documents, task artifacts, API keys, or generated outputs.
 - This Compose file is a single-node deployment. It does not provide queue workers, multi-instance locking, or managed database backups.

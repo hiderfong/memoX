@@ -288,6 +288,147 @@ export const SettingsPage: React.FC = () => {
               />
             </Form.Item>
 
+            <Divider orientation="left">Playwright 爬虫资源</Divider>
+            <Space direction="vertical" size={12} style={{ width: '100%' }}>
+              <Space wrap>
+                <Form.Item label="最大并发" style={{ marginBottom: 0 }}>
+                  <InputNumber
+                    min={1}
+                    max={20}
+                    value={toolPolicy.playwright_crawler.max_concurrency}
+                    onChange={value => updateToolPolicyDraft(policy => ({
+                      ...policy,
+                      playwright_crawler: {
+                        ...policy.playwright_crawler,
+                        max_concurrency: Number(value || 1),
+                      },
+                    }))}
+                  />
+                </Form.Item>
+                <Form.Item label="排队超时（秒）" style={{ marginBottom: 0 }}>
+                  <InputNumber
+                    min={0}
+                    max={300}
+                    value={toolPolicy.playwright_crawler.queue_timeout_seconds}
+                    onChange={value => updateToolPolicyDraft(policy => ({
+                      ...policy,
+                      playwright_crawler: {
+                        ...policy.playwright_crawler,
+                        queue_timeout_seconds: Number(value || 0),
+                      },
+                    }))}
+                  />
+                </Form.Item>
+                <Form.Item label="总超时（秒）" style={{ marginBottom: 0 }}>
+                  <InputNumber
+                    min={1}
+                    max={600}
+                    value={toolPolicy.playwright_crawler.total_timeout_seconds}
+                    onChange={value => updateToolPolicyDraft(policy => ({
+                      ...policy,
+                      playwright_crawler: {
+                        ...policy.playwright_crawler,
+                        total_timeout_seconds: Number(value || 1),
+                      },
+                    }))}
+                  />
+                </Form.Item>
+              </Space>
+              <Space wrap>
+                <Form.Item label="导航超时（毫秒）" style={{ marginBottom: 0 }}>
+                  <InputNumber
+                    min={1000}
+                    max={300000}
+                    step={1000}
+                    value={toolPolicy.playwright_crawler.navigation_timeout_ms}
+                    onChange={value => updateToolPolicyDraft(policy => ({
+                      ...policy,
+                      playwright_crawler: {
+                        ...policy.playwright_crawler,
+                        navigation_timeout_ms: Number(value || 1000),
+                      },
+                    }))}
+                  />
+                </Form.Item>
+                <Form.Item label="选择器超时（毫秒）" style={{ marginBottom: 0 }}>
+                  <InputNumber
+                    min={0}
+                    max={300000}
+                    step={1000}
+                    value={toolPolicy.playwright_crawler.selector_timeout_ms}
+                    onChange={value => updateToolPolicyDraft(policy => ({
+                      ...policy,
+                      playwright_crawler: {
+                        ...policy.playwright_crawler,
+                        selector_timeout_ms: Number(value || 0),
+                      },
+                    }))}
+                  />
+                </Form.Item>
+                <Form.Item label="空闲等待（毫秒）" style={{ marginBottom: 0 }}>
+                  <InputNumber
+                    min={0}
+                    max={60000}
+                    step={500}
+                    value={toolPolicy.playwright_crawler.idle_wait_ms}
+                    onChange={value => updateToolPolicyDraft(policy => ({
+                      ...policy,
+                      playwright_crawler: {
+                        ...policy.playwright_crawler,
+                        idle_wait_ms: Number(value || 0),
+                      },
+                    }))}
+                  />
+                </Form.Item>
+              </Space>
+              <Space wrap>
+                <Form.Item label="最大页面数" style={{ marginBottom: 0 }}>
+                  <InputNumber
+                    min={1}
+                    max={10}
+                    value={toolPolicy.playwright_crawler.max_pages}
+                    onChange={value => updateToolPolicyDraft(policy => ({
+                      ...policy,
+                      playwright_crawler: {
+                        ...policy.playwright_crawler,
+                        max_pages: Number(value || 1),
+                      },
+                    }))}
+                  />
+                </Form.Item>
+                <Form.Item label="最大响应字节" style={{ marginBottom: 0 }}>
+                  <InputNumber
+                    min={1024}
+                    max={100000000}
+                    step={1024}
+                    value={toolPolicy.playwright_crawler.max_response_bytes}
+                    onChange={value => updateToolPolicyDraft(policy => ({
+                      ...policy,
+                      playwright_crawler: {
+                        ...policy.playwright_crawler,
+                        max_response_bytes: Number(value || 1024),
+                      },
+                    }))}
+                  />
+                </Form.Item>
+                <Form.Item label="最大输出字符" style={{ marginBottom: 0 }}>
+                  <InputNumber
+                    min={100}
+                    max={200000}
+                    step={100}
+                    value={toolPolicy.playwright_crawler.max_output_chars}
+                    onChange={value => updateToolPolicyDraft(policy => ({
+                      ...policy,
+                      playwright_crawler: {
+                        ...policy.playwright_crawler,
+                        max_output_chars: Number(value || 100),
+                      },
+                    }))}
+                  />
+                </Form.Item>
+              </Space>
+            </Space>
+
             <Divider />
             <Space direction="vertical" size={12} style={{ width: '100%' }}>
               <Space wrap>

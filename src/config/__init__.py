@@ -83,6 +83,26 @@ def validate_config(config: "Config") -> None:
         if not resolve_env_value(connection_string).strip():
             errors.append(f"tool_policy.database.data_sources.{name} 连接字符串不能为空")
 
+    crawler_policy = config.tool_policy.playwright_crawler
+    if crawler_policy.max_concurrency < 1:
+        errors.append("tool_policy.playwright_crawler.max_concurrency 必须至少为 1")
+    if crawler_policy.queue_timeout_seconds < 0:
+        errors.append("tool_policy.playwright_crawler.queue_timeout_seconds 不能为负数")
+    if crawler_policy.total_timeout_seconds < 1:
+        errors.append("tool_policy.playwright_crawler.total_timeout_seconds 必须至少为 1")
+    if crawler_policy.navigation_timeout_ms < 1000:
+        errors.append("tool_policy.playwright_crawler.navigation_timeout_ms 必须至少为 1000")
+    if crawler_policy.selector_timeout_ms < 0:
+        errors.append("tool_policy.playwright_crawler.selector_timeout_ms 不能为负数")
+    if crawler_policy.idle_wait_ms < 0:
+        errors.append("tool_policy.playwright_crawler.idle_wait_ms 不能为负数")
+    if crawler_policy.max_pages < 1:
+        errors.append("tool_policy.playwright_crawler.max_pages 必须至少为 1")
+    if crawler_policy.max_response_bytes < 1024:
+        errors.append("tool_policy.playwright_crawler.max_response_bytes 必须至少为 1024")
+    if crawler_policy.max_output_chars < 100:
+        errors.append("tool_policy.playwright_crawler.max_output_chars 必须至少为 100")
+
     if errors:
         raise ConfigError("MemoX 配置无效:\n- " + "\n- ".join(errors))
 
@@ -156,6 +176,20 @@ class NetworkToolPolicyConfig:
 
 
 @dataclass
+class PlaywrightCrawlerPolicyConfig:
+    """Playwright crawler resource policy."""
+    max_concurrency: int = 2
+    queue_timeout_seconds: float = 10.0
+    total_timeout_seconds: float = 45.0
+    navigation_timeout_ms: int = 30000
+    selector_timeout_ms: int = 10000
+    idle_wait_ms: int = 2000
+    max_pages: int = 1
+    max_response_bytes: int = 5_000_000
+    max_output_chars: int = 8000
+
+
+@dataclass
 class DatabaseToolPolicyConfig:
     """Database tool policy."""
     default_access_mode: str = "read_only"
@@ -171,6 +205,7 @@ class DatabaseToolPolicyConfig:
 class ToolPolicyConfig:
     """High-permission tool safety policy."""
     network: NetworkToolPolicyConfig = field(default_factory=NetworkToolPolicyConfig)
+    playwright_crawler: PlaywrightCrawlerPolicyConfig = field(default_factory=PlaywrightCrawlerPolicyConfig)
     database: DatabaseToolPolicyConfig = field(default_factory=DatabaseToolPolicyConfig)
 
 
@@ -366,8 +401,15 @@ class Config:
         ops = OpsConfig(**data.get("ops", {}))
         tool_policy_data = data.get("tool_policy", {})
         network_policy = NetworkToolPolicyConfig(**tool_policy_data.get("network", {}))
+        playwright_crawler_policy = PlaywrightCrawlerPolicyConfig(
+            **tool_policy_data.get("playwright_crawler", {})
+        )
         database_policy = DatabaseToolPolicyConfig(**tool_policy_data.get("database", {}))
-        tool_policy = ToolPolicyConfig(network=network_policy, database=database_policy)
+        tool_policy = ToolPolicyConfig(
+            network=network_policy,
+            playwright_crawler=playwright_crawler_policy,
+            database=database_policy,
+        )
 
         image_generation = ImageGenerationConfig(**data.get("image_generation", {}))
         video_generation = VideoGenerationConfig(**data.get("video_generation", {}))
