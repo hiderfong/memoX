@@ -18,6 +18,9 @@ real-user deployments.
 - Updated frontend compatibility for current Ant Design and React Router
   warnings.
 - Fixed CI frontend job paths to use `frontend_wip`.
+- Moved local embedding model dependencies behind the `local-embeddings` extra
+  so the production Docker image skips `sentence-transformers`/`torch` by
+  default.
 - Added release readiness and changeset handoff docs.
 
 ## Operational Notes
@@ -34,7 +37,7 @@ real-user deployments.
 
 ## Validation
 
-Latest local post-merge verification on `master`:
+Latest local verification on `codex/docker-image-slimming`:
 
 | Check | Result |
 |---|---|
@@ -43,7 +46,7 @@ Latest local post-merge verification on `master`:
 | `uv run --extra dev pytest` | `561 passed, 3 skipped` |
 | `cd frontend_wip && npm run build` | Passed with known large chunk warning |
 | `uv run --extra dev python scripts/smoke_test.py --frontend` | Passed |
-| `uv run --extra dev python scripts/docker_smoke_test.py` | Passed |
+| `uv run --extra dev python scripts/docker_smoke_test.py` | Passed; rebuilt `memox:local` at `1.81GB` |
 
 GitHub PR checks:
 
@@ -57,9 +60,6 @@ GitHub PR checks:
 
 - Split large frontend bundles if load time becomes user-visible on slower
   networks.
-- Reduce Docker image size and build time. The release smoke build produced a
-  local `memox:local` image around `17.6GB`, largely because the runtime image
-  installs heavy ML/CUDA dependencies.
 - Add deployment-level CPU, memory, timeout, and concurrency controls around
   Playwright crawling.
 - Replace the current knowledge graph LLM extraction fallback with a real
