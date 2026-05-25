@@ -3,16 +3,22 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import os
+import re
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Literal
+from urllib.parse import urlsplit, urlunsplit
 
+import yaml
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import Response
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from auth import AuthUser, require_role
-from config import default_config_path
+from config import Config, ToolPolicyConfig, default_config_path, validate_config
 from src.ops.archive_mirror import mirror_archive_bytes
 from src.ops.backup import BackupError, list_backup_archives, read_backup_metadata, verify_backup
 from src.ops.diagnostics import build_diagnostic_bundle
@@ -20,6 +26,7 @@ from src.ops.index_consistency import audit_indexes, run_index_repair
 from src.ops.lifecycle import LifecyclePolicy, run_lifecycle_cleanup
 from src.ops.readiness import resolve_from_root, run_readiness_checks
 from src.ops.recovery import run_restore_drill, run_restore_execute, run_restore_preflight
+from src.ops.redaction import REDACTED
 
 router = APIRouter(prefix="/api/system", tags=["system"])
 
@@ -28,6 +35,31 @@ class RestoreBackupRequest(BaseModel):
     confirm_archive_name: str
     acknowledge_overwrite: bool = False
     acknowledge_maintenance_mode: bool = False
+
+
+class NetworkToolPolicyRequest(BaseModel):
+    allow_internal_hosts: list[str] = Field(default_factory=list, max_length=100)
+
+
+class DatabaseToolPolicyDataSourceRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    connection_string: str = Field(min_length=1, max_length=2048)
+    redacted: bool = False
+
+
+class DatabaseToolPolicyRequest(BaseModel):
+    default_access_mode: Literal["read_only", "write", "admin"] = "read_only"
+    allow_raw_connection_strings: bool = True
+    allow_write: bool = True
+    allow_ddl: bool = False
+    allow_multiple_statements: bool = False
+    max_result_rows: int = Field(default=200, ge=1, le=10000)
+    data_sources: list[DatabaseToolPolicyDataSourceRequest] = Field(default_factory=list, max_length=100)
+
+
+class ToolPolicyUpdateRequest(BaseModel):
+    network: NetworkToolPolicyRequest = Field(default_factory=NetworkToolPolicyRequest)
+    database: DatabaseToolPolicyRequest = Field(default_factory=DatabaseToolPolicyRequest)
 
 
 def _config_path_from_runtime() -> Path:
@@ -41,6 +73,183 @@ def _deployment_root() -> Path:
 
 def _utc_from_timestamp(value: float) -> str:
     return datetime.fromtimestamp(value, timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _read_config_document(config_path: Path) -> dict:
+    try:
+        text = config_path.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=500, detail=f"配置文件不存在: {config_path}") from exc
+    try:
+        data = yaml.safe_load(text) or {}
+    except yaml.YAMLError as exc:
+        raise HTTPException(status_code=500, detail=f"配置文件 YAML 无法解析: {exc}") from exc
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=500, detail="配置文件顶层必须是 YAML mapping")
+    return data
+
+
+def _section_span(text: str, key: str) -> tuple[int, int] | None:
+    lines = text.splitlines(keepends=True)
+    start_line: int | None = None
+    for index, line in enumerate(lines):
+        if re.match(rf"^{re.escape(key)}:\s*(?:#.*)?$", line.rstrip("\n")):
+            start_line = index
+            break
+    if start_line is None:
+        return None
+
+    end_line = len(lines)
+    for index in range(start_line + 1, len(lines)):
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_-]*:\s*(?:#.*)?$", lines[index].rstrip("\n")):
+            end_line = index
+            break
+
+    while end_line > start_line + 1:
+        previous = lines[end_line - 1].strip()
+        if previous and not previous.startswith("#"):
+            break
+        end_line -= 1
+
+    start = sum(len(line) for line in lines[:start_line])
+    end = sum(len(line) for line in lines[:end_line])
+    return start, end
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as tmp:
+            tmp.write(text)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+            tmp_path = Path(tmp.name)
+        os.replace(tmp_path, path)
+    finally:
+        if tmp_path and tmp_path.exists():
+            tmp_path.unlink(missing_ok=True)
+
+
+def _replace_top_level_yaml_section(text: str, key: str, payload: dict) -> str:
+    new_section = yaml.safe_dump(
+        {key: payload},
+        allow_unicode=True,
+        default_flow_style=False,
+        sort_keys=False,
+    ).rstrip()
+    span = _section_span(text, key)
+    if span is None:
+        suffix = "" if text.endswith("\n") or not text else "\n"
+        return f"{text}{suffix}\n{new_section}\n"
+    start, end = span
+    return f"{text[:start]}{new_section}\n\n{text[end:].lstrip()}"
+
+
+def _validate_internal_host_allowlist(hosts: list[str]) -> list[str]:
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for raw_host in hosts:
+        host = str(raw_host).strip()
+        if not host:
+            continue
+        if any(ch.isspace() for ch in host) or "/" in host:
+            raise HTTPException(status_code=400, detail=f"allow_internal_hosts 条目无效: {raw_host}")
+        if host not in seen:
+            cleaned.append(host)
+            seen.add(host)
+    return cleaned
+
+
+def _mask_connection_string(connection_string: str) -> tuple[str, bool]:
+    value = str(connection_string)
+    if value.startswith("${") and value.endswith("}"):
+        return value, False
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return REDACTED, True
+    if parsed.scheme.startswith("sqlite"):
+        return value, False
+    if parsed.password or parsed.username:
+        host = parsed.hostname or ""
+        try:
+            port_number = parsed.port
+        except ValueError:
+            port_number = None
+        port = f":{port_number}" if port_number else ""
+        netloc = f"{REDACTED}@{host}{port}"
+        return urlunsplit((parsed.scheme, netloc, parsed.path, "", "")), True
+    if parsed.query or parsed.fragment:
+        return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", "")), True
+    return value, False
+
+
+def _tool_policy_payload(policy: ToolPolicyConfig) -> dict:
+    data_sources = []
+    for name, connection_string in sorted(policy.database.data_sources.items()):
+        display_value, redacted = _mask_connection_string(connection_string)
+        data_sources.append({
+            "name": name,
+            "connection_string": display_value,
+            "redacted": redacted,
+        })
+    return {
+        "network": {
+            "allow_internal_hosts": list(policy.network.allow_internal_hosts),
+        },
+        "database": {
+            "default_access_mode": policy.database.default_access_mode,
+            "allow_raw_connection_strings": policy.database.allow_raw_connection_strings,
+            "allow_write": policy.database.allow_write,
+            "allow_ddl": policy.database.allow_ddl,
+            "allow_multiple_statements": policy.database.allow_multiple_statements,
+            "max_result_rows": policy.database.max_result_rows,
+            "data_sources": data_sources,
+        },
+    }
+
+
+def _tool_policy_section_from_request(body: ToolPolicyUpdateRequest, existing: dict) -> dict:
+    existing_sources = existing.get("database", {}).get("data_sources", {})
+    if not isinstance(existing_sources, dict):
+        existing_sources = {}
+
+    data_sources: dict[str, str] = {}
+    for source in body.database.data_sources:
+        name = source.name.strip()
+        if not re.match(r"^[A-Za-z_][A-Za-z0-9_.-]*$", name):
+            raise HTTPException(status_code=400, detail=f"数据源名称无效: {source.name}")
+        connection_string = source.connection_string.strip()
+        if source.redacted and REDACTED in connection_string:
+            preserved = existing_sources.get(name)
+            if not preserved:
+                raise HTTPException(status_code=400, detail=f"无法保留不存在的数据源: {name}")
+            data_sources[name] = str(preserved)
+        else:
+            data_sources[name] = connection_string
+
+    return {
+        "network": {
+            "allow_internal_hosts": _validate_internal_host_allowlist(body.network.allow_internal_hosts),
+        },
+        "database": {
+            "default_access_mode": body.database.default_access_mode,
+            "allow_raw_connection_strings": body.database.allow_raw_connection_strings,
+            "allow_write": body.database.allow_write,
+            "allow_ddl": body.database.allow_ddl,
+            "allow_multiple_statements": body.database.allow_multiple_statements,
+            "max_result_rows": body.database.max_result_rows,
+            "data_sources": data_sources,
+        },
+    }
 
 
 def _backup_archive_summary(archive: Path) -> dict:
@@ -253,6 +462,74 @@ async def system_health(
     return _system_health_report(request)
 
 
+@router.get("/tool-policy")
+async def get_system_tool_policy(
+    _: Annotated[AuthUser, require_role("admin")],
+) -> dict:
+    """Return the current high-permission tool policy without exposing secrets."""
+    from web.api import _config
+
+    if _config is None:
+        raise HTTPException(status_code=500, detail="Config not available")
+    return _tool_policy_payload(_config.tool_policy)
+
+
+@router.put("/tool-policy")
+async def update_system_tool_policy(
+    body: ToolPolicyUpdateRequest,
+    user: Annotated[AuthUser, require_role("admin")],
+) -> dict:
+    """Persist and apply the high-permission tool policy."""
+    import config as config_module
+    import web.api as api_module
+
+    config_path = _config_path_from_runtime().resolve()
+    data = _read_config_document(config_path)
+    existing_policy = data.get("tool_policy", {})
+    if not isinstance(existing_policy, dict):
+        existing_policy = {}
+    tool_policy_section = _tool_policy_section_from_request(body, existing_policy)
+    data["tool_policy"] = tool_policy_section
+
+    try:
+        candidate = Config._from_dict(data)
+        validate_config(candidate)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"工具策略配置无效: {exc}") from exc
+
+    original_text = config_path.read_text(encoding="utf-8")
+    _atomic_write_text(config_path, _replace_top_level_yaml_section(original_text, "tool_policy", tool_policy_section))
+
+    if api_module._config is not None:
+        api_module._config.tool_policy = candidate.tool_policy
+    applied_config = api_module._config or candidate
+    config_module._config = applied_config
+    with contextlib.suppress(Exception):
+        import src.config as src_config_module
+
+        src_config_module._config = applied_config
+
+    with contextlib.suppress(Exception):
+        from storage import get_store
+
+        store = get_store()
+        if store:
+            store.log_audit_event(
+                action="update",
+                resource="tool_policy",
+                resource_id="tool_policy",
+                username=user.username,
+                user_role=user.role,
+                details=_tool_policy_payload(candidate.tool_policy),
+            )
+
+    return {
+        "success": True,
+        "message": "工具策略已保存并应用",
+        "tool_policy": _tool_policy_payload(candidate.tool_policy),
+    }
+
+
 @router.get("/backups")
 async def list_system_backups(
     _: Annotated[AuthUser, require_role("admin")],
@@ -347,6 +624,84 @@ async def list_system_events(
         "offset": offset,
         "count": len(events),
         "total": total,
+        "events": events,
+    }
+
+
+@router.get("/tool-audit")
+async def list_system_tool_audit(
+    _: Annotated[AuthUser, require_role("admin")],
+    tool_name: str | None = Query(default=None),
+    status: str | None = Query(default=None, pattern="^(success|error|rejected)$"),
+    worker_id: str | None = Query(default=None),
+    task_id: str | None = Query(default=None),
+    timestamp_from: str | None = Query(default=None),
+    timestamp_to: str | None = Query(default=None),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> dict:
+    """Return audited tool calls for administrators."""
+    try:
+        from storage import get_store
+
+        store = get_store()
+        if store is not None:
+            events = store.list_audit_events(
+                resource="tool",
+                action="tool_call",
+                resource_id=tool_name,
+                status=status,
+                worker_id=worker_id,
+                task_id=task_id,
+                timestamp_from=timestamp_from,
+                timestamp_to=timestamp_to,
+                limit=limit,
+                offset=offset,
+            )
+            total = store.count_audit_events(
+                resource="tool",
+                action="tool_call",
+                resource_id=tool_name,
+                status=status,
+                worker_id=worker_id,
+                task_id=task_id,
+                timestamp_from=timestamp_from,
+                timestamp_to=timestamp_to,
+            )
+            summary = {
+                item_status: store.count_audit_events(
+                    resource="tool",
+                    action="tool_call",
+                    resource_id=tool_name,
+                    status=item_status,
+                    worker_id=worker_id,
+                    task_id=task_id,
+                    timestamp_from=timestamp_from,
+                    timestamp_to=timestamp_to,
+                )
+                for item_status in ("success", "rejected", "error")
+            }
+        else:
+            events = []
+            total = 0
+            summary = {"success": 0, "rejected": 0, "error": 0}
+    except Exception:
+        events = []
+        total = 0
+        summary = {"success": 0, "rejected": 0, "error": 0}
+
+    return {
+        "tool_name": tool_name,
+        "status": status,
+        "worker_id": worker_id,
+        "task_id": task_id,
+        "timestamp_from": timestamp_from,
+        "timestamp_to": timestamp_to,
+        "limit": limit,
+        "offset": offset,
+        "count": len(events),
+        "total": total,
+        "summary": summary,
         "events": events,
     }
 

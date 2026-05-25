@@ -97,6 +97,23 @@ def test_public_and_protected_auth_boundaries(permission_client) -> None:
         ("DELETE", "/api/scheduled-tasks/task-1", None),
         ("PATCH", "/api/memory/config", {"enabled": False}),
         ("GET", "/api/system/health", None),
+        ("GET", "/api/system/tool-policy", None),
+        (
+            "PUT",
+            "/api/system/tool-policy",
+            {
+                "network": {"allow_internal_hosts": []},
+                "database": {
+                    "default_access_mode": "read_only",
+                    "allow_raw_connection_strings": True,
+                    "allow_write": True,
+                    "allow_ddl": False,
+                    "allow_multiple_statements": False,
+                    "max_result_rows": 200,
+                    "data_sources": [],
+                },
+            },
+        ),
         ("POST", "/api/system/maintenance/backup?force=true", None),
         ("POST", "/api/system/maintenance/lifecycle?dry_run=true", None),
     ],

@@ -76,6 +76,35 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
         message="Created and verified backup",
         details={"archive": "backups/memox-backup-test.tar.gz", "verified": True},
     )
+    store.log_audit_event(
+        action="tool_call",
+        resource="tool",
+        resource_id="web_fetch",
+        username="researcher",
+        user_role="worker",
+        details={
+            "status": "success",
+            "worker_id": "researcher",
+            "task_id": "task_a",
+            "duration_ms": 12,
+            "arguments": {"url": "https://example.com/page"},
+        },
+    )
+    store.log_audit_event(
+        action="tool_call",
+        resource="tool",
+        resource_id="database_query",
+        username="analyst",
+        user_role="worker",
+        details={
+            "status": "rejected",
+            "worker_id": "analyst",
+            "task_id": "task_b",
+            "duration_ms": 3,
+            "arguments": {"query": {"statement_type": "update", "length": 32}},
+            "error": "Write SQL requires access_mode='write'",
+        },
+    )
 
     @contextlib.asynccontextmanager
     async def noop_lifespan(app):
@@ -130,6 +159,11 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
             assert restore_forbidden.status_code == 403
             events_forbidden = client.get("/api/system/events", headers={"Authorization": f"Bearer {user_token}"})
             assert events_forbidden.status_code == 403
+            tool_audit_forbidden = client.get(
+                "/api/system/tool-audit",
+                headers={"Authorization": f"Bearer {user_token}"},
+            )
+            assert tool_audit_forbidden.status_code == 403
             repair_forbidden = client.post("/api/system/indexes/repair", headers={"Authorization": f"Bearer {user_token}"})
             assert repair_forbidden.status_code == 403
             diagnostics_forbidden = client.get(
@@ -236,6 +270,18 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
             )
             assert paged_events.status_code == 200
             paged_events_payload = paged_events.json()
+            tool_audit = client.get(
+                "/api/system/tool-audit?limit=10",
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+            assert tool_audit.status_code == 200
+            tool_audit_payload = tool_audit.json()
+            rejected_tool_audit = client.get(
+                "/api/system/tool-audit?status=rejected&tool_name=database_query&limit=5",
+                headers={"Authorization": f"Bearer {admin_token}"},
+            )
+            assert rejected_tool_audit.status_code == 200
+            rejected_tool_audit_payload = rejected_tool_audit.json()
 
             missing = client.post(
                 "/api/system/backups/memox-backup-missing.tar.gz/verify",
@@ -383,3 +429,11 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
     assert paged_events_payload["offset"] == 1
     assert paged_events_payload["total"] >= paged_events_payload["count"]
     assert all(event["status"] == "ok" for event in paged_events_payload["events"])
+    assert tool_audit_payload["total"] == 2
+    assert tool_audit_payload["summary"]["success"] == 1
+    assert tool_audit_payload["summary"]["rejected"] == 1
+    assert {event["resource_id"] for event in tool_audit_payload["events"]} == {"web_fetch", "database_query"}
+    assert rejected_tool_audit_payload["total"] == 1
+    assert rejected_tool_audit_payload["summary"]["rejected"] == 1
+    assert rejected_tool_audit_payload["events"][0]["resource_id"] == "database_query"
+    assert rejected_tool_audit_payload["events"][0]["details"]["worker_id"] == "analyst"
