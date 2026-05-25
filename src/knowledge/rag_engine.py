@@ -317,7 +317,7 @@ class RAGEngine:
                 from sentence_transformers import CrossEncoder
                 self._reranker = CrossEncoder(self.reranker_model_name)
             except ImportError:
-                print("sentence-transformers is not installed. Run: uv add sentence-transformers torch")
+                print("sentence-transformers is not installed. Run: uv sync --extra local-embeddings")
                 self.reranker_enabled = False
             except Exception as e:
                 print(f"Failed to load reranker model: {e}")
