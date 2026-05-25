@@ -494,6 +494,54 @@ def test_ops_event_record_and_latest(tmp_path):
     store.close()
 
 
+def test_audit_event_filters_parse_details(tmp_path):
+    store = PersistenceStore(tmp_path / "test.db")
+    store.log_audit_event(
+        action="tool_call",
+        resource="tool",
+        resource_id="web_fetch",
+        username="researcher",
+        user_role="worker",
+        details={
+            "status": "success",
+            "worker_id": "researcher",
+            "task_id": "task_1",
+            "arguments": {"url": "https://example.com"},
+        },
+    )
+    store.log_audit_event(
+        action="tool_call",
+        resource="tool",
+        resource_id="database_query",
+        username="analyst",
+        user_role="worker",
+        details={
+            "status": "rejected",
+            "worker_id": "analyst",
+            "task_id": "task_2",
+            "error": "Write SQL requires access_mode='write'",
+        },
+    )
+    store.log_audit_event(
+        action="delete",
+        resource="worker",
+        resource_id="old-worker",
+        username="admin",
+        details={"status": "success"},
+    )
+
+    rejected = store.list_audit_events(resource="tool", action="tool_call", status="rejected")
+
+    assert len(rejected) == 1
+    assert rejected[0]["resource_id"] == "database_query"
+    assert rejected[0]["details"]["worker_id"] == "analyst"
+    assert store.count_audit_events(resource="tool", action="tool_call") == 2
+    assert store.count_audit_events(resource="tool", action="tool_call", worker_id="researcher") == 1
+    assert store.count_audit_events(resource="tool", action="tool_call", task_id="task_2") == 1
+    assert store.count_audit_events(resource="tool", action="tool_call", resource_id="missing") == 0
+    store.close()
+
+
 # ==================== 定时任务 ====================
 
 

@@ -183,6 +183,12 @@ class WorkerAgent:
         """执行子任务"""
         self._running = True
         self._current_task_id = task.id
+        self.tools.set_audit_context({
+            "worker_id": self.id,
+            "worker_name": self.config.name,
+            "task_id": task.id,
+            "subtask_id": task.id,
+        })
         self.add_log("info", f"任务开始: {task.description[:60]}...", {"task_id": task.id})
 
         logger.info(f"Worker {self.id} starting task {task.id}: {task.description[:50]}...")
@@ -216,6 +222,7 @@ class WorkerAgent:
 
             self._running = False
             self._current_task_id = None
+            self.tools.set_audit_context({})
             self.add_log("info", "任务完成", {"task_id": task.id, "result_len": len(result)})
 
             logger.info(f"Worker {self.id} completed task {task.id}")
@@ -228,6 +235,7 @@ class WorkerAgent:
 
             self._running = False
             self._current_task_id = None
+            self.tools.set_audit_context({})
 
             return "", error_msg
 

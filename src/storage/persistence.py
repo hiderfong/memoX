@@ -1,5 +1,6 @@
 """SQLite 持久化存储 - 会话与任务历史"""
 
+import contextlib
 import json
 import sqlite3
 from datetime import datetime, timedelta
@@ -32,10 +33,8 @@ class PersistenceStore:
             self._conn = None
 
     def __del__(self) -> None:
-        try:
+        with contextlib.suppress(Exception):
             self.close()
-        except Exception:
-            pass
 
     def _guard_supported_schema_version(self) -> None:
         row = self._conn.execute("PRAGMA user_version").fetchone()
@@ -1139,11 +1138,6 @@ class PersistenceStore:
             "next_run_at": row["next_run_at"] or "",
         }
 
-    def close(self) -> None:
-        """关闭数据库连接"""
-        self._conn.close()
-
-
     # ==================== Worker Token 用量 ====================
 
     def get_worker_token_usage(self, worker_id: str) -> dict:
@@ -1214,7 +1208,14 @@ class PersistenceStore:
         resource: str | None = None,
         action: str | None = None,
         username: str | None = None,
+        resource_id: str | None = None,
+        status: str | None = None,
+        worker_id: str | None = None,
+        task_id: str | None = None,
+        timestamp_from: str | None = None,
+        timestamp_to: str | None = None,
         limit: int = 100,
+        offset: int = 0,
     ) -> list[dict]:
         """分页查询审计日志"""
         query = "SELECT * FROM audit_log WHERE 1=1"
@@ -1228,10 +1229,82 @@ class PersistenceStore:
         if username:
             query += " AND username=?"
             params.append(username)
-        query += " ORDER BY timestamp DESC LIMIT ?"
-        params.append(limit)
+        if resource_id:
+            query += " AND resource_id=?"
+            params.append(resource_id)
+        if status:
+            query += " AND json_extract(details, '$.status')=?"
+            params.append(status)
+        if worker_id:
+            query += " AND json_extract(details, '$.worker_id')=?"
+            params.append(worker_id)
+        if task_id:
+            query += " AND json_extract(details, '$.task_id')=?"
+            params.append(task_id)
+        if timestamp_from:
+            query += " AND timestamp>=?"
+            params.append(timestamp_from)
+        if timestamp_to:
+            query += " AND timestamp<=?"
+            params.append(timestamp_to)
+        query += " ORDER BY timestamp DESC, id DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
         rows = self._conn.execute(query, params).fetchall()
-        return [dict(r) for r in rows]
+        return [self._audit_event_row_to_dict(r) for r in rows]
+
+    def count_audit_events(
+        self,
+        resource: str | None = None,
+        action: str | None = None,
+        username: str | None = None,
+        resource_id: str | None = None,
+        status: str | None = None,
+        worker_id: str | None = None,
+        task_id: str | None = None,
+        timestamp_from: str | None = None,
+        timestamp_to: str | None = None,
+    ) -> int:
+        """统计审计日志数量。"""
+        query = "SELECT COUNT(*) FROM audit_log WHERE 1=1"
+        params: list = []
+        if resource:
+            query += " AND resource=?"
+            params.append(resource)
+        if action:
+            query += " AND action=?"
+            params.append(action)
+        if username:
+            query += " AND username=?"
+            params.append(username)
+        if resource_id:
+            query += " AND resource_id=?"
+            params.append(resource_id)
+        if status:
+            query += " AND json_extract(details, '$.status')=?"
+            params.append(status)
+        if worker_id:
+            query += " AND json_extract(details, '$.worker_id')=?"
+            params.append(worker_id)
+        if task_id:
+            query += " AND json_extract(details, '$.task_id')=?"
+            params.append(task_id)
+        if timestamp_from:
+            query += " AND timestamp>=?"
+            params.append(timestamp_from)
+        if timestamp_to:
+            query += " AND timestamp<=?"
+            params.append(timestamp_to)
+        row = self._conn.execute(query, params).fetchone()
+        return int(row[0]) if row else 0
+
+    @staticmethod
+    def _audit_event_row_to_dict(row: sqlite3.Row) -> dict:
+        event = dict(row)
+        try:
+            event["details"] = json.loads(event["details"]) if event.get("details") else {}
+        except json.JSONDecodeError:
+            event["details"] = {}
+        return event
 
     def count_audit_events_before(self, cutoff_iso: str) -> int:
         row = self._conn.execute(
