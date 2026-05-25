@@ -265,5 +265,3 @@ export const ScheduledTasksPage: React.FC = () => {
     </div>
   );
 };
-
-

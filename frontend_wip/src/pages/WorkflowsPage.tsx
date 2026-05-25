@@ -12,7 +12,7 @@ steps:
   - id: researcher
     worker: research_worker
     input: "请搜索关于 React Flow 的最新资料"
-  
+
   - id: writer
     worker: code_worker
     input: "根据资料总结：\${researcher.result}"
@@ -22,7 +22,7 @@ steps:
 export const WorkflowsPage: React.FC = () => {
   const [yamlInput, setYamlInput] = useState(DEFAULT_YAML);
   const [visualizeYaml, setVisualizeYaml] = useState(DEFAULT_YAML);
-  
+
   const [activeRunData, setActiveRunData] = useState<any>(null);
   const [isRunning, setIsRunning] = useState(false);
   const pollingRef = useRef<number | null>(null);
@@ -89,14 +89,14 @@ export const WorkflowsPage: React.FC = () => {
 
       <Row gutter={[16, 16]}>
         <Col xs={24} lg={8}>
-          <Card 
-            title="YAML 定义" 
-            size="small" 
+          <Card
+            title="YAML 定义"
+            size="small"
             extra={
               <Space>
                 <Button onClick={handleVisualize}>更新画布</Button>
-                <Button 
-                  type="primary" 
+                <Button
+                  type="primary"
                   icon={isRunning ? <SyncOutlined spin /> : <PlayCircleOutlined />}
                   onClick={handleRunWorkflow}
                   loading={isRunning}
@@ -110,10 +110,10 @@ export const WorkflowsPage: React.FC = () => {
             <TextArea
               value={yamlInput}
               onChange={(e) => setYamlInput(e.target.value)}
-              style={{ 
-                width: '100%', 
-                height: '600px', 
-                border: 'none', 
+              style={{
+                width: '100%',
+                height: '600px',
+                border: 'none',
                 borderRadius: '0 0 8px 8px',
                 fontFamily: 'monospace',
                 resize: 'none',
@@ -125,9 +125,9 @@ export const WorkflowsPage: React.FC = () => {
         </Col>
         <Col xs={24} lg={16}>
           <Card title="React Flow 画布" size="small" styles={{ body: { padding: 0 } }}>
-            <WorkflowCanvas 
-            yamlContent={visualizeYaml} 
-            activeRunData={activeRunData} 
+            <WorkflowCanvas
+            yamlContent={visualizeYaml}
+            activeRunData={activeRunData}
             onYamlChange={(newYaml) => {
               setYamlInput(newYaml);
               setVisualizeYaml(newYaml);

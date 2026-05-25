@@ -632,7 +632,7 @@ export const ChatPage: React.FC = () => {
                     <Text strong>{msg.role === 'user' ? '你' : (msgWorker?.display_name || msgWorker?.id || 'AI 助手')}</Text>
                     <Card size="small" style={{ marginTop: 8, background: msg.role === 'user' ? '#e6f7ff' : '#f6ffed' }}>
                       <div className="markdown-body" style={{ overflowX: 'auto', fontSize: '14px', lineHeight: '1.6' }}>
-                        <ReactMarkdown 
+                        <ReactMarkdown
                           remarkPlugins={[remarkGfm]}
                           components={{
                             code({node, inline, className, children, ...props}: any) {

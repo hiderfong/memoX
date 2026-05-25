@@ -307,7 +307,7 @@ export const TasksPage: React.FC = () => {
 
     setExecuting(true);
     setSuggestions([]);
-    
+
     try {
       const allGroupIds = groups.map(g => g.id);
       const isAllSelected = activeGroupIds.length === allGroupIds.length;
@@ -498,9 +498,9 @@ export const TasksPage: React.FC = () => {
           autoSize={{ minRows: 3, maxRows: 6 }}
           style={{ marginBottom: 16 }}
         />
-        <Button 
-          type="primary" 
-          icon={<RobotOutlined />} 
+        <Button
+          type="primary"
+          icon={<RobotOutlined />}
           onClick={handleExecute}
           loading={executing}
           disabled={!taskInput.trim()}
@@ -868,4 +868,3 @@ export const TasksPage: React.FC = () => {
     </div>
   );
 };
-
