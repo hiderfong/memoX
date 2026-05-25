@@ -345,19 +345,19 @@ export const api = {
     return axios.post(`${API_BASE}/documents`, formData);
   },
   deleteDocument: (id: string) => axios.delete(`${API_BASE}/documents/${id}`),
-  
+
   // 聊天
   chat: (message: string, sessionId?: string, useRag: boolean = true, activeGroupIds?: string[] | null, workerId?: string | null) =>
     axios.post(`${API_BASE}/chat`, { message, session_id: sessionId, use_rag: useRag, stream: false, active_group_ids: activeGroupIds, worker_id: workerId || undefined }),
   chatStream: (message: string, sessionId?: string, useRag: boolean = true) =>
     axios.post(`${API_BASE}/chat/stream`, { message, session_id: sessionId, use_rag: useRag, stream: true }),
-  
+
   // 任务
   createTask: (description: string, context?: object, activeGroupIds?: string[] | null) =>
     axios.post(`${API_BASE}/tasks`, { description, context, generate_suggestions: true, active_group_ids: activeGroupIds }),
   listTasks: () => axios.get(`${API_BASE}/tasks`),
   getTask: (id: string) => axios.get(`${API_BASE}/tasks/${id}`),
-  
+
   // 文档 URL 导入
   importUrl: (url: string) => axios.post(`${API_BASE}/documents/url`, { url }),
 
@@ -381,7 +381,7 @@ export const api = {
   searchSkills: (q: string, limit: number = 10) =>
     axios.get(`${API_BASE}/skills/search`, { params: { q, limit } }),
   uninstallSkill: (name: string) => axios.delete(`${API_BASE}/skills/${name}`),
-  
+
   // 系统
   health: () => axios.get(`${API_BASE}/health`),
   systemHealth: () => axios.get<SystemHealthReport>(`${API_BASE}/system/health`),

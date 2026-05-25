@@ -140,7 +140,7 @@ export const WorkflowCanvas = ({ yamlContent, activeRunData, onYamlChange }: { y
     try {
       const res = await axios.post('/api/workflows/visualize', { yaml_content: yamlContent });
       const { nodes: initialNodes, edges: initialEdges } = res.data;
-      
+
       const { nodes: layoutedNodes, edges: layoutedEdges } = getLayoutedElements(
         initialNodes,
         initialEdges
@@ -162,7 +162,7 @@ export const WorkflowCanvas = ({ yamlContent, activeRunData, onYamlChange }: { y
 
   useEffect(() => {
     if (!activeRunData || !activeRunData.steps) return;
-    
+
     setNodes((nds) =>
       nds.map((node) => {
         const stepRecord = activeRunData.steps.find((s: any) => s.step_id === node.id);
@@ -176,8 +176,8 @@ export const WorkflowCanvas = ({ yamlContent, activeRunData, onYamlChange }: { y
         };
       })
     );
-    
-    setEdges((eds) => 
+
+    setEdges((eds) =>
       eds.map((edge) => {
         const targetStep = activeRunData.steps.find((s: any) => s.step_id === edge.target);
         // 如果目标节点正在运行，让连线变成动画状态
@@ -242,7 +242,7 @@ export const WorkflowCanvas = ({ yamlContent, activeRunData, onYamlChange }: { y
 
   const handleExecuteNode = async () => {
     if (!selectedNodeId) return;
-    
+
     let parsedContext = {};
     try {
       parsedContext = JSON.parse(mockContextJson);
@@ -283,7 +283,7 @@ export const WorkflowCanvas = ({ yamlContent, activeRunData, onYamlChange }: { y
     if (!selectedNodeData || !yamlContent || !onYamlChange) return;
     try {
       const values = await editNodeForm.validateFields();
-      
+
       let parsedInput = {};
       try {
         parsedInput = JSON.parse(values.input_str);
@@ -299,7 +299,7 @@ export const WorkflowCanvas = ({ yamlContent, activeRunData, onYamlChange }: { y
         if (stepIndex !== -1) {
           if (values.description) doc.steps[stepIndex].description = values.description;
           else delete doc.steps[stepIndex].description;
-          
+
           if (values.condition && values.condition !== 'always') doc.steps[stepIndex].condition = values.condition;
           else delete doc.steps[stepIndex].condition;
 
@@ -331,7 +331,7 @@ export const WorkflowCanvas = ({ yamlContent, activeRunData, onYamlChange }: { y
   }
 
   return (
-    <div 
+    <div
       style={{ width: '100%', height: '600px', border: '1px solid #eee', borderRadius: '8px', position: 'relative' }}
       onClick={() => setMenuVisible(false)}
     >
