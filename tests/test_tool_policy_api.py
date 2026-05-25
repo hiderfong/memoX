@@ -33,6 +33,17 @@ def _write_config(root: Path) -> Path:
         },
         "tool_policy": {
             "network": {"allow_internal_hosts": ["127.0.0.1:3000"]},
+            "playwright_crawler": {
+                "max_concurrency": 2,
+                "queue_timeout_seconds": 10,
+                "total_timeout_seconds": 45,
+                "navigation_timeout_ms": 30000,
+                "selector_timeout_ms": 10000,
+                "idle_wait_ms": 2000,
+                "max_pages": 1,
+                "max_response_bytes": 5000000,
+                "max_output_chars": 8000,
+            },
             "database": {
                 "default_access_mode": "read_only",
                 "allow_raw_connection_strings": True,
@@ -94,6 +105,8 @@ def test_tool_policy_api_redacts_persists_and_applies_runtime(monkeypatch, tmp_p
             serialized = json.dumps(payload, ensure_ascii=False)
 
             assert payload["network"]["allow_internal_hosts"] == ["127.0.0.1:3000"]
+            assert payload["playwright_crawler"]["max_concurrency"] == 2
+            assert payload["playwright_crawler"]["max_response_bytes"] == 5000000
             assert payload["database"]["data_sources"][0]["name"] == "analytics"
             assert payload["database"]["data_sources"][0]["redacted"] is True
             assert "secret" not in serialized
@@ -102,6 +115,17 @@ def test_tool_policy_api_redacts_persists_and_applies_runtime(monkeypatch, tmp_p
 
             update_payload = {
                 "network": {"allow_internal_hosts": ["127.0.0.1:3000", "localhost:5173"]},
+                "playwright_crawler": {
+                    "max_concurrency": 3,
+                    "queue_timeout_seconds": 5,
+                    "total_timeout_seconds": 60,
+                    "navigation_timeout_ms": 25000,
+                    "selector_timeout_ms": 8000,
+                    "idle_wait_ms": 1000,
+                    "max_pages": 2,
+                    "max_response_bytes": 6000000,
+                    "max_output_chars": 12000,
+                },
                 "database": {
                     "default_access_mode": "read_only",
                     "allow_raw_connection_strings": False,
@@ -139,6 +163,9 @@ def test_tool_policy_api_redacts_persists_and_applies_runtime(monkeypatch, tmp_p
 
         persisted = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         assert persisted["tool_policy"]["network"]["allow_internal_hosts"] == ["127.0.0.1:3000", "localhost:5173"]
+        assert persisted["tool_policy"]["playwright_crawler"]["max_concurrency"] == 3
+        assert persisted["tool_policy"]["playwright_crawler"]["max_pages"] == 2
+        assert persisted["tool_policy"]["playwright_crawler"]["max_response_bytes"] == 6000000
         assert persisted["tool_policy"]["database"]["allow_raw_connection_strings"] is False
         assert persisted["tool_policy"]["database"]["allow_ddl"] is True
         assert persisted["tool_policy"]["database"]["max_result_rows"] == 50
@@ -149,6 +176,7 @@ def test_tool_policy_api_redacts_persists_and_applies_runtime(monkeypatch, tmp_p
         assert persisted["tool_policy"]["database"]["data_sources"]["local"] == "sqlite:///data/local.db"
         assert api_module._config.tool_policy.database.allow_raw_connection_strings is False
         assert api_module._config.tool_policy.database.allow_ddl is True
+        assert api_module._config.tool_policy.playwright_crawler.max_concurrency == 3
         assert updated_payload["database"]["data_sources"][0]["redacted"] is True
 
         audit_events = store.list_audit_events(resource="tool_policy", action="update")

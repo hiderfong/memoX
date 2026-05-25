@@ -251,8 +251,6 @@ Manual browser smoke path:
 - Replace the current knowledge graph LLM extraction fallback with a real
   provider-backed batch extractor when graph extraction becomes a product
   priority.
-- Add deployment-level CPU, memory, timeout, and concurrency controls around
-  Playwright crawling.
 - Consider exporting tool audit data as CSV or diagnostics attachment if support
   workflows need offline review.
 - Add a true multi-runner queue or external job backend before horizontal
