@@ -782,7 +782,7 @@ async def chat_stream(request: Request, chat_req: ChatRequest):
                 except Exception as exc:
                     q.put_nowait(exc)
 
-            stream_task = asyncio.create_task(_run_stream())
+            asyncio.create_task(_run_stream())
 
             raw_text_parts = []
             buffer = ""
@@ -792,7 +792,6 @@ async def chat_stream(request: Request, chat_req: ChatRequest):
                     yield f"data: {_json.dumps({'type': 'error', 'message': str(item)})}\n\n"
                     return
                 elif isinstance(item, LLMResponse):
-                    response = item
                     if buffer:
                         yield f"data: {_json.dumps({'type': 'chunk', 'content': buffer})}\n\n"
                     break

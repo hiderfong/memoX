@@ -8,6 +8,7 @@
 """
 
 import asyncio
+import contextlib
 import json
 import uuid
 from dataclasses import dataclass, field
@@ -497,7 +498,8 @@ class WorkflowEngine:
         base_step_context = {**context, **run.context, step.output_var: ""}
         deps = step.get_input_refs()
         for ref in deps:
-            if ref in ("item", "index"): continue # 循环变量，推迟解析
+            if ref in ("item", "index"):
+                continue  # 循环变量，推迟解析
             parts = ref.split(".")
             target_id = parts[0]
             output = run.get_output(target_id)
@@ -561,17 +563,17 @@ class WorkflowEngine:
                     success = True
                     break
 
-                except asyncio.TimeoutError:
+                except asyncio.TimeoutError as e:
                     last_error = f"执行超时 ({step.timeout_seconds}s)"
                     if attempt < retry:
                         logger.warning(f"[WorkflowEngine] 步骤 '{step.id}' 超时，重试")
                         continue
-                    raise RuntimeError(last_error)
+                    raise RuntimeError(last_error) from e
                 except Exception as e:
                     last_error = str(e)
                     if attempt < retry:
                         continue
-                    raise RuntimeError(last_error)
+                    raise RuntimeError(last_error) from e
 
             if not success:
                 step_error = last_error
@@ -581,10 +583,8 @@ class WorkflowEngine:
             run.mark_step_failed(step.id, step_error)
             run.context[f"{step.id}.error"] = step_error
             if on_step_change:
-                try:
+                with contextlib.suppress(Exception):
                     on_step_change(step.id, WorkflowRunStatus.FAILED)
-                except Exception:
-                    pass
             return None
 
         # 执行成功
@@ -593,10 +593,8 @@ class WorkflowEngine:
         run.context[step.output_var] = final_output
 
         if on_step_change:
-            try:
+            with contextlib.suppress(Exception):
                 on_step_change(step.id, WorkflowRunStatus.COMPLETED)
-            except Exception:
-                pass
 
         return final_output
 

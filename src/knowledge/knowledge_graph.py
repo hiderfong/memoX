@@ -108,6 +108,17 @@ def _extract_triples_rule_based(text: str, chunk_id: str = "") -> list[Triple]:
     return triples
 
 
+async def _extract_triples_via_llm_batch(
+    *,
+    chunks: list[tuple[str, str]],
+    llm_provider: str = "",
+    llm_api_key: str = "",
+    llm_base_url: str = "",
+) -> dict[str, list[Triple]]:
+    """Return no LLM triples until a concrete graph extraction provider is wired."""
+    return {}
+
+
 # ---------------------------------------------------------------------------
 # KnowledgeGraph Base Class
 # ---------------------------------------------------------------------------
@@ -543,10 +554,11 @@ class Neo4jKnowledgeGraph(KnowledgeGraph):
         if not self.enabled or not self.driver:
             return []
 
-        query = """
-        MATCH p = shortestPath((s:Entity {name: $source})-[:RELATION*..%d]-(t:Entity {name: $target}))
+        safe_max_length = max(1, int(max_length))
+        query = f"""
+        MATCH p = shortestPath((s:Entity {{name: $source}})-[:RELATION*..{safe_max_length}]-(t:Entity {{name: $target}}))
         RETURN [node in nodes(p) | node.name] as path_nodes
-        """ % max_length
+        """
         try:
             with self.driver.session() as session:
                 result = session.run(query, source=source, target=target)

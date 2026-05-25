@@ -57,17 +57,13 @@ async def test_full_pipeline_end_to_end(monkeypatch, tmp_path: Path):
     """
     from web import api as api_module
 
-    init_auth = importlib.import_module("auth").init_auth
     Config = importlib.import_module("config").Config
-    BM25Indexer = importlib.import_module("knowledge.bm25_indexer").BM25Indexer
     storage = importlib.import_module("storage")
-    persistence_module = importlib.import_module("storage.persistence")
     rag_engine_module = importlib.import_module("knowledge.rag_engine")
-    coordinator_module = importlib.import_module("coordinator")
 
     config_path = _write_config(tmp_path)
     monkeypatch.setenv("MEMOX_CONFIG_PATH", str(config_path))
-    store = storage.init_store(tmp_path / "data" / "memox.db")
+    storage.init_store(tmp_path / "data" / "memox.db")
 
     api_module._config = Config.from_yaml(config_path)
     # 模拟真实 RAG 引擎以支持文档上传入库和检索
