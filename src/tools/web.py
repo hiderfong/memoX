@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ipaddress
 import json
 from typing import Any
 from urllib.parse import parse_qs, quote_plus, unquote, urljoin, urlparse
@@ -11,6 +10,11 @@ import httpx
 from bs4 import BeautifulSoup
 
 from src.agents.base_agent import BaseTool
+from src.tools.net_safety import (
+    WebSafetyError,
+    configured_internal_host_allowlist,
+    validate_public_http_url,
+)
 
 DEFAULT_TIMEOUT = 15.0
 MAX_FETCH_CHARS = 20000
@@ -18,30 +22,8 @@ DEFAULT_FETCH_CHARS = 8000
 DEFAULT_SEARCH_RESULTS = 5
 MAX_SEARCH_RESULTS = 10
 USER_AGENT = "MemoX/0.1 (+https://github.com/hiderfong/memoX)"
-
-
-class WebSafetyError(ValueError):
-    """Raised when a URL is unsafe for server-side fetch."""
-
-
-def _validate_public_http_url(url: str) -> str:
-    parsed = urlparse(url.strip())
-    if parsed.scheme not in {"http", "https"}:
-        raise WebSafetyError("只支持 http/https URL")
-    if not parsed.hostname:
-        raise WebSafetyError("URL 缺少 hostname")
-
-    hostname = parsed.hostname.lower()
-    if hostname in {"localhost", "localhost.localdomain"} or hostname.endswith(".local"):
-        raise WebSafetyError("禁止访问本机或 .local 地址")
-
-    try:
-        ip = ipaddress.ip_address(hostname)
-    except ValueError:
-        ip = None
-    if ip and (ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast):
-        raise WebSafetyError("禁止访问内网、本机或保留 IP 地址")
-    return parsed.geturl()
+REDIRECT_STATUSES = {301, 302, 303, 307, 308}
+MAX_REDIRECTS = 5
 
 
 def _clean_text(text: str) -> str:
@@ -54,6 +36,28 @@ def _duckduckgo_target_url(href: str) -> str:
     if "uddg" in query and query["uddg"]:
         return unquote(query["uddg"][0])
     return href
+
+
+async def _safe_http_get(
+    client: httpx.AsyncClient,
+    url: str,
+    *,
+    allow_internal_hosts: list[str] | None = None,
+) -> httpx.Response:
+    current_url = validate_public_http_url(url, allow_internal_hosts=allow_internal_hosts)
+    for _ in range(MAX_REDIRECTS + 1):
+        response = await client.get(current_url)
+        if response.status_code not in REDIRECT_STATUSES:
+            validate_public_http_url(str(response.url), allow_internal_hosts=allow_internal_hosts)
+            return response
+        location = response.headers.get("location")
+        if not location:
+            return response
+        current_url = validate_public_http_url(
+            urljoin(str(response.url), location),
+            allow_internal_hosts=allow_internal_hosts,
+        )
+    raise WebSafetyError("重定向次数过多")
 
 
 class WebSearchTool(BaseTool):
@@ -112,6 +116,10 @@ class WebSearchTool(BaseTool):
             if not href:
                 continue
             target_url = _duckduckgo_target_url(urljoin("https://duckduckgo.com", href))
+            try:
+                target_url = validate_public_http_url(target_url)
+            except WebSafetyError:
+                continue
             snippet_node = result.select_one(".result__snippet")
             snippet = _clean_text(snippet_node.get_text(" ")) if snippet_node else ""
             results.append({"title": title, "url": target_url, "snippet": snippet})
@@ -150,8 +158,9 @@ class WebFetchTool(BaseTool):
         raw_url = str(arguments.get("url", "")).strip()
         if not raw_url:
             return "Error: url 不能为空"
+        allow_internal_hosts = configured_internal_host_allowlist()
         try:
-            safe_url = _validate_public_http_url(raw_url)
+            safe_url = validate_public_http_url(raw_url, allow_internal_hosts=allow_internal_hosts)
         except WebSafetyError as exc:
             return f"Error: {exc}"
 
@@ -162,10 +171,14 @@ class WebFetchTool(BaseTool):
         try:
             async with httpx.AsyncClient(
                 timeout=DEFAULT_TIMEOUT,
-                follow_redirects=True,
+                follow_redirects=False,
                 headers={"User-Agent": USER_AGENT},
             ) as client:
-                response = await client.get(safe_url)
+                response = await _safe_http_get(
+                    client,
+                    safe_url,
+                    allow_internal_hosts=allow_internal_hosts,
+                )
                 response.raise_for_status()
         except Exception as exc:
             return f"Error: 抓取失败: {type(exc).__name__}: {exc}"

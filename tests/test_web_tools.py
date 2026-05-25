@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 
+from tools.net_safety import validate_public_http_url
 from tools.web import WebFetchTool, WebSearchTool
 
 
@@ -16,6 +17,32 @@ def test_web_fetch_blocks_localhost():
 
     assert "Error" in result
     assert "内网" in result or "本机" in result
+
+
+def test_network_safety_allows_explicit_internal_host():
+    url = validate_public_http_url(
+        "http://127.0.0.1:3000/status",
+        allow_internal_hosts=["127.0.0.1:3000"],
+    )
+
+    assert url == "http://127.0.0.1:3000/status"
+
+
+def test_web_fetch_blocks_redirect_to_internal_host():
+    tool = WebFetchTool()
+    redirect = MagicMock()
+    redirect.status_code = 302
+    redirect.url = "https://example.com/start"
+    redirect.headers = {"location": "http://127.0.0.1:8080/private"}
+
+    with patch("httpx.AsyncClient") as mock_cls:
+        instance = mock_cls.return_value.__aenter__.return_value
+        instance.get = AsyncMock(return_value=redirect)
+        result = asyncio.run(tool.execute({"url": "https://example.com/start"}))
+
+    assert "Error" in result
+    assert "内网" in result or "本机" in result
+    instance.get.assert_called_once_with("https://example.com/start")
 
 
 def test_web_fetch_extracts_html_text():

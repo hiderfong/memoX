@@ -1,9 +1,16 @@
+import contextlib
 from typing import Any
+from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
 
 from src.agents.base_agent import BaseTool
+from src.tools.net_safety import (
+    WebSafetyError,
+    configured_internal_host_allowlist,
+    validate_public_http_url,
+)
 
 
 class PlaywrightCrawlerTool(BaseTool):
@@ -40,16 +47,41 @@ class PlaywrightCrawlerTool(BaseTool):
         }
 
     async def execute(self, arguments: dict) -> Any:
-        url = arguments["url"]
+        raw_url = str(arguments["url"]).strip()
         wait_for_selector = arguments.get("wait_for_selector")
         extract_text_only = arguments.get("extract_text_only", True)
+        allow_internal_hosts = configured_internal_host_allowlist()
 
+        try:
+            url = validate_public_http_url(raw_url, allow_internal_hosts=allow_internal_hosts)
+        except WebSafetyError as e:
+            return f"Error: {e}"
+
+        browser = None
+        blocked_errors: list[str] = []
         try:
             async with async_playwright() as p:
                 browser = await p.chromium.launch(headless=True)
                 page = await browser.new_page()
 
+                async def _guard_request(route):
+                    request_url = route.request.url
+                    scheme = urlparse(request_url).scheme
+                    if scheme in {"http", "https"}:
+                        try:
+                            validate_public_http_url(
+                                request_url,
+                                allow_internal_hosts=allow_internal_hosts,
+                            )
+                        except WebSafetyError as exc:
+                            blocked_errors.append(str(exc))
+                            await route.abort()
+                            return
+                    await route.continue_()
+
+                await page.route("**/*", _guard_request)
                 await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+                validate_public_http_url(page.url, allow_internal_hosts=allow_internal_hosts)
 
                 if wait_for_selector:
                     await page.wait_for_selector(wait_for_selector, timeout=10000)
@@ -58,7 +90,6 @@ class PlaywrightCrawlerTool(BaseTool):
                     await page.wait_for_timeout(2000)
 
                 html_content = await page.content()
-                await browser.close()
 
                 if extract_text_only:
                     soup = BeautifulSoup(html_content, "html.parser")
@@ -72,4 +103,10 @@ class PlaywrightCrawlerTool(BaseTool):
                     return html_content[:8000] + ("\n...[Truncated]" if len(html_content) > 8000 else "")
 
         except Exception as e:
+            if blocked_errors:
+                return f"Error: {blocked_errors[0]}"
             return f"Playwright Crawler failed: {e}"
+        finally:
+            if browser is not None:
+                with contextlib.suppress(Exception):
+                    await browser.close()
