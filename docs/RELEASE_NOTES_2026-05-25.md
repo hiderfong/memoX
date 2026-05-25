@@ -42,6 +42,8 @@ Latest local post-merge verification on `master`:
 | `uv run --extra dev ruff check .` | Passed |
 | `uv run --extra dev pytest` | `561 passed, 3 skipped` |
 | `cd frontend_wip && npm run build` | Passed with known large chunk warning |
+| `uv run --extra dev python scripts/smoke_test.py --frontend` | Passed |
+| `uv run --extra dev python scripts/docker_smoke_test.py` | Passed |
 
 GitHub PR checks:
 
@@ -55,6 +57,9 @@ GitHub PR checks:
 
 - Split large frontend bundles if load time becomes user-visible on slower
   networks.
+- Reduce Docker image size and build time. The release smoke build produced a
+  local `memox:local` image around `17.6GB`, largely because the runtime image
+  installs heavy ML/CUDA dependencies.
 - Add deployment-level CPU, memory, timeout, and concurrency controls around
   Playwright crawling.
 - Replace the current knowledge graph LLM extraction fallback with a real
@@ -63,4 +68,3 @@ GitHub PR checks:
   workflows need offline review.
 - Plan an external job backend before scaling beyond the current single-node
   deployment model.
-
