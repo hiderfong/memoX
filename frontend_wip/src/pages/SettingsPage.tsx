@@ -7,7 +7,7 @@ import axios from 'axios';
 import dayjs from 'dayjs';
 import { I2VModal } from '../components/I2VModal';
 import { WorkflowsPage } from '../pages/WorkflowsPage';
-import { MOBILE_BREAKPOINT, useIsMobile, API_BASE, KnowledgeGroup, ReadinessStatus, SystemCheck, SystemHealthReport, BackupArchiveSummary, OpsEvent, OpsEventsResponse, LifecycleCleanupResult, statusTagColor, statusBadge, statusLabel, opsEventLabel, opsEventTypeOptions, opsEventStatusOptions, opsEventActorLabel, formatBytes, formatDuration, AuthUser, AuthContextType, AuthContext, TOKEN_KEY, USER_KEY, api } from '../shared';
+import { MOBILE_BREAKPOINT, useIsMobile, API_BASE, KnowledgeGroup, ReadinessStatus, SystemCheck, SystemHealthReport, BackupArchiveSummary, OpsEvent, OpsEventsResponse, LifecycleCleanupResult, ToolPolicyResponse, statusTagColor, statusBadge, statusLabel, opsEventLabel, opsEventTypeOptions, opsEventStatusOptions, opsEventActorLabel, formatBytes, formatDuration, AuthUser, AuthContextType, AuthContext, TOKEN_KEY, USER_KEY, api } from '../shared';
 
 const { Header, Sider, Content } = Layout;
 const { Title, Text } = Typography;
@@ -20,8 +20,11 @@ export const SettingsPage: React.FC = () => {
   const isMobile = useIsMobile();
   const [memoryConfig, setMemoryConfig] = useState<any>(null);
   const [providerStatuses, setProviderStatuses] = useState<any[]>([]);
+  const [toolPolicy, setToolPolicy] = useState<ToolPolicyResponse | null>(null);
+  const [toolPolicyHostsText, setToolPolicyHostsText] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [toolPolicySaving, setToolPolicySaving] = useState(false);
 
   const fetchConfig = async () => {
     setLoading(true);
@@ -36,6 +39,13 @@ export const SettingsPage: React.FC = () => {
       setProviderStatuses(res.data || []);
     } catch {
       message.error('获取 Provider 状态失败');
+    }
+    try {
+      const res = await api.getToolPolicy();
+      setToolPolicy(res.data);
+      setToolPolicyHostsText((res.data.network.allow_internal_hosts || []).join('\n'));
+    } catch {
+      message.error('获取工具策略失败');
     } finally {
       setLoading(false);
     }
@@ -55,6 +65,82 @@ export const SettingsPage: React.FC = () => {
       message.error(err.response?.data?.detail || '保存失败');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const updateToolPolicyDraft = (updater: (policy: ToolPolicyResponse) => ToolPolicyResponse) => {
+    setToolPolicy(current => current ? updater(current) : current);
+  };
+
+  const handleAddDataSource = () => {
+    updateToolPolicyDraft(policy => ({
+      ...policy,
+      database: {
+        ...policy.database,
+        data_sources: [
+          ...policy.database.data_sources,
+          { name: `source_${policy.database.data_sources.length + 1}`, connection_string: '', redacted: false },
+        ],
+      },
+    }));
+  };
+
+  const handleUpdateDataSource = (index: number, field: 'name' | 'connection_string', value: string) => {
+    updateToolPolicyDraft(policy => ({
+      ...policy,
+      database: {
+        ...policy.database,
+        data_sources: policy.database.data_sources.map((source, itemIndex) => (
+          itemIndex === index
+            ? { ...source, [field]: value, redacted: field === 'connection_string' ? false : source.redacted }
+            : source
+        )),
+      },
+    }));
+  };
+
+  const handleRemoveDataSource = (index: number) => {
+    updateToolPolicyDraft(policy => ({
+      ...policy,
+      database: {
+        ...policy.database,
+        data_sources: policy.database.data_sources.filter((_, itemIndex) => itemIndex !== index),
+      },
+    }));
+  };
+
+  const handleSaveToolPolicy = async () => {
+    if (!toolPolicy) return;
+    const allowInternalHosts = toolPolicyHostsText
+      .split(/\r?\n/)
+      .map(item => item.trim())
+      .filter(Boolean);
+    const payload: ToolPolicyResponse = {
+      ...toolPolicy,
+      network: { allow_internal_hosts: allowInternalHosts },
+      database: {
+        ...toolPolicy.database,
+        data_sources: toolPolicy.database.data_sources
+          .map(source => ({
+            name: source.name.trim(),
+            connection_string: source.connection_string.trim(),
+            redacted: !!source.redacted,
+          }))
+          .filter(source => source.name && source.connection_string),
+      },
+    };
+
+    setToolPolicySaving(true);
+    try {
+      const res = await api.updateToolPolicy(payload);
+      setToolPolicy(res.data.tool_policy);
+      setToolPolicyHostsText((res.data.tool_policy.network.allow_internal_hosts || []).join('\n'));
+      message.success('工具策略已保存');
+    } catch (err: any) {
+      const detail = err.response?.data?.detail;
+      message.error(typeof detail === 'string' ? detail : '保存工具策略失败');
+    } finally {
+      setToolPolicySaving(false);
     }
   };
 
@@ -168,6 +254,158 @@ export const SettingsPage: React.FC = () => {
         )}
       </Card>
 
+      <Card
+        title="🛡️ 工具权限策略"
+        style={{ marginBottom: 16, maxWidth: 920 }}
+        loading={loading}
+        extra={(
+          <Button
+            type="primary"
+            icon={<SaveOutlined />}
+            onClick={handleSaveToolPolicy}
+            loading={toolPolicySaving}
+            disabled={!toolPolicy}
+          >
+            保存
+          </Button>
+        )}
+      >
+        {toolPolicy && (
+          <Form layout="vertical">
+            <Alert
+              type="info"
+              showIcon
+              style={{ marginBottom: 16 }}
+              message="工具权限策略"
+              description="默认保持公网与只读数据库访问；需要内网访问、写入或 DDL 时在这里显式开启。数据源连接串如含凭证会脱敏显示，未修改时会保留原值。"
+            />
+            <Form.Item label="允许访问的内网主机">
+              <TextArea
+                rows={4}
+                value={toolPolicyHostsText}
+                onChange={event => setToolPolicyHostsText(event.target.value)}
+                placeholder="每行一个 host 或 host:port，例如 127.0.0.1:3000"
+              />
+            </Form.Item>
+
+            <Divider />
+            <Space direction="vertical" size={12} style={{ width: '100%' }}>
+              <Space wrap>
+                <Form.Item label="数据库默认模式" style={{ marginBottom: 0 }}>
+                  <Select
+                    value={toolPolicy.database.default_access_mode}
+                    onChange={value => updateToolPolicyDraft(policy => ({
+                      ...policy,
+                      database: {
+                        ...policy.database,
+                        default_access_mode: value as ToolPolicyResponse['database']['default_access_mode'],
+                      },
+                    }))}
+                    style={{ width: 160 }}
+                  >
+                    <Select.Option value="read_only">只读</Select.Option>
+                    <Select.Option value="write">写入</Select.Option>
+                    <Select.Option value="admin">管理</Select.Option>
+                  </Select>
+                </Form.Item>
+                <Form.Item label="最大返回行数" style={{ marginBottom: 0 }}>
+                  <InputNumber
+                    min={1}
+                    max={10000}
+                    value={toolPolicy.database.max_result_rows}
+                    onChange={value => updateToolPolicyDraft(policy => ({
+                      ...policy,
+                      database: { ...policy.database, max_result_rows: Number(value || 1) },
+                    }))}
+                  />
+                </Form.Item>
+              </Space>
+              <Space wrap>
+                <Checkbox
+                  checked={toolPolicy.database.allow_raw_connection_strings}
+                  onChange={event => updateToolPolicyDraft(policy => ({
+                    ...policy,
+                    database: { ...policy.database, allow_raw_connection_strings: event.target.checked },
+                  }))}
+                >
+                  允许原始连接串
+                </Checkbox>
+                <Checkbox
+                  checked={toolPolicy.database.allow_write}
+                  onChange={event => updateToolPolicyDraft(policy => ({
+                    ...policy,
+                    database: { ...policy.database, allow_write: event.target.checked },
+                  }))}
+                >
+                  允许显式写入
+                </Checkbox>
+                <Checkbox
+                  checked={toolPolicy.database.allow_ddl}
+                  onChange={event => updateToolPolicyDraft(policy => ({
+                    ...policy,
+                    database: { ...policy.database, allow_ddl: event.target.checked },
+                  }))}
+                >
+                  允许 DDL/admin
+                </Checkbox>
+                <Checkbox
+                  checked={toolPolicy.database.allow_multiple_statements}
+                  onChange={event => updateToolPolicyDraft(policy => ({
+                    ...policy,
+                    database: { ...policy.database, allow_multiple_statements: event.target.checked },
+                  }))}
+                >
+                  允许多语句
+                </Checkbox>
+              </Space>
+            </Space>
+
+            <Divider />
+            <Space align="center" style={{ width: '100%', justifyContent: 'space-between', marginBottom: 8 }}>
+              <Text strong>命名数据源</Text>
+              <Button size="small" icon={<PlusOutlined />} onClick={handleAddDataSource}>添加数据源</Button>
+            </Space>
+            {toolPolicy.database.data_sources.length === 0 ? (
+              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无命名数据源" />
+            ) : (
+              <List
+                size="small"
+                dataSource={toolPolicy.database.data_sources}
+                renderItem={(source, index) => (
+                  <List.Item
+                    actions={[
+                      <Button
+                        key="delete"
+                        danger
+                        size="small"
+                        icon={<DeleteOutlined />}
+                        onClick={() => handleRemoveDataSource(index)}
+                      />,
+                    ]}
+                  >
+                    <Space direction={isMobile ? 'vertical' : 'horizontal'} style={{ width: '100%' }}>
+                      <Input
+                        value={source.name}
+                        onChange={event => handleUpdateDataSource(index, 'name', event.target.value)}
+                        placeholder="数据源名称"
+                        style={{ width: isMobile ? '100%' : 180 }}
+                      />
+                      <Input
+                        value={source.connection_string}
+                        onChange={event => handleUpdateDataSource(index, 'connection_string', event.target.value)}
+                        placeholder="SQLAlchemy 连接串或 ${ENV_VAR}"
+                        style={{ flex: 1, minWidth: isMobile ? '100%' : 320 }}
+                      />
+                      {source.redacted && <Tag color="orange">已脱敏</Tag>}
+                    </Space>
+                  </List.Item>
+                )}
+              />
+            )}
+          </Form>
+        )}
+      </Card>
+
       {/* 关于 */}
       <Card title="ℹ️ 关于 MemoX" style={{ maxWidth: 720 }}>
         <Space direction="vertical">
@@ -182,4 +420,3 @@ export const SettingsPage: React.FC = () => {
     </div>
   );
 };
-

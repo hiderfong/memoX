@@ -7,7 +7,7 @@ import axios from 'axios';
 import dayjs from 'dayjs';
 import { I2VModal } from '../components/I2VModal';
 import { WorkflowsPage } from '../pages/WorkflowsPage';
-import { MOBILE_BREAKPOINT, useIsMobile, API_BASE, KnowledgeGroup, ReadinessStatus, SystemCheck, SystemHealthReport, BackupArchiveSummary, OpsEvent, OpsEventsResponse, LifecycleCleanupResult, statusTagColor, statusBadge, statusLabel, opsEventLabel, opsEventTypeOptions, opsEventStatusOptions, opsEventActorLabel, formatBytes, formatDuration, AuthUser, AuthContextType, AuthContext, TOKEN_KEY, USER_KEY, api } from '../shared';
+import { MOBILE_BREAKPOINT, useIsMobile, API_BASE, KnowledgeGroup, ReadinessStatus, SystemCheck, SystemHealthReport, BackupArchiveSummary, OpsEvent, OpsEventsResponse, LifecycleCleanupResult, ToolAuditEvent, statusTagColor, statusBadge, statusLabel, opsEventLabel, opsEventTypeOptions, opsEventStatusOptions, opsEventActorLabel, toolAuditStatusOptions, toolAuditStatusLabel, toolAuditStatusColor, formatBytes, formatDuration, AuthUser, AuthContextType, AuthContext, TOKEN_KEY, USER_KEY, api } from '../shared';
 
 const { Header, Sider, Content } = Layout;
 const { Title, Text } = Typography;
@@ -30,9 +30,24 @@ export const SystemStatusPage: React.FC = () => {
   const [opsEventTypeFilter, setOpsEventTypeFilter] = useState<string | undefined>();
   const [opsEventStatusFilter, setOpsEventStatusFilter] = useState<string | undefined>();
   const [selectedOpsEvent, setSelectedOpsEvent] = useState<OpsEvent | null>(null);
+  const [toolAuditEvents, setToolAuditEvents] = useState<ToolAuditEvent[]>([]);
+  const [toolAuditTotal, setToolAuditTotal] = useState(0);
+  const [toolAuditSummary, setToolAuditSummary] = useState<Record<'success' | 'rejected' | 'error', number>>({
+    success: 0,
+    rejected: 0,
+    error: 0,
+  });
+  const [toolAuditPage, setToolAuditPage] = useState(1);
+  const [toolAuditPageSize, setToolAuditPageSize] = useState(8);
+  const [toolAuditStatusFilter, setToolAuditStatusFilter] = useState<string | undefined>();
+  const [toolAuditToolFilter, setToolAuditToolFilter] = useState<string | undefined>();
+  const [toolAuditWorkerFilter, setToolAuditWorkerFilter] = useState('');
+  const [toolAuditTaskFilter, setToolAuditTaskFilter] = useState('');
+  const [selectedToolAudit, setSelectedToolAudit] = useState<ToolAuditEvent | null>(null);
   const [loading, setLoading] = useState(true);
   const [backupsLoading, setBackupsLoading] = useState(true);
   const [eventsLoading, setEventsLoading] = useState(true);
+  const [toolAuditLoading, setToolAuditLoading] = useState(true);
   const [maintenanceRunning, setMaintenanceRunning] = useState(false);
   const [cleanupRunning, setCleanupRunning] = useState(false);
   const [cleanupExecuting, setCleanupExecuting] = useState(false);
@@ -73,12 +88,44 @@ export const SystemStatusPage: React.FC = () => {
     }
   };
 
+  const fetchToolAudit = async (
+    page: number = toolAuditPage,
+    pageSize: number = toolAuditPageSize,
+    status: string | undefined = toolAuditStatusFilter,
+    toolName: string | undefined = toolAuditToolFilter,
+    workerId: string = toolAuditWorkerFilter,
+    taskId: string = toolAuditTaskFilter,
+  ) => {
+    setToolAuditLoading(true);
+    try {
+      const res = await api.listToolAudit({
+        limit: pageSize,
+        offset: (page - 1) * pageSize,
+        status,
+        toolName,
+        workerId: workerId.trim() || undefined,
+        taskId: taskId.trim() || undefined,
+      });
+      setToolAuditEvents(res.data?.events || []);
+      setToolAuditTotal(res.data?.total ?? res.data?.count ?? 0);
+      setToolAuditSummary(res.data?.summary || { success: 0, rejected: 0, error: 0 });
+      setToolAuditPage(page);
+      setToolAuditPageSize(pageSize);
+    } catch (err: any) {
+      const detail = err.response?.data?.detail;
+      message.error(typeof detail === 'string' ? detail : '获取工具调用审计失败');
+    } finally {
+      setToolAuditLoading(false);
+    }
+  };
+
   const fetchReport = async () => {
     setLoading(true);
     setBackupsLoading(true);
     setEventsLoading(true);
+    setToolAuditLoading(true);
     try {
-      const [healthRes, backupsRes, eventsRes, tasksRes] = await Promise.all([
+      const [healthRes, backupsRes, eventsRes, toolAuditRes, tasksRes] = await Promise.all([
         api.systemHealth(),
         api.listBackups(),
         api.listOpsEvents({
@@ -87,12 +134,23 @@ export const SystemStatusPage: React.FC = () => {
           eventType: opsEventTypeFilter,
           status: opsEventStatusFilter,
         }),
+        api.listToolAudit({
+          limit: toolAuditPageSize,
+          offset: (toolAuditPage - 1) * toolAuditPageSize,
+          status: toolAuditStatusFilter,
+          toolName: toolAuditToolFilter,
+          workerId: toolAuditWorkerFilter.trim() || undefined,
+          taskId: toolAuditTaskFilter.trim() || undefined,
+        }),
         api.listTasks().catch(() => ({ data: [] })),
       ]);
       setReport(healthRes.data);
       setBackups(backupsRes.data?.backups || []);
       setOpsEvents(eventsRes.data?.events || []);
       setOpsEventsTotal(eventsRes.data?.total ?? eventsRes.data?.count ?? 0);
+      setToolAuditEvents(toolAuditRes.data?.events || []);
+      setToolAuditTotal(toolAuditRes.data?.total ?? toolAuditRes.data?.count ?? 0);
+      setToolAuditSummary(toolAuditRes.data?.summary || { success: 0, rejected: 0, error: 0 });
       setOpsTasks(tasksRes.data || []);
       setLastUpdated(dayjs().format('YYYY-MM-DD HH:mm:ss'));
     } catch (err: any) {
@@ -102,6 +160,7 @@ export const SystemStatusPage: React.FC = () => {
       setLoading(false);
       setBackupsLoading(false);
       setEventsLoading(false);
+      setToolAuditLoading(false);
     }
   };
 
@@ -111,6 +170,7 @@ export const SystemStatusPage: React.FC = () => {
       setLoading(false);
       setBackupsLoading(false);
       setEventsLoading(false);
+      setToolAuditLoading(false);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.role]);
@@ -218,6 +278,34 @@ export const SystemStatusPage: React.FC = () => {
     setOpsEventTypeFilter(undefined);
     setOpsEventStatusFilter(undefined);
     fetchOpsEvents(1, opsEventsPageSize, undefined, undefined);
+  };
+
+  const handleToolAuditStatusFilterChange = (value?: string) => {
+    setToolAuditStatusFilter(value);
+    fetchToolAudit(1, toolAuditPageSize, value, toolAuditToolFilter, toolAuditWorkerFilter, toolAuditTaskFilter);
+  };
+
+  const handleToolAuditToolFilterChange = (value?: string) => {
+    setToolAuditToolFilter(value);
+    fetchToolAudit(1, toolAuditPageSize, toolAuditStatusFilter, value, toolAuditWorkerFilter, toolAuditTaskFilter);
+  };
+
+  const handleToolAuditSearch = () => {
+    fetchToolAudit(1, toolAuditPageSize, toolAuditStatusFilter, toolAuditToolFilter, toolAuditWorkerFilter, toolAuditTaskFilter);
+  };
+
+  const handleToolAuditTableChange = (pagination: any) => {
+    const nextPage = pagination.current || 1;
+    const nextPageSize = pagination.pageSize || toolAuditPageSize;
+    fetchToolAudit(nextPage, nextPageSize, toolAuditStatusFilter, toolAuditToolFilter, toolAuditWorkerFilter, toolAuditTaskFilter);
+  };
+
+  const handleResetToolAuditFilters = () => {
+    setToolAuditStatusFilter(undefined);
+    setToolAuditToolFilter(undefined);
+    setToolAuditWorkerFilter('');
+    setToolAuditTaskFilter('');
+    fetchToolAudit(1, toolAuditPageSize, undefined, undefined, '', '');
   };
 
   const handleRepairIndexes = () => {
@@ -720,6 +808,79 @@ export const SystemStatusPage: React.FC = () => {
       width: 88,
       render: (_: any, item: OpsEvent) => (
         <Button size="small" icon={<EyeOutlined />} onClick={() => setSelectedOpsEvent(item)}>
+          查看
+        </Button>
+      ),
+    },
+  ];
+  const toolAuditColumns = [
+    {
+      title: '工具',
+      dataIndex: 'resource_id',
+      key: 'resource_id',
+      width: 160,
+      render: (toolName: string) => <Tag icon={<ToolOutlined />}>{toolName}</Tag>,
+    },
+    {
+      title: '状态',
+      key: 'status',
+      width: 100,
+      render: (_: any, item: ToolAuditEvent) => (
+        <Tag color={toolAuditStatusColor(item.details?.status)}>
+          {toolAuditStatusLabel(item.details?.status)}
+        </Tag>
+      ),
+    },
+    {
+      title: 'Worker / Task',
+      key: 'context',
+      width: 220,
+      render: (_: any, item: ToolAuditEvent) => (
+        <Space direction="vertical" size={0}>
+          <Text>{item.details?.worker_name || item.details?.worker_id || item.username || '-'}</Text>
+          <Text type="secondary" style={{ fontSize: 12, wordBreak: 'break-all' }}>
+            {item.details?.task_id || '-'}
+          </Text>
+        </Space>
+      ),
+    },
+    {
+      title: '耗时',
+      key: 'duration',
+      width: 90,
+      render: (_: any, item: ToolAuditEvent) => <Text>{formatDuration(item.details?.duration_ms)}</Text>,
+    },
+    {
+      title: '时间',
+      dataIndex: 'timestamp',
+      key: 'timestamp',
+      width: 170,
+      render: (timestamp: string) => <Text type="secondary">{timestamp || '-'}</Text>,
+    },
+    {
+      title: '摘要',
+      key: 'summary',
+      render: (_: any, item: ToolAuditEvent) => {
+        const args = item.details?.arguments || {};
+        const result = item.details?.result;
+        return (
+          <Space direction="vertical" size={0}>
+            <Text style={{ wordBreak: 'break-word' }}>
+              {Object.keys(args).slice(0, 3).join(', ') || '无参数摘要'}
+            </Text>
+            <Text type={item.details?.error ? 'danger' : 'secondary'} style={{ fontSize: 12 }}>
+              {item.details?.error || result?.preview || result?.type || '-'}
+            </Text>
+          </Space>
+        );
+      },
+    },
+    {
+      title: '详情',
+      key: 'details',
+      width: 88,
+      render: (_: any, item: ToolAuditEvent) => (
+        <Button size="small" icon={<EyeOutlined />} onClick={() => setSelectedToolAudit(item)}>
           查看
         </Button>
       ),
@@ -1347,6 +1508,86 @@ export const SystemStatusPage: React.FC = () => {
           )}
         </Card>
 
+        <Card
+          title="工具调用审计"
+          loading={toolAuditLoading}
+          extra={(
+            <Button size="small" icon={<ReloadOutlined />} onClick={() => fetchToolAudit()}>
+              刷新
+            </Button>
+          )}
+        >
+          <Space
+            wrap
+            direction={isMobile ? 'vertical' : 'horizontal'}
+            style={{ width: '100%', marginBottom: 12 }}
+          >
+            <Select
+              allowClear
+              placeholder="状态"
+              value={toolAuditStatusFilter}
+              onChange={handleToolAuditStatusFilterChange}
+              style={{ width: isMobile ? '100%' : 140 }}
+            >
+              {toolAuditStatusOptions.map(status => (
+                <Select.Option key={status} value={status}>{toolAuditStatusLabel(status)}</Select.Option>
+              ))}
+            </Select>
+            <Input
+              allowClear
+              placeholder="工具名"
+              value={toolAuditToolFilter}
+              onChange={event => setToolAuditToolFilter(event.target.value || undefined)}
+              onPressEnter={handleToolAuditSearch}
+              style={{ width: isMobile ? '100%' : 180 }}
+            />
+            <Input
+              allowClear
+              placeholder="Worker"
+              value={toolAuditWorkerFilter}
+              onChange={event => setToolAuditWorkerFilter(event.target.value)}
+              onPressEnter={handleToolAuditSearch}
+              style={{ width: isMobile ? '100%' : 160 }}
+            />
+            <Input
+              allowClear
+              placeholder="Task ID"
+              value={toolAuditTaskFilter}
+              onChange={event => setToolAuditTaskFilter(event.target.value)}
+              onPressEnter={handleToolAuditSearch}
+              style={{ width: isMobile ? '100%' : 180 }}
+            />
+            <Button icon={<FileSearchOutlined />} onClick={handleToolAuditSearch}>筛选</Button>
+            <Button onClick={handleResetToolAuditFilters}>重置</Button>
+          </Space>
+          <Space wrap style={{ marginBottom: 12 }}>
+            <Tag color="green">成功 {toolAuditSummary.success || 0}</Tag>
+            <Tag color="orange">策略拒绝 {toolAuditSummary.rejected || 0}</Tag>
+            <Tag color="red">错误 {toolAuditSummary.error || 0}</Tag>
+          </Space>
+          {toolAuditEvents.length > 0 ? (
+            <Table
+              size="small"
+              rowKey="id"
+              dataSource={toolAuditEvents}
+              columns={toolAuditColumns}
+              pagination={{
+                current: toolAuditPage,
+                pageSize: toolAuditPageSize,
+                total: toolAuditTotal,
+                size: 'small',
+                showSizeChanger: true,
+                pageSizeOptions: ['8', '20', '50'],
+                showTotal: total => `共 ${total} 条`,
+              }}
+              onChange={handleToolAuditTableChange}
+              scroll={{ x: 1180 }}
+            />
+          ) : (
+            <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无工具调用审计" />
+          )}
+        </Card>
+
         <Card title="运行时" loading={loading}>
           <Space direction="vertical">
             <Text><Text strong>应用:</Text> {report?.runtime?.app || '-'}</Text>
@@ -1418,7 +1659,48 @@ export const SystemStatusPage: React.FC = () => {
           </Space>
         )}
       </Drawer>
+      <Drawer
+        title="工具调用详情"
+        open={!!selectedToolAudit}
+        onClose={() => setSelectedToolAudit(null)}
+        width={isMobile ? '100%' : 680}
+      >
+        {selectedToolAudit && (
+          <Space direction="vertical" size={12} style={{ width: '100%' }}>
+            <Space wrap>
+              <Tag icon={<ToolOutlined />}>{selectedToolAudit.resource_id}</Tag>
+              <Tag color={toolAuditStatusColor(selectedToolAudit.details?.status)}>
+                {toolAuditStatusLabel(selectedToolAudit.details?.status)}
+              </Tag>
+              <Text type="secondary">{selectedToolAudit.timestamp}</Text>
+            </Space>
+            <Text><Text strong>Worker:</Text> {selectedToolAudit.details?.worker_name || selectedToolAudit.details?.worker_id || selectedToolAudit.username || '-'}</Text>
+            <Text style={{ wordBreak: 'break-all' }}><Text strong>Task:</Text> {selectedToolAudit.details?.task_id || '-'}</Text>
+            <Text><Text strong>耗时:</Text> {formatDuration(selectedToolAudit.details?.duration_ms)}</Text>
+            {selectedToolAudit.details?.error && (
+              <Alert type="warning" showIcon message="执行未成功" description={selectedToolAudit.details.error} />
+            )}
+            <Divider style={{ margin: '4px 0' }} />
+            <Text strong>脱敏参数与结果</Text>
+            <pre style={{
+              margin: 0,
+              padding: 12,
+              background: '#f7f8fa',
+              border: '1px solid #edf0f5',
+              borderRadius: 6,
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-word',
+              maxHeight: '55vh',
+              overflow: 'auto',
+            }}>
+              {JSON.stringify({
+                arguments: selectedToolAudit.details?.arguments || {},
+                result: selectedToolAudit.details?.result || null,
+              }, null, 2)}
+            </pre>
+          </Space>
+        )}
+      </Drawer>
     </div>
   );
 };
-

@@ -93,6 +93,66 @@ export interface OpsEventsResponse {
   events: OpsEvent[];
 }
 
+export type ToolAuditStatus = 'success' | 'rejected' | 'error' | string;
+
+export interface ToolAuditEvent {
+  id: number;
+  timestamp: string;
+  username?: string;
+  user_role?: string;
+  action: string;
+  resource: string;
+  resource_id: string;
+  details?: {
+    tool_name?: string;
+    status?: ToolAuditStatus;
+    duration_ms?: number;
+    worker_id?: string;
+    worker_name?: string;
+    task_id?: string;
+    subtask_id?: string;
+    arguments?: Record<string, any>;
+    result?: Record<string, any> | null;
+    error?: string;
+  };
+}
+
+export interface ToolAuditResponse {
+  tool_name?: string | null;
+  status?: string | null;
+  worker_id?: string | null;
+  task_id?: string | null;
+  timestamp_from?: string | null;
+  timestamp_to?: string | null;
+  limit: number;
+  offset: number;
+  count: number;
+  total: number;
+  summary: Record<'success' | 'rejected' | 'error', number>;
+  events: ToolAuditEvent[];
+}
+
+export interface ToolPolicyDataSource {
+  name: string;
+  connection_string: string;
+  redacted?: boolean;
+}
+
+export interface ToolPolicyResponse {
+  network: {
+    allow_internal_hosts: string[];
+  };
+  database: {
+    default_access_mode: 'read_only' | 'write' | 'admin';
+    allow_raw_connection_strings: boolean;
+    allow_write: boolean;
+    allow_ddl: boolean;
+    allow_multiple_statements: boolean;
+    max_result_rows: number;
+    data_sources: ToolPolicyDataSource[];
+  };
+}
+
 export interface LifecycleCleanupResult {
   ok: boolean;
   status: ReadinessStatus;
@@ -182,6 +242,22 @@ export const opsEventTypeOptions = [
 ];
 
 export const opsEventStatusOptions: ReadinessStatus[] = ['ok', 'warning', 'error'];
+
+export const toolAuditStatusOptions: ToolAuditStatus[] = ['success', 'rejected', 'error'];
+
+export const toolAuditStatusLabel = (status?: ToolAuditStatus) => {
+  if (status === 'success') return '成功';
+  if (status === 'rejected') return '策略拒绝';
+  if (status === 'error') return '错误';
+  return status || '未知';
+};
+
+export const toolAuditStatusColor = (status?: ToolAuditStatus) => {
+  if (status === 'success') return 'green';
+  if (status === 'rejected') return 'orange';
+  if (status === 'error') return 'red';
+  return 'default';
+};
 
 export const opsEventActorLabel = (event: OpsEvent) => {
   const actor = event.details?.actor;
@@ -319,6 +395,30 @@ export const api = {
         status: options.status || undefined,
       },
     }),
+  listToolAudit: (options: {
+    limit?: number;
+    offset?: number;
+    toolName?: string;
+    status?: string;
+    workerId?: string;
+    taskId?: string;
+  } = {}) =>
+    axios.get<ToolAuditResponse>(`${API_BASE}/system/tool-audit`, {
+      params: {
+        limit: options.limit ?? 12,
+        offset: options.offset ?? 0,
+        tool_name: options.toolName || undefined,
+        status: options.status || undefined,
+        worker_id: options.workerId || undefined,
+        task_id: options.taskId || undefined,
+      },
+    }),
+  getToolPolicy: () => axios.get<ToolPolicyResponse>(`${API_BASE}/system/tool-policy`),
+  updateToolPolicy: (payload: ToolPolicyResponse) =>
+    axios.put<{ success: boolean; message: string; tool_policy: ToolPolicyResponse }>(
+      `${API_BASE}/system/tool-policy`,
+      payload,
+    ),
   verifyBackup: (archiveName: string) =>
     axios.post(`${API_BASE}/system/backups/${encodeURIComponent(archiveName)}/verify`),
   runRestorePreflight: (archiveName: string) =>
@@ -388,4 +488,3 @@ export const api = {
   submitTaskFeedback: (taskId: string, feedback: string) =>
     axios.post(`${API_BASE}/tasks/${taskId}/feedback`, { feedback }),
 };
-
