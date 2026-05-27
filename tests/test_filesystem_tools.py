@@ -34,11 +34,33 @@ def test_write_outside_sandbox_denied(tmp_path):
     assert "Error" in result
 
 
+def test_write_sibling_prefix_path_denied(tmp_path):
+    _, write_tool, _, sandbox = make_tools(tmp_path)
+    sibling = sandbox.parent / f"{sandbox.name}_evil" / "pwn.txt"
+
+    result = asyncio.run(write_tool.execute({"path": str(sibling), "content": "hack"}))
+
+    assert "Error" in result
+    assert not sibling.exists()
+
+
 def test_read_outside_task_workspace_denied(tmp_path):
     read_tool, _, _, _ = make_tools(tmp_path)
 
     result = asyncio.run(read_tool.execute({"path": "/etc/passwd"}))
     assert "Error" in result
+
+
+def test_read_sibling_task_prefix_path_denied(tmp_path):
+    read_tool, _, _, sandbox = make_tools(tmp_path)
+    sibling_task_file = sandbox.parent.parent / f"{sandbox.parent.name}_evil" / "secret.txt"
+    sibling_task_file.parent.mkdir(parents=True)
+    sibling_task_file.write_text("payload-content", encoding="utf-8")
+
+    result = asyncio.run(read_tool.execute({"path": str(sibling_task_file)}))
+
+    assert "Error" in result
+    assert "payload-content" not in result
 
 
 def test_read_nonexistent_file(tmp_path):
@@ -57,6 +79,16 @@ def test_list_files(tmp_path):
     result = asyncio.run(list_tool.execute({}))
     assert "a.txt" in result
     assert "b.txt" in result
+
+
+def test_list_sibling_prefix_path_denied(tmp_path):
+    _, _, list_tool, sandbox = make_tools(tmp_path)
+    sibling = sandbox.parent / f"{sandbox.name}_evil"
+    sibling.mkdir()
+
+    result = asyncio.run(list_tool.execute({"path": str(sibling)}))
+
+    assert "Error" in result
 
 
 def test_list_empty_dir(tmp_path):
