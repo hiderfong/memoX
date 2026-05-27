@@ -33,6 +33,12 @@ def _write_config(root: Path) -> Path:
         },
         "tool_policy": {
             "network": {"allow_internal_hosts": ["127.0.0.1:3000"]},
+            "web": {
+                "request_timeout_seconds": 12,
+                "max_response_bytes": 1500000,
+                "max_fetch_chars": 12000,
+                "max_search_results": 8,
+            },
             "playwright_crawler": {
                 "max_concurrency": 2,
                 "queue_timeout_seconds": 10,
@@ -105,6 +111,10 @@ def test_tool_policy_api_redacts_persists_and_applies_runtime(monkeypatch, tmp_p
             serialized = json.dumps(payload, ensure_ascii=False)
 
             assert payload["network"]["allow_internal_hosts"] == ["127.0.0.1:3000"]
+            assert payload["web"]["request_timeout_seconds"] == 12
+            assert payload["web"]["max_response_bytes"] == 1500000
+            assert payload["web"]["max_fetch_chars"] == 12000
+            assert payload["web"]["max_search_results"] == 8
             assert payload["playwright_crawler"]["max_concurrency"] == 2
             assert payload["playwright_crawler"]["max_response_bytes"] == 5000000
             assert payload["database"]["data_sources"][0]["name"] == "analytics"
@@ -115,6 +125,12 @@ def test_tool_policy_api_redacts_persists_and_applies_runtime(monkeypatch, tmp_p
 
             update_payload = {
                 "network": {"allow_internal_hosts": ["127.0.0.1:3000", "localhost:5173"]},
+                "web": {
+                    "request_timeout_seconds": 20,
+                    "max_response_bytes": 2500000,
+                    "max_fetch_chars": 30000,
+                    "max_search_results": 12,
+                },
                 "playwright_crawler": {
                     "max_concurrency": 3,
                     "queue_timeout_seconds": 5,
@@ -163,6 +179,10 @@ def test_tool_policy_api_redacts_persists_and_applies_runtime(monkeypatch, tmp_p
 
         persisted = yaml.safe_load(config_path.read_text(encoding="utf-8"))
         assert persisted["tool_policy"]["network"]["allow_internal_hosts"] == ["127.0.0.1:3000", "localhost:5173"]
+        assert persisted["tool_policy"]["web"]["request_timeout_seconds"] == 20
+        assert persisted["tool_policy"]["web"]["max_response_bytes"] == 2500000
+        assert persisted["tool_policy"]["web"]["max_fetch_chars"] == 30000
+        assert persisted["tool_policy"]["web"]["max_search_results"] == 12
         assert persisted["tool_policy"]["playwright_crawler"]["max_concurrency"] == 3
         assert persisted["tool_policy"]["playwright_crawler"]["max_pages"] == 2
         assert persisted["tool_policy"]["playwright_crawler"]["max_response_bytes"] == 6000000

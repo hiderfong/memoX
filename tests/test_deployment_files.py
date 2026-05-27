@@ -33,6 +33,7 @@ def test_dockerfile_builds_frontend_and_runs_memox() -> None:
 
 def test_config_example_is_container_friendly() -> None:
     config = yaml.safe_load((ROOT / "config.example.yaml").read_text(encoding="utf-8"))
+    env_example = (ROOT / ".env.example").read_text(encoding="utf-8")
 
     assert config["app"]["debug"] is False
     assert config["server"]["host"] == "0.0.0.0"
@@ -42,9 +43,17 @@ def test_config_example_is_container_friendly() -> None:
     assert config["ops"]["task_job_retention_days"] == 30
     assert config["ops"]["diagnostic_retention_days"] == 30
     assert config["ops"]["max_diagnostic_bundles"] == 20
+    assert config["tool_policy"]["web"]["request_timeout_seconds"] == 15
+    assert config["tool_policy"]["web"]["max_response_bytes"] == 2000000
+    assert config["tool_policy"]["web"]["max_fetch_chars"] == 20000
+    assert config["tool_policy"]["web"]["max_search_results"] == 10
     assert "/api/docs" in config["auth"]["public_paths"]
     assert "/api/redoc" in config["auth"]["public_paths"]
     assert "/api/openapi.json" in config["auth"]["public_paths"]
+    assert "/api/files/" not in config["auth"]["public_paths"]
+    assert config["file_access"]["signing_secret"] == "${MEMOX_FILE_SIGNING_SECRET:-}"
+    assert config["file_access"]["signed_url_ttl_seconds"] == 300
+    assert "MEMOX_FILE_SIGNING_SECRET=" in env_example
 
 
 def test_backup_artifacts_are_documented_and_ignored() -> None:

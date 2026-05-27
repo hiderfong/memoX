@@ -2,11 +2,15 @@
 
 import asyncio
 import contextlib
+import hashlib
+import hmac
 import json
 import re as _re
 import sys
+import time
 import uuid
 from pathlib import Path
+from urllib.parse import quote, unquote
 
 from loguru import logger
 
@@ -42,7 +46,7 @@ from slowapi.util import get_remote_address  # noqa: E402
 from agents.base_agent import ToolRegistry, create_provider  # noqa: E402
 from agents.worker_pool import WorkerAgent, WorkerConfig, get_worker_pool, init_worker_pool  # noqa: E402
 from auth import AuthUser, _get_auth_from_request, init_auth  # noqa: E402
-from config import Config, default_config_path, load_config, resolve_env_value, validate_config  # noqa: E402
+from config import Config, FileAccessConfig, default_config_path, load_config, resolve_env_value, validate_config  # noqa: E402
 from coordinator.iterative_orchestrator import IterativeOrchestrator  # noqa: E402
 from coordinator.task_planner import TaskPlanner, init_task_planner  # noqa: E402
 from memory import MemoryManager, MemoryRecall, PreferenceLearner  # noqa: E402
@@ -214,6 +218,85 @@ _PUBLIC_PATHS: set[str] = {
 }
 
 
+_DEFAULT_FILE_ACCESS = FileAccessConfig()
+
+
+def _file_access_config() -> FileAccessConfig:
+    if _config and getattr(_config, "file_access", None):
+        return _config.file_access
+    return _DEFAULT_FILE_ACCESS
+
+
+def _file_signing_secret() -> str:
+    return _file_access_config().resolve_signing_secret().strip()
+
+
+def _validate_upload_file_name(name: str, raw_name: str | None = None) -> str:
+    raw_name = name if raw_name is None else raw_name
+    for candidate in (raw_name, name):
+        if not candidate or "/" in candidate or "\\" in candidate or ".." in candidate:
+            raise HTTPException(status_code=400, detail="非法文件名")
+    return name
+
+
+def _upload_file_path(name: str) -> Path:
+    path = (UPLOADS_DIR / name).resolve()
+    try:
+        path.relative_to(UPLOADS_DIR.resolve())
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail="非法路径") from e
+    return path
+
+
+def _file_signature(name: str, expires: int) -> str:
+    secret = _file_signing_secret()
+    if not secret:
+        return ""
+    message = f"{name}\n{expires}".encode()
+    return hmac.new(secret.encode(), message, hashlib.sha256).hexdigest()
+
+
+def _request_has_valid_bearer(request: Request) -> bool:
+    auth_header = request.headers.get("Authorization", "")
+    token = auth_header.removeprefix("Bearer ").strip()
+    auth = _get_auth_from_request(request)
+    return bool(auth.validate_token(token))
+
+
+def _request_has_valid_file_signature(request: Request, name: str) -> bool:
+    expires_raw = request.query_params.get("expires", "")
+    signature = request.query_params.get("signature", "")
+    if not expires_raw or not signature:
+        return False
+    try:
+        expires = int(expires_raw)
+    except ValueError:
+        return False
+    if expires < int(time.time()):
+        return False
+    expected = _file_signature(name, expires)
+    if not expected:
+        return False
+    return hmac.compare_digest(expected, signature)
+
+
+def _request_has_valid_file_access(request: Request, name: str) -> bool:
+    return _request_has_valid_bearer(request) or _request_has_valid_file_signature(request, name)
+
+
+def _is_signed_upload_request(request: Request) -> bool:
+    path = request.url.path
+    if not path.startswith("/api/files/") or path == "/api/files/sign":
+        return False
+    raw_name = path.removeprefix("/api/files/")
+    name = unquote(raw_name)
+    try:
+        _validate_upload_file_name(name, raw_name=raw_name)
+    except HTTPException:
+        return False
+    return _request_has_valid_file_signature(request, name)
+
+
 # ==================== 认证中间件 ====================
 
 @app.middleware("http")
@@ -222,6 +305,10 @@ async def auth_middleware(request: Request, call_next):
 
     # 非 API 路径（前端静态文件、HTML 页面）直接放行
     if not path.startswith("/api/") and path != "/ws":
+        return await call_next(request)
+
+    # 短期签名文件 URL 可被外部服务拉取；路由内部仍会二次校验。
+    if _is_signed_upload_request(request):
         return await call_next(request)
 
     # API 公开路径（登录、健康检查、文档）直接放行
@@ -300,6 +387,12 @@ class GroupUpdate(BaseModel):
 
 class MoveDocumentGroup(BaseModel):
     group_id: str
+
+
+class FileSignedUrlRequest(BaseModel):
+    """短期文件访问 URL 签名请求"""
+    name: str
+    ttl_seconds: int | None = None
 
 
 # ==================== 初始化 ====================
@@ -618,19 +711,43 @@ async def health_check() -> dict:
     }
 
 
+@app.post("/api/files/sign")
+async def sign_upload_url(payload: FileSignedUrlRequest, request: Request) -> dict:
+    """为上传文件生成短期 HMAC 签名访问 URL。"""
+    if not _request_has_valid_bearer(request):
+        raise HTTPException(status_code=401, detail="未登录或 Token 已过期")
+
+    name = _validate_upload_file_name(payload.name)
+    path = _upload_file_path(name)
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="文件不存在")
+
+    if not _file_signing_secret():
+        raise HTTPException(status_code=503, detail="文件签名密钥未配置")
+
+    ttl_seconds = payload.ttl_seconds
+    if ttl_seconds is None:
+        ttl_seconds = _file_access_config().signed_url_ttl_seconds
+    if ttl_seconds < 1:
+        raise HTTPException(status_code=400, detail="ttl_seconds 必须至少为 1")
+
+    expires = int(time.time()) + ttl_seconds
+    signature = _file_signature(name, expires)
+    base_url = str(request.base_url).rstrip("/")
+    return {
+        "url": f"{base_url}/api/files/{quote(name, safe='')}?expires={expires}&signature={signature}",
+        "expires": expires,
+    }
+
+
 @app.get("/api/files/{name:path}")
 async def serve_upload(name: str, request: Request):
-    """暴露 data/uploads/ 下的文件（供 DashScope 拉取图片等场景）"""
+    """访问 data/uploads/ 下的文件，需要 Bearer Token 或短期签名 URL。"""
     raw_name = request.url.path.removeprefix("/api/files/")
-    if "/" in raw_name or "\\" in raw_name or ".." in raw_name:
-        raise HTTPException(status_code=400, detail="非法文件名")
-    if "/" in name or "\\" in name or ".." in name:
-        raise HTTPException(status_code=400, detail="非法文件名")
-    path = (UPLOADS_DIR / name).resolve()
-    try:
-        path.relative_to(UPLOADS_DIR.resolve())
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail="非法路径") from e
+    name = _validate_upload_file_name(name, raw_name=raw_name)
+    if not _request_has_valid_file_access(request, name):
+        raise HTTPException(status_code=401, detail="未登录或文件签名无效")
+    path = _upload_file_path(name)
     if not path.is_file():
         raise HTTPException(status_code=404, detail="文件不存在")
     return FileResponse(str(path))

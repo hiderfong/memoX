@@ -4,6 +4,7 @@
 #   cp config.example.yaml config.yaml
 #   export MEMOX_ADMIN_PASSWORD=...
 #   export DASHSCOPE_API_KEY=...
+#   export MEMOX_FILE_SIGNING_SECRET=...
 
 app:
   name: "MemoX"
@@ -100,6 +101,13 @@ tool_policy:
     # Keep empty for public-web-only access. Add exact hosts or host:port values
     # only when a trusted worker must inspect local/dev services.
     allow_internal_hosts: []
+  web:
+    # Resource limits for web_search and web_fetch. These preserve useful public
+    # web access while bounding slow or oversized pages.
+    request_timeout_seconds: 15
+    max_response_bytes: 2000000
+    max_fetch_chars: 20000
+    max_search_results: 10
   playwright_crawler:
     # Browser crawling can be useful but expensive. Keep defaults conservative
     # for shared deployments and raise them only when the host has headroom.
@@ -178,12 +186,17 @@ auth:
     - "/api/docs"
     - "/api/redoc"
     - "/api/openapi.json"
-    - "/api/files/"
   users:
     - username: "admin"
       password: "${MEMOX_ADMIN_PASSWORD}"
       role: "admin"
       display_name: "管理员"
+
+file_access:
+  # Required for short-lived /api/files/{name} URLs that external services can fetch.
+  # Keep this value secret and rotate it if signed URLs are suspected to be leaked.
+  signing_secret: "${MEMOX_FILE_SIGNING_SECRET:-}"
+  signed_url_ttl_seconds: 300
 
 image_generation:
   enabled: false

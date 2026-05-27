@@ -132,6 +132,49 @@ def test_validate_config_rejects_invalid_playwright_crawler_policy() -> None:
         validate_config(cfg)
 
 
+def test_validate_config_rejects_invalid_web_tool_policy() -> None:
+    cfg = Config._from_dict(
+        {
+            "app": {},
+            "server": {},
+            "coordinator": {},
+            "providers": {},
+            "worker_templates": {},
+            "knowledge_base": {},
+            "auth": {"enabled": False, "users": []},
+            "tool_policy": {
+                "web": {
+                    "request_timeout_seconds": 0,
+                    "max_response_bytes": 100,
+                    "max_fetch_chars": 50,
+                    "max_search_results": 0,
+                }
+            },
+        }
+    )
+
+    with pytest.raises(ConfigError, match="tool_policy.web.request_timeout_seconds"):
+        validate_config(cfg)
+
+
+def test_validate_config_rejects_invalid_file_access_ttl() -> None:
+    cfg = Config._from_dict(
+        {
+            "app": {},
+            "server": {},
+            "coordinator": {},
+            "providers": {},
+            "worker_templates": {},
+            "knowledge_base": {},
+            "auth": {"enabled": False, "users": []},
+            "file_access": {"signed_url_ttl_seconds": 0},
+        }
+    )
+
+    with pytest.raises(ConfigError, match="file_access.signed_url_ttl_seconds"):
+        validate_config(cfg)
+
+
 def test_config_example_is_valid_with_required_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MEMOX_ADMIN_PASSWORD", "dev-password")
     monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-key")

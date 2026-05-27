@@ -71,6 +71,8 @@ def validate_config(config: "Config") -> None:
         errors.append("coordinator.task_auto_retry_max_delay_seconds 不能为负数")
     if config.coordinator.task_auto_retry_backoff_multiplier < 1:
         errors.append("coordinator.task_auto_retry_backoff_multiplier 必须至少为 1")
+    if config.file_access.signed_url_ttl_seconds < 1:
+        errors.append("file_access.signed_url_ttl_seconds 必须至少为 1")
 
     database_policy = config.tool_policy.database
     if database_policy.default_access_mode not in {"read_only", "write", "admin"}:
@@ -102,6 +104,16 @@ def validate_config(config: "Config") -> None:
         errors.append("tool_policy.playwright_crawler.max_response_bytes 必须至少为 1024")
     if crawler_policy.max_output_chars < 100:
         errors.append("tool_policy.playwright_crawler.max_output_chars 必须至少为 100")
+
+    web_policy = config.tool_policy.web
+    if web_policy.request_timeout_seconds < 1:
+        errors.append("tool_policy.web.request_timeout_seconds 必须至少为 1")
+    if web_policy.max_response_bytes < 1024:
+        errors.append("tool_policy.web.max_response_bytes 必须至少为 1024")
+    if web_policy.max_fetch_chars < 100:
+        errors.append("tool_policy.web.max_fetch_chars 必须至少为 100")
+    if web_policy.max_search_results < 1:
+        errors.append("tool_policy.web.max_search_results 必须至少为 1")
 
     if errors:
         raise ConfigError("MemoX 配置无效:\n- " + "\n- ".join(errors))
@@ -202,9 +214,19 @@ class DatabaseToolPolicyConfig:
 
 
 @dataclass
+class WebToolPolicyConfig:
+    """Web search/fetch resource policy."""
+    request_timeout_seconds: float = 15.0
+    max_response_bytes: int = 2_000_000
+    max_fetch_chars: int = 20_000
+    max_search_results: int = 10
+
+
+@dataclass
 class ToolPolicyConfig:
     """High-permission tool safety policy."""
     network: NetworkToolPolicyConfig = field(default_factory=NetworkToolPolicyConfig)
+    web: WebToolPolicyConfig = field(default_factory=WebToolPolicyConfig)
     playwright_crawler: PlaywrightCrawlerPolicyConfig = field(default_factory=PlaywrightCrawlerPolicyConfig)
     database: DatabaseToolPolicyConfig = field(default_factory=DatabaseToolPolicyConfig)
 
@@ -269,6 +291,16 @@ class AuthConfig:
         "/api/auth/login", "/api/health", "/api/docs", "/api/redoc", "/api/openapi.json"
     ])
     users: list[AuthUserConfig] = field(default_factory=list)
+
+
+@dataclass
+class FileAccessConfig:
+    """上传文件访问配置"""
+    signing_secret: str = ""
+    signed_url_ttl_seconds: int = 300
+
+    def resolve_signing_secret(self) -> str:
+        return resolve_env_value(self.signing_secret)
 
 
 @dataclass
@@ -352,6 +384,7 @@ class Config:
     ops: OpsConfig = field(default_factory=OpsConfig)
     tool_policy: ToolPolicyConfig = field(default_factory=ToolPolicyConfig)
     auth: AuthConfig = field(default_factory=AuthConfig)
+    file_access: FileAccessConfig = field(default_factory=FileAccessConfig)
     image_generation: ImageGenerationConfig = field(default_factory=ImageGenerationConfig)
     video_generation: VideoGenerationConfig = field(default_factory=VideoGenerationConfig)
     image_to_video: ImageToVideoConfig = field(default_factory=ImageToVideoConfig)
@@ -399,14 +432,17 @@ class Config:
 
         memory = MemoryConfig(**data.get("memory", {}))
         ops = OpsConfig(**data.get("ops", {}))
+        file_access = FileAccessConfig(**data.get("file_access", {}))
         tool_policy_data = data.get("tool_policy", {})
         network_policy = NetworkToolPolicyConfig(**tool_policy_data.get("network", {}))
+        web_policy = WebToolPolicyConfig(**tool_policy_data.get("web", {}))
         playwright_crawler_policy = PlaywrightCrawlerPolicyConfig(
             **tool_policy_data.get("playwright_crawler", {})
         )
         database_policy = DatabaseToolPolicyConfig(**tool_policy_data.get("database", {}))
         tool_policy = ToolPolicyConfig(
             network=network_policy,
+            web=web_policy,
             playwright_crawler=playwright_crawler_policy,
             database=database_policy,
         )
@@ -426,6 +462,7 @@ class Config:
             ops=ops,
             tool_policy=tool_policy,
             auth=auth,
+            file_access=file_access,
             image_generation=image_generation,
             video_generation=video_generation,
             image_to_video=image_to_video,

@@ -53,6 +53,13 @@ class PlaywrightCrawlerPolicyRequest(BaseModel):
     max_output_chars: int = Field(default=8000, ge=100, le=200000)
 
 
+class WebToolPolicyRequest(BaseModel):
+    request_timeout_seconds: float = Field(default=15.0, ge=1, le=300)
+    max_response_bytes: int = Field(default=2_000_000, ge=1024, le=100_000_000)
+    max_fetch_chars: int = Field(default=20_000, ge=100, le=500_000)
+    max_search_results: int = Field(default=10, ge=1, le=50)
+
+
 class DatabaseToolPolicyDataSourceRequest(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     connection_string: str = Field(min_length=1, max_length=2048)
@@ -71,6 +78,7 @@ class DatabaseToolPolicyRequest(BaseModel):
 
 class ToolPolicyUpdateRequest(BaseModel):
     network: NetworkToolPolicyRequest = Field(default_factory=NetworkToolPolicyRequest)
+    web: WebToolPolicyRequest = Field(default_factory=WebToolPolicyRequest)
     playwright_crawler: PlaywrightCrawlerPolicyRequest = Field(default_factory=PlaywrightCrawlerPolicyRequest)
     database: DatabaseToolPolicyRequest = Field(default_factory=DatabaseToolPolicyRequest)
 
@@ -218,6 +226,12 @@ def _tool_policy_payload(policy: ToolPolicyConfig) -> dict:
         "network": {
             "allow_internal_hosts": list(policy.network.allow_internal_hosts),
         },
+        "web": {
+            "request_timeout_seconds": policy.web.request_timeout_seconds,
+            "max_response_bytes": policy.web.max_response_bytes,
+            "max_fetch_chars": policy.web.max_fetch_chars,
+            "max_search_results": policy.web.max_search_results,
+        },
         "playwright_crawler": {
             "max_concurrency": policy.playwright_crawler.max_concurrency,
             "queue_timeout_seconds": policy.playwright_crawler.queue_timeout_seconds,
@@ -263,6 +277,12 @@ def _tool_policy_section_from_request(body: ToolPolicyUpdateRequest, existing: d
     return {
         "network": {
             "allow_internal_hosts": _validate_internal_host_allowlist(body.network.allow_internal_hosts),
+        },
+        "web": {
+            "request_timeout_seconds": body.web.request_timeout_seconds,
+            "max_response_bytes": body.web.max_response_bytes,
+            "max_fetch_chars": body.web.max_fetch_chars,
+            "max_search_results": body.web.max_search_results,
         },
         "playwright_crawler": {
             "max_concurrency": body.playwright_crawler.max_concurrency,

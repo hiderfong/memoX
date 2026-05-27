@@ -113,6 +113,11 @@ worker_templates:
 tool_policy:
   network:
     allow_internal_hosts: []
+  web:
+    request_timeout_seconds: 15
+    max_response_bytes: 2000000
+    max_fetch_chars: 20000
+    max_search_results: 10
   playwright_crawler:
     max_concurrency: 2
     queue_timeout_seconds: 10
@@ -192,13 +197,16 @@ auth:
     - "/api/docs"
     - "/api/redoc"
     - "/api/openapi.json"
-    - "/api/files/"
   # 开发测试用户（生产环境应改用数据库）
   users:
     - username: "admin"
       password: "${MEMOX_ADMIN_PASSWORD}"
       role: "admin"
       display_name: "管理员"
+
+file_access:
+  signing_secret: "${MEMOX_FILE_SIGNING_SECRET:-}"
+  signed_url_ttl_seconds: 300
 
 # 渠道配置
 channels:

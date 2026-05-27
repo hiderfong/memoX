@@ -880,7 +880,12 @@ export const SystemStatusPage: React.FC = () => {
       key: 'details',
       width: 88,
       render: (_: any, item: ToolAuditEvent) => (
-        <Button size="small" icon={<EyeOutlined />} onClick={() => setSelectedToolAudit(item)}>
+        <Button
+          size="small"
+          icon={<EyeOutlined />}
+          data-testid={`tool-audit-detail-${item.id}`}
+          onClick={() => setSelectedToolAudit(item)}
+        >
           查看
         </Button>
       ),
@@ -1510,6 +1515,7 @@ export const SystemStatusPage: React.FC = () => {
 
         <Card
           title="工具调用审计"
+          data-testid="tool-audit-card"
           loading={toolAuditLoading}
           extra={(
             <Button size="small" icon={<ReloadOutlined />} onClick={() => fetchToolAudit()}>

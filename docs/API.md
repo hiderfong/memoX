@@ -12,7 +12,7 @@ MemoX 后端基于 FastAPI，默认服务地址为 `http://localhost:8080`。交
 Authorization: Bearer <token>
 ```
 
-公开路径由 `config.yaml` 的 `auth.public_paths` 控制，默认包含 `/api/auth/login`、`/api/health`、`/api/docs`、`/api/redoc`、`/api/openapi.json` 和 `/api/files/`。
+公开路径由 `config.yaml` 的 `auth.public_paths` 控制，默认包含 `/api/auth/login`、`/api/health`、`/api/docs`、`/api/redoc` 和 `/api/openapi.json`。上传文件路径不应加入公开路径；外部服务需要拉取文件时，使用短期签名 URL。
 
 ## Auth
 
@@ -130,7 +130,7 @@ Worker 创建、更新和删除接口会持久化修改 `config.yaml` 中的 `wo
 | `GET` | `/api/system/backups` | 管理员查看本地备份归档 |
 | `GET` | `/api/system/events` | 管理员查看运维事件，支持 `event_type`、`status`、`limit`、`offset` 过滤与分页，返回 `total` 与事件详情 |
 | `GET` | `/api/system/tool-audit` | 管理员查看工具调用审计，支持 `tool_name`、`status`、`worker_id`、`task_id`、`limit`、`offset` 过滤与分页，返回脱敏参数摘要、结果预览和状态汇总 |
-| `GET/PUT` | `/api/system/tool-policy` | 管理员查看、保存网络/数据库工具权限策略；数据源连接串会脱敏显示，保存脱敏占位时保留原始值 |
+| `GET/PUT` | `/api/system/tool-policy` | 管理员查看、保存网络、Web 抓取、浏览器爬虫和数据库工具权限策略；数据源连接串会脱敏显示，保存脱敏占位时保留原始值 |
 | `GET` | `/api/system/diagnostics/export` | 管理员导出 zip 诊断包，包含健康报告、备份清单、运维事件、索引一致性、脱敏配置与日志尾部；设置 `ops.archive_mirror_dir` 后会同步镜像一份 |
 | `POST` | `/api/system/indexes/repair` | 管理员修复 Chroma / BM25 / manifest 索引一致性，可用 `collection` 查询参数指定集合 |
 | `POST` | `/api/system/backups/{name}/verify` | 管理员校验单个备份归档 |
@@ -139,5 +139,26 @@ Worker 创建、更新和删除接口会持久化修改 `config.yaml` 中的 `wo
 | `POST` | `/api/system/backups/{name}/restore-drill` | 管理员执行临时目录恢复演练 |
 | `POST` | `/api/system/maintenance/backup` | 管理员手动触发备份维护；设置 `ops.archive_mirror_dir` 后会将归档镜像到外部目录 |
 | `POST` | `/api/system/maintenance/lifecycle` | 管理员执行保守生命周期清理；默认 `dry_run=true` 只预检，`dry_run=false` 清理过期运维事件、审计日志和诊断包，不删除聊天、记忆、上传或工作区文件 |
-| `GET` | `/api/files/{name}` | 暴露上传目录中的单个文件 |
+| `POST` | `/api/files/sign` | 已登录用户为上传目录中的单个文件生成短期签名 URL |
+| `GET` | `/api/files/{name}` | 访问上传目录中的单个文件，需要 Bearer Token 或短期签名参数 |
 | `WS` | `/ws` | WebSocket 实时通信，支持聊天和任务进度消息 |
+
+`POST /api/files/sign` 请求体：
+
+```json
+{
+  "name": "example.png",
+  "ttl_seconds": 300
+}
+```
+
+响应包含绝对 URL 和过期时间戳：
+
+```json
+{
+  "url": "https://memox.example.com/api/files/example.png?expires=...&signature=...",
+  "expires": 1760000000
+}
+```
+
+签名功能依赖 `file_access.signing_secret`，推荐在环境变量 `MEMOX_FILE_SIGNING_SECRET` 中配置长随机值。

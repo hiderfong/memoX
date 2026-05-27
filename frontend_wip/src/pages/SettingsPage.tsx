@@ -256,10 +256,12 @@ export const SettingsPage: React.FC = () => {
 
       <Card
         title="🛡️ 工具权限策略"
+        data-testid="tool-policy-card"
         style={{ marginBottom: 16, maxWidth: 920 }}
         loading={loading}
         extra={(
           <Button
+            data-testid="tool-policy-save"
             type="primary"
             icon={<SaveOutlined />}
             onClick={handleSaveToolPolicy}
@@ -287,6 +289,72 @@ export const SettingsPage: React.FC = () => {
                 placeholder="每行一个 host 或 host:port，例如 127.0.0.1:3000"
               />
             </Form.Item>
+
+            <Divider orientation="left">Web 搜索与抓取资源</Divider>
+            <Space wrap>
+              <Form.Item label="请求超时（秒）" style={{ marginBottom: 0 }}>
+                <InputNumber
+                  data-testid="web-request-timeout"
+                  min={1}
+                  max={300}
+                  value={toolPolicy.web.request_timeout_seconds}
+                  onChange={value => updateToolPolicyDraft(policy => ({
+                    ...policy,
+                    web: {
+                      ...policy.web,
+                      request_timeout_seconds: Number(value || 1),
+                    },
+                  }))}
+                />
+              </Form.Item>
+              <Form.Item label="最大响应字节" style={{ marginBottom: 0 }}>
+                <InputNumber
+                  data-testid="web-max-response-bytes"
+                  min={1024}
+                  max={100000000}
+                  step={1024}
+                  value={toolPolicy.web.max_response_bytes}
+                  onChange={value => updateToolPolicyDraft(policy => ({
+                    ...policy,
+                    web: {
+                      ...policy.web,
+                      max_response_bytes: Number(value || 1024),
+                    },
+                  }))}
+                />
+              </Form.Item>
+              <Form.Item label="最大正文字符" style={{ marginBottom: 0 }}>
+                <InputNumber
+                  data-testid="web-max-fetch-chars"
+                  min={100}
+                  max={500000}
+                  step={100}
+                  value={toolPolicy.web.max_fetch_chars}
+                  onChange={value => updateToolPolicyDraft(policy => ({
+                    ...policy,
+                    web: {
+                      ...policy.web,
+                      max_fetch_chars: Number(value || 100),
+                    },
+                  }))}
+                />
+              </Form.Item>
+              <Form.Item label="最大搜索结果" style={{ marginBottom: 0 }}>
+                <InputNumber
+                  data-testid="web-max-search-results"
+                  min={1}
+                  max={50}
+                  value={toolPolicy.web.max_search_results}
+                  onChange={value => updateToolPolicyDraft(policy => ({
+                    ...policy,
+                    web: {
+                      ...policy.web,
+                      max_search_results: Number(value || 1),
+                    },
+                  }))}
+                />
+              </Form.Item>
+            </Space>
 
             <Divider orientation="left">Playwright 爬虫资源</Divider>
             <Space direction="vertical" size={12} style={{ width: '100%' }}>

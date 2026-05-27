@@ -55,7 +55,7 @@ cd frontend_wip && npm ci
 
 ### 2. 配置
 
-仓库提供了 `config.example.yaml` 和 `.env.example` 作为可公开模板。首次启动前至少设置管理员密码；如果使用默认 DashScope 配置，还需要设置 `DASHSCOPE_API_KEY`。
+仓库提供了 `config.example.yaml` 和 `.env.example` 作为可公开模板。首次启动前至少设置管理员密码；如果使用默认 DashScope 配置，还需要设置 `DASHSCOPE_API_KEY`。如需让外部服务短时拉取本地上传文件，还需要设置 `MEMOX_FILE_SIGNING_SECRET`。
 
 ```bash
 # 如需从模板重建本地配置
@@ -84,6 +84,10 @@ auth:
   users:
     - username: "admin"
       password: "${MEMOX_ADMIN_PASSWORD}"
+
+file_access:
+  signing_secret: "${MEMOX_FILE_SIGNING_SECRET:-}"
+  signed_url_ttl_seconds: 300
 ```
 
 `auth.enabled=true` 时，启动会拒绝空密码；如果 `MEMOX_ADMIN_PASSWORD` 未设置，后端会直接报出配置错误。
@@ -113,9 +117,13 @@ uv run --extra dev python scripts/smoke_test.py
 
 # 验证临时后端 + Vite 前端代理
 uv run --extra dev python scripts/smoke_test.py --frontend
+
+# 可选：运行真实浏览器管理后台 E2E（需要 frontend_wip/node_modules 和 Playwright Chromium）
+MEMOX_BROWSER_E2E=1 uv run --extra dev pytest tests/e2e/test_admin_ui_browser_flow.py
 ```
 
 冒烟脚本会使用临时数据目录和确定性的本地 embedding 替身，不需要真实模型 API Key；它会覆盖登录、文档检索、系统健康、备份清单、索引修复、诊断包导出、运维事件、备份校验、恢复预检、真实恢复拒绝闸门和临时恢复演练。`--frontend` 模式要求已执行过 `cd frontend_wip && npm ci`。
+浏览器 E2E 会启动临时后端和 Vite 前端，覆盖管理后台登录、设置页 Web 工具策略保存、策略持久化校验、系统状态页工具调用审计和移动宽度回归检查。
 
 ### 5. 常用检查
 

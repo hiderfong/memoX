@@ -10,6 +10,7 @@ import httpx
 from bs4 import BeautifulSoup
 
 from src.agents.base_agent import BaseTool
+from src.config import WebToolPolicyConfig, get_config
 from src.tools.net_safety import (
     WebSafetyError,
     configured_internal_host_allowlist,
@@ -17,6 +18,7 @@ from src.tools.net_safety import (
 )
 
 DEFAULT_TIMEOUT = 15.0
+DEFAULT_MAX_RESPONSE_BYTES = 2_000_000
 MAX_FETCH_CHARS = 20000
 DEFAULT_FETCH_CHARS = 8000
 DEFAULT_SEARCH_RESULTS = 5
@@ -24,6 +26,13 @@ MAX_SEARCH_RESULTS = 10
 USER_AGENT = "MemoX/0.1 (+https://github.com/hiderfong/memoX)"
 REDIRECT_STATUSES = {301, 302, 303, 307, 308}
 MAX_REDIRECTS = 5
+
+
+def _web_policy() -> WebToolPolicyConfig:
+    try:
+        return get_config().tool_policy.web
+    except Exception:
+        return WebToolPolicyConfig()
 
 
 def _clean_text(text: str) -> str:
@@ -38,21 +47,65 @@ def _duckduckgo_target_url(href: str) -> str:
     return href
 
 
+def _bounded_int(value: Any, *, default: int, minimum: int, maximum: int) -> int:
+    try:
+        number = int(value if value is not None else default)
+    except (TypeError, ValueError):
+        return default
+    return min(max(number, minimum), maximum)
+
+
+async def _read_limited_response(
+    response: httpx.Response,
+    *,
+    max_response_bytes: int,
+) -> httpx.Response:
+    try:
+        content_length = response.headers.get("content-length", "")
+        if content_length:
+            try:
+                declared_length = int(content_length)
+            except ValueError:
+                declared_length = 0
+            if declared_length > max_response_bytes:
+                raise WebSafetyError(f"响应体过大，超过 {max_response_bytes} 字节")
+
+        chunks: list[bytes] = []
+        total = 0
+        async for chunk in response.aiter_bytes():
+            total += len(chunk)
+            if total > max_response_bytes:
+                raise WebSafetyError(f"响应体过大，超过 {max_response_bytes} 字节")
+            chunks.append(chunk)
+        return httpx.Response(
+            status_code=response.status_code,
+            headers=response.headers,
+            content=b"".join(chunks),
+            request=response.request,
+            extensions=response.extensions,
+        )
+    finally:
+        await response.aclose()
+
+
 async def _safe_http_get(
     client: httpx.AsyncClient,
     url: str,
     *,
     allow_internal_hosts: list[str] | None = None,
+    max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
 ) -> httpx.Response:
     current_url = validate_public_http_url(url, allow_internal_hosts=allow_internal_hosts)
     for _ in range(MAX_REDIRECTS + 1):
-        response = await client.get(current_url)
+        request = client.build_request("GET", current_url)
+        response = await client.send(request, stream=True)
         if response.status_code not in REDIRECT_STATUSES:
             validate_public_http_url(str(response.url), allow_internal_hosts=allow_internal_hosts)
-            return response
+            return await _read_limited_response(response, max_response_bytes=max_response_bytes)
         location = response.headers.get("location")
         if not location:
-            return response
+            return await _read_limited_response(response, max_response_bytes=max_response_bytes)
+        await response.aclose()
         current_url = validate_public_http_url(
             urljoin(str(response.url), location),
             allow_internal_hosts=allow_internal_hosts,
@@ -89,19 +142,28 @@ class WebSearchTool(BaseTool):
         query = str(arguments.get("query", "")).strip()
         if not query:
             return "Error: query 不能为空"
-        max_results = min(
-            max(int(arguments.get("max_results", DEFAULT_SEARCH_RESULTS)), 1),
-            MAX_SEARCH_RESULTS,
+        policy = _web_policy()
+        max_results = _bounded_int(
+            arguments.get("max_results"),
+            default=DEFAULT_SEARCH_RESULTS,
+            minimum=1,
+            maximum=min(MAX_SEARCH_RESULTS, policy.max_search_results),
         )
         url = f"https://duckduckgo.com/html/?q={quote_plus(query)}"
         try:
             async with httpx.AsyncClient(
-                timeout=DEFAULT_TIMEOUT,
-                follow_redirects=True,
+                timeout=policy.request_timeout_seconds,
+                follow_redirects=False,
                 headers={"User-Agent": USER_AGENT},
             ) as client:
-                response = await client.get(url)
+                response = await _safe_http_get(
+                    client,
+                    url,
+                    max_response_bytes=policy.max_response_bytes,
+                )
                 response.raise_for_status()
+        except WebSafetyError as exc:
+            return f"Web search rejected: {exc}"
         except Exception as exc:
             return f"Error: 搜索失败: {type(exc).__name__}: {exc}"
 
@@ -158,19 +220,22 @@ class WebFetchTool(BaseTool):
         raw_url = str(arguments.get("url", "")).strip()
         if not raw_url:
             return "Error: url 不能为空"
+        policy = _web_policy()
         allow_internal_hosts = configured_internal_host_allowlist()
         try:
             safe_url = validate_public_http_url(raw_url, allow_internal_hosts=allow_internal_hosts)
         except WebSafetyError as exc:
-            return f"Error: {exc}"
+            return f"Web fetch rejected: {exc}"
 
-        max_chars = min(
-            max(int(arguments.get("max_chars", DEFAULT_FETCH_CHARS)), 1),
-            MAX_FETCH_CHARS,
+        max_chars = _bounded_int(
+            arguments.get("max_chars"),
+            default=min(DEFAULT_FETCH_CHARS, policy.max_fetch_chars),
+            minimum=1,
+            maximum=min(MAX_FETCH_CHARS, policy.max_fetch_chars),
         )
         try:
             async with httpx.AsyncClient(
-                timeout=DEFAULT_TIMEOUT,
+                timeout=policy.request_timeout_seconds,
                 follow_redirects=False,
                 headers={"User-Agent": USER_AGENT},
             ) as client:
@@ -178,8 +243,11 @@ class WebFetchTool(BaseTool):
                     client,
                     safe_url,
                     allow_internal_hosts=allow_internal_hosts,
+                    max_response_bytes=policy.max_response_bytes,
                 )
                 response.raise_for_status()
+        except WebSafetyError as exc:
+            return f"Web fetch rejected: {exc}"
         except Exception as exc:
             return f"Error: 抓取失败: {type(exc).__name__}: {exc}"
 

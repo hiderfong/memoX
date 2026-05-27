@@ -36,6 +36,12 @@ def _write_config(root: Path) -> tuple[Path, Path]:
         },
         "tool_policy": {
             "network": {"allow_internal_hosts": ["127.0.0.1:3000"]},
+            "web": {
+                "request_timeout_seconds": 15,
+                "max_response_bytes": 2000000,
+                "max_fetch_chars": 20000,
+                "max_search_results": 10,
+            },
             "database": {
                 "default_access_mode": "read_only",
                 "allow_raw_connection_strings": True,
@@ -91,12 +97,19 @@ async def test_tool_policy_update_affects_runtime_tools_and_audit_api(
             current = client.get("/api/system/tool-policy", headers=admin_headers)
             assert current.status_code == 200
             assert current.json()["database"]["allow_raw_connection_strings"] is True
+            assert current.json()["web"]["max_response_bytes"] == 2000000
 
             update = client.put(
                 "/api/system/tool-policy",
                 headers=admin_headers,
                 json={
                     "network": {"allow_internal_hosts": ["127.0.0.1:3000", "localhost:5173"]},
+                    "web": {
+                        "request_timeout_seconds": 18,
+                        "max_response_bytes": 3000000,
+                        "max_fetch_chars": 24000,
+                        "max_search_results": 12,
+                    },
                     "database": {
                         "default_access_mode": "read_only",
                         "allow_raw_connection_strings": False,
@@ -118,6 +131,7 @@ async def test_tool_policy_update_affects_runtime_tools_and_audit_api(
             updated_policy = update.json()["tool_policy"]
             assert updated_policy["database"]["allow_raw_connection_strings"] is False
             assert updated_policy["database"]["max_result_rows"] == 25
+            assert updated_policy["web"]["max_response_bytes"] == 3000000
 
             registry = ToolRegistry(audit_context={"worker_id": "policy-e2e", "task_id": "task-policy-e2e"})
             registry.register(DatabaseQueryTool())
@@ -174,6 +188,7 @@ async def test_tool_policy_update_affects_runtime_tools_and_audit_api(
             assert reloaded.status_code == 200
             reloaded_policy = reloaded.json()
             assert reloaded_policy["network"]["allow_internal_hosts"] == ["127.0.0.1:3000", "localhost:5173"]
+            assert reloaded_policy["web"]["max_search_results"] == 12
             assert reloaded_policy["database"]["allow_raw_connection_strings"] is False
             assert reloaded_policy["database"]["data_sources"] == [
                 {"name": "local", "connection_string": f"sqlite:///{local_db}", "redacted": False}

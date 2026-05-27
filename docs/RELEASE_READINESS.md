@@ -30,6 +30,9 @@ owner and written exception.
 - Keep public auth paths minimal. `/api/docs`, `/api/redoc`, and
   `/api/openapi.json` are useful for private deployments but should be protected
   by network controls if the service is internet-facing.
+- Confirm `/api/files/` is not in `auth.public_paths` and
+  `MEMOX_FILE_SIGNING_SECRET` is set when external services need to fetch local
+  uploads through short-lived URLs.
 - Confirm `ops.auto_backup_enabled`, `ops.auto_backup_interval_hours`,
   `ops.max_backups`, and retention settings match the expected user data volume.
 - Set `ops.archive_mirror_dir` when the host has an attached backup disk or
@@ -47,6 +50,8 @@ radius controlled.
 - Add explicit `tool_policy.network.allow_internal_hosts` entries for local
   services that Workers must reach, such as `127.0.0.1:3000` or an internal
   search gateway.
+- Review `tool_policy.web` so `web_search` and `web_fetch` have bounded timeout,
+  response size, extracted text size, and search result count for the host.
 - Review `tool_policy.playwright_crawler` against host capacity. Keep
   `max_concurrency`, `total_timeout_seconds`, `max_pages`, and
   `max_response_bytes` conservative on shared deployments.
@@ -83,6 +88,7 @@ uv run --extra dev ruff check .
 uv run --extra dev pytest
 cd frontend_wip && npm run build
 uv run --extra dev python scripts/smoke_test.py --frontend
+MEMOX_BROWSER_E2E=1 uv run --extra dev pytest tests/e2e/test_admin_ui_browser_flow.py
 uv run --extra dev python scripts/docker_smoke_test.py
 ```
 
@@ -95,6 +101,7 @@ uv run --extra dev pytest \
   tests/test_tool_database.py \
   tests/test_tool_audit.py \
   tests/test_tool_policy_api.py \
+  tests/e2e/test_admin_ui_browser_flow.py \
   tests/e2e/test_tool_policy_audit_flow.py \
   tests/test_system_health_api.py
 ```

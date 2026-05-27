@@ -8,6 +8,8 @@ real-user deployments.
 - Added configurable `tool_policy` settings for high-permission tools.
 - Hardened `web_fetch`, `web_search`, and `playwright_crawler` against unsafe
   internal network targets while preserving explicit internal host allowlists.
+- Added bounded runtime limits for `web_fetch` and `web_search` covering timeout,
+  response bytes, extracted text length, and search result count.
 - Added database tool access policy for named data sources, raw connection
   strings, read/write/admin modes, DDL, multi-statement SQL, and result row
   limits.

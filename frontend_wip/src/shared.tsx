@@ -142,6 +142,12 @@ export interface ToolPolicyResponse {
   network: {
     allow_internal_hosts: string[];
   };
+  web: {
+    request_timeout_seconds: number;
+    max_response_bytes: number;
+    max_fetch_chars: number;
+    max_search_results: number;
+  };
   playwright_crawler: {
     max_concurrency: number;
     queue_timeout_seconds: number;
