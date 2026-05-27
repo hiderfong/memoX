@@ -7,11 +7,19 @@ from src.agents.base_agent import BaseTool
 from src.agents.sandbox import SandboxManager
 
 
+def _is_inside(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
+
 class ReadFileTool(BaseTool):
     """读文件工具 - 可读自身沙箱、shared/ 及其他 Agent 沙箱（任务工作区内）"""
 
     def __init__(self, sandbox_dir: Path, task_id: str, sandbox_mgr: SandboxManager):
-        self._sandbox_dir = sandbox_dir
+        self._sandbox_dir = sandbox_dir.resolve()
         self._task_workspace = (sandbox_mgr.base_workspace / task_id).resolve()
 
     @property
@@ -38,7 +46,7 @@ class ReadFileTool(BaseTool):
             path = self._sandbox_dir / path
         path = path.resolve()
 
-        if not str(path).startswith(str(self._task_workspace)):
+        if not _is_inside(path, self._task_workspace):
             return f"Error: 访问被拒绝，路径不在任务工作区内: {path}"
         if not path.exists():
             return f"Error: 文件不存在: {path}"
@@ -84,7 +92,7 @@ class WriteFileTool(BaseTool):
             path = self._sandbox_dir / path
         path = path.resolve()
 
-        if not str(path).startswith(str(self._sandbox_dir)):
+        if not _is_inside(path, self._sandbox_dir):
             return "Error: 写入被拒绝，只能写入自身沙箱"
 
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -124,10 +132,12 @@ class ListFilesTool(BaseTool):
             path = self._sandbox_dir / path
         path = path.resolve()
 
-        if not str(path).startswith(str(self._sandbox_dir)):
+        if not _is_inside(path, self._sandbox_dir):
             return "Error: 只能列出自身沙箱目录"
         if not path.exists():
             return f"Error: 目录不存在: {path}"
+        if not path.is_dir():
+            return f"Error: 不是目录: {path}"
 
         items = []
         for item in sorted(path.iterdir()):
