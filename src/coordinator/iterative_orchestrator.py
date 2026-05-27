@@ -211,18 +211,18 @@ class IterativeOrchestrator:
             self._prepare_workers(task, mail_bus, refinement_instructions)
 
             # Step 5: 重置子任务状态（多轮迭代时需要）
-            # 只重置非终态的任务，COMPLETED/FAILED 保持不变以避免重复执行
+            # 每一轮质量未达标后的 refinement 都必须重新执行子任务，否则后续轮次只会
+            # 反复评估同一份低质量输出，无法真正改进。
             for st in task.sub_tasks:
-                if st.status not in (TaskStatus.COMPLETED, TaskStatus.FAILED):
-                    st.status = TaskStatus.PENDING
-                    st.result = None
-                    st.error = None
-                    await self._emit_task_update(
-                        on_task_update,
-                        task,
-                        "subtask_pending",
-                        {"subtask_id": st.id, "iteration": iteration},
-                    )
+                st.status = TaskStatus.PENDING
+                st.result = None
+                st.error = None
+                await self._emit_task_update(
+                    on_task_update,
+                    task,
+                    "subtask_pending",
+                    {"subtask_id": st.id, "iteration": iteration},
+                )
 
             # Step 6: 带依赖注入地执行子任务
             await self._execute_with_deps(task, ctx, on_task_update=on_task_update, iteration=iteration)

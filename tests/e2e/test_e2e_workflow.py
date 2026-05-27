@@ -9,10 +9,17 @@ E2E Workflow Engine 测试
   4. 验证 step 输出和状态
 """
 
+import contextlib
+import importlib
+import os
+import sys
+import textwrap
+from pathlib import Path
+
 import pytest
 
-MINIMAX_API_KEY = __import__("os").environ.get("MINIMAX_API_KEY", "")
-BASE_URL = __import__("os").environ.get("MEMOX_BASE_URL", "http://localhost:18000")
+MINIMAX_API_KEY = os.environ.get("MINIMAX_API_KEY", "")
+BASE_URL = os.environ.get("MEMOX_BASE_URL", "http://localhost:18000")
 
 if not MINIMAX_API_KEY:
     pytest.skip("MINIMAX_API_KEY environment variable not set", allow_module_level=True)
@@ -20,12 +27,113 @@ if not MINIMAX_API_KEY:
 pytestmark = pytest.mark.e2e
 
 
-def _client():
+def _write_e2e_config(root: Path) -> Path:
+    data_dir = root / "data"
+    config_path = root / "config.yaml"
+    config_path.write_text(
+        textwrap.dedent(
+            f"""
+            app:
+              name: "MemoX E2E"
+              debug: false
+              log_level: "INFO"
+              workspace: "{root / 'workspace'}"
+
+            server:
+              host: "127.0.0.1"
+              port: 18000
+
+            coordinator:
+              model: "MiniMax-M2.7-highspeed"
+              provider: "minimax"
+              temperature: 0.3
+              max_tokens: 4096
+              max_workers: 3
+              task_timeout: 300
+
+            providers:
+              minimax:
+                api_key: "${{MINIMAX_API_KEY}}"
+                base_url: "https://api.minimaxi.com/anthropic/v1"
+
+            worker_templates:
+              researcher:
+                model: "MiniMax-M2.7-highspeed"
+                provider: "minimax"
+                temperature: 0.3
+              writer:
+                model: "MiniMax-M2.7-highspeed"
+                provider: "minimax"
+                temperature: 0.3
+
+            knowledge_base:
+              persist_directory: "{data_dir / 'chroma'}"
+              upload_directory: "{data_dir / 'uploads'}"
+              skills_dir: "{data_dir / 'skills'}"
+              embedding_provider: "hash"
+              embedding_model: "hash-test"
+              chunk_size: 200
+              chunk_overlap: 20
+              top_k: 3
+              hybrid_search:
+                enabled: true
+                bm25_persist_path: "{data_dir / 'bm25_index.pkl'}"
+              enable_graph: false
+              manifest_path: "{data_dir / 'documents_manifest.json'}"
+
+            auth:
+              enabled: true
+              public_paths:
+                - "/api/auth/login"
+                - "/api/health"
+                - "/api/docs"
+                - "/api/redoc"
+                - "/api/openapi.json"
+              users:
+                - username: "admin"
+                  password: "admin"
+                  role: "admin"
+                  display_name: "E2E Admin"
+            """
+        ),
+        encoding="utf-8",
+    )
+    return config_path
+
+
+@pytest.fixture()
+def client(monkeypatch, tmp_path):
     from fastapi.testclient import TestClient
+
+    config_path = _write_e2e_config(tmp_path)
+    monkeypatch.setenv("MEMOX_CONFIG_PATH", str(config_path))
+    for module_name in ("config", "src.config"):
+        with contextlib.suppress(ImportError):
+            importlib.import_module(module_name)._config = None
 
     from src.main import app as fastapi_app
 
-    return TestClient(fastapi_app)
+    with TestClient(fastapi_app, raise_server_exceptions=False) as test_client:
+        auth_headers = _auth_headers(test_client)
+        assert auth_headers, "E2E 测试账号登录失败"
+        test_client.headers.update(auth_headers)
+        yield test_client
+    for module_name in ("config", "src.config"):
+        with contextlib.suppress(ImportError):
+            importlib.import_module(module_name)._config = None
+    for module_name in ("web.api", "src.web.api"):
+        module = sys.modules.get(module_name)
+        if module is None:
+            continue
+        for attr in (
+            "_config",
+            "_rag_engine",
+            "_task_planner",
+            "_orchestrator",
+            "_workflow_engine",
+            "_workflow_persistence",
+        ):
+            setattr(module, attr, None)
 
 
 def _auth_headers(client):
@@ -92,32 +200,28 @@ workflow:
 class TestWorkflowValidate:
     """工作流 YAML 校验 API"""
 
-    def test_validate_simple_workflow(self):
-        client = _client()
+    def test_validate_simple_workflow(self, client):
         resp = client.post("/api/workflows/validate", json={"yaml_content": SIMPLE_WORKFLOW_YAML})
         assert resp.status_code == 200, f"Validate failed: {resp.text}"
         data = resp.json()
         assert data["valid"] is True, f"Expected valid, got errors: {data['errors']}"
         assert data["step_count"] == 2
 
-    def test_validate_linear_chain(self):
-        client = _client()
+    def test_validate_linear_chain(self, client):
         resp = client.post("/api/workflows/validate", json={"yaml_content": LINEAR_CHAIN_YAML})
         assert resp.status_code == 200
         data = resp.json()
         assert data["valid"] is True
         assert data["step_count"] == 3
 
-    def test_validate_parallel_workflow(self):
-        client = _client()
+    def test_validate_parallel_workflow(self, client):
         resp = client.post("/api/workflows/validate", json={"yaml_content": PARALLEL_WORKFLOW_YAML})
         assert resp.status_code == 200
         data = resp.json()
         assert data["valid"] is True
         assert data["step_count"] == 3
 
-    def test_validate_invalid_yaml(self):
-        client = _client()
+    def test_validate_invalid_yaml(self, client):
         bad_yaml = """
 workflow:
   name: "Bad"
@@ -136,10 +240,9 @@ workflow:
 class TestWorkflowRun:
     """工作流执行 API — 完整生命周期"""
 
-    def test_simple_workflow_runs_and_completes(self):
+    def test_simple_workflow_runs_and_completes(self, client):
         """提交工作流 → 轮询状态 → 验证完成"""
         import time
-        client = _client()
 
         # Submit
         resp = client.post(
@@ -183,10 +286,9 @@ class TestWorkflowRun:
         assert summarize_step["status"] == "completed"
         assert search_step.get("output"), "search step should have output"
 
-    def test_linear_chain_respects_dependency_order(self):
+    def test_linear_chain_respects_dependency_order(self, client):
         """线性链式工作流：step_b 必须等 step_a 完成才能开始"""
         import time
-        client = _client()
 
         resp = client.post(
             "/api/workflows/run",
@@ -212,18 +314,16 @@ class TestWorkflowRun:
         step_ids = {s["step_id"] for s in steps}
         assert step_ids == {"step_a", "step_b", "step_c"}
 
-    def test_list_workflow_runs(self):
+    def test_list_workflow_runs(self, client):
         """GET /api/workflows/runs 返回历史记录"""
-        client = _client()
         resp = client.get("/api/workflows/runs")
         assert resp.status_code == 200, f"List runs failed: {resp.text}"
         data = resp.json()
         assert isinstance(data, list)
 
-    def test_get_workflow_run_detail(self):
+    def test_get_workflow_run_detail(self, client):
         """GET /api/workflows/runs/{run_id} 返回完整 step 详情"""
         import time
-        client = _client()
 
         # Submit
         resp = client.post(

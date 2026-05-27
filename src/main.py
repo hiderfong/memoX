@@ -10,6 +10,7 @@ import uvicorn
 from loguru import logger
 
 from .config import default_config_path, load_config, validate_config
+from .web.api import app
 
 
 def main():

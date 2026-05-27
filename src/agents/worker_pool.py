@@ -199,9 +199,11 @@ class WorkerAgent:
 
             # 构建用户消息
             user_content = task.description
+            criteria_section = ""
             if task.acceptance_criteria:
                 criteria = "\n".join(f"- {item}" for item in task.acceptance_criteria)
-                user_content = f"{user_content}\n\n验收标准：\n{criteria}"
+                criteria_section = f"\n\n验收标准：\n{criteria}"
+                user_content = f"{user_content}{criteria_section}"
             if context:
                 context_str = json.dumps(context, ensure_ascii=False, indent=2)
                 user_content = f"""上下文信息：
@@ -210,7 +212,7 @@ class WorkerAgent:
 ```
 
 任务：
-{task.description}"""
+{task.description}{criteria_section}"""
 
             messages = [
                 {"role": "system", "content": system_prompt},
@@ -404,8 +406,11 @@ class WorkerAgent:
 ## 要求
 1. 专注于完成分配的任务
 2. 使用工具时提供必要的参数
-3. 如果遇到问题，尝试替代方案
-4. 完成后返回简洁的结果摘要
+3. 严格遵守任务正文和验收标准中的文件名、字段名、数据格式、收件人、主题和固定内容
+4. 如果任务要求写入特定内容，不要用占位符、空对象或自行改写的数据替代
+5. 写入关键文件后，优先用 read_file 复核内容是否满足验收标准
+6. 如果遇到问题，尝试替代方案
+7. 完成后返回简洁的结果摘要
 {skills_info}{refinement_section}
 """
 
