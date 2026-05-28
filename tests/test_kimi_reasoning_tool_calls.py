@@ -6,7 +6,7 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from agents.base_agent import BaseTool, LLMResponse, ToolCall, ToolRegistry, create_provider
+from agents.base_agent import BaseTool, LLMResponse, ToolCall, ToolRegistry, create_provider, get_provider_capabilities
 from agents.worker_pool import WorkerAgent, WorkerConfig
 
 
@@ -94,3 +94,14 @@ def test_deepseek_provider_uses_openai_compatible_defaults():
 
     assert provider.base_url == "https://api.deepseek.com"
     assert getattr(provider, "preserve_reasoning_content", False) is True
+
+
+def test_deepseek_provider_capabilities_are_registered():
+    capabilities = get_provider_capabilities("deepseek")
+
+    assert capabilities is not None
+    assert capabilities.protocol == "openai_compatible"
+    assert capabilities.supports_tool_calls is True
+    assert capabilities.supports_streaming is True
+    assert capabilities.preserves_reasoning_content is True
+    assert "deepseek-v4-pro" in capabilities.well_known_models

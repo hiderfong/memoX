@@ -9,7 +9,7 @@ import yaml
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
-from agents.base_agent import SUPPORTED_PROVIDER_TYPES, ToolRegistry, create_provider
+from agents.base_agent import SUPPORTED_PROVIDER_TYPES, ToolRegistry, create_provider, get_provider_capabilities
 from agents.worker_pool import WorkerAgent, WorkerConfig, get_worker_pool
 from auth import AuthUser, require_role
 from config import Config
@@ -297,18 +297,12 @@ async def list_providers() -> list[dict]:
         provider_models.setdefault(template.provider, set()).add(template.model)
     provider_models.setdefault(_config.coordinator.provider, set()).add(_config.coordinator.model)
 
-    well_known: dict[str, list[str]] = {
-        "anthropic": ["claude-sonnet-4-20250514", "claude-opus-4-20250514", "claude-haiku-4-20250506"],
-        "openai": ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "o3-mini"],
-        "minimax": ["MiniMax-M1-80k", "MiniMax-M2.7-highspeed"],
-        "kimi": ["kimi-coder", "kimi-thinking-coder", "kimi-latest"],
-    }
-
     result = []
     for name, provider_config in _config.providers.items():
+        capabilities = get_provider_capabilities(name)
         models = provider_models.get(name, set())
-        for m in well_known.get(name, []):
-            models.add(m)
+        if capabilities:
+            models.update(capabilities.well_known_models)
         configured = _provider_has_api_key(provider_config)
         supported = name.lower() in SUPPORTED_PROVIDER_TYPES
         used_by = _provider_usage(_config, name)
@@ -325,6 +319,7 @@ async def list_providers() -> list[dict]:
             "env_var": _provider_env_var(provider_config),
             "base_url": getattr(provider_config, "base_url", ""),
             "used_by": used_by,
+            "capabilities": capabilities.to_dict() if capabilities else None,
             "warnings": warnings,
         })
     return result

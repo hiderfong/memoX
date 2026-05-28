@@ -738,14 +738,77 @@ class MiniMaxProvider(LLMProvider):
         )
 
 
-SUPPORTED_PROVIDER_TYPES = frozenset({
-    "anthropic",
-    "openai",
-    "minimax",
-    "kimi",
-    "deepseek",
-    "dashscope",
-})
+@dataclass(frozen=True)
+class ProviderCapabilities:
+    """Runtime capability metadata for provider selection and admin UI display."""
+
+    protocol: str
+    default_base_url: str
+    well_known_models: tuple[str, ...] = ()
+    supports_tool_calls: bool = True
+    supports_streaming: bool = True
+    preserves_reasoning_content: bool = False
+    recommended_for: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "protocol": self.protocol,
+            "default_base_url": self.default_base_url,
+            "well_known_models": list(self.well_known_models),
+            "supports_tool_calls": self.supports_tool_calls,
+            "supports_streaming": self.supports_streaming,
+            "preserves_reasoning_content": self.preserves_reasoning_content,
+            "recommended_for": list(self.recommended_for),
+        }
+
+
+PROVIDER_CAPABILITIES: dict[str, ProviderCapabilities] = {
+    "anthropic": ProviderCapabilities(
+        protocol="anthropic",
+        default_base_url="https://api.anthropic.com",
+        well_known_models=("claude-sonnet-4-20250514", "claude-opus-4-20250514", "claude-haiku-4-20250506"),
+        recommended_for=("general_reasoning", "agentic_tasks"),
+    ),
+    "openai": ProviderCapabilities(
+        protocol="openai_compatible",
+        default_base_url="https://api.openai.com/v1",
+        well_known_models=("gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "o3-mini"),
+        recommended_for=("general_reasoning", "tool_use"),
+    ),
+    "minimax": ProviderCapabilities(
+        protocol="anthropic_compatible",
+        default_base_url="https://api.minimaxi.com/anthropic/v1",
+        well_known_models=("MiniMax-M1-80k", "MiniMax-M2.7-highspeed"),
+        recommended_for=("long_context", "multi_agent_collaboration"),
+    ),
+    "kimi": ProviderCapabilities(
+        protocol="openai_compatible",
+        default_base_url="https://api.kimi.com/coding/v1",
+        well_known_models=("kimi-coder", "kimi-thinking-coder", "kimi-latest"),
+        preserves_reasoning_content=True,
+        recommended_for=("coding", "agentic_tasks"),
+    ),
+    "deepseek": ProviderCapabilities(
+        protocol="openai_compatible",
+        default_base_url="https://api.deepseek.com",
+        well_known_models=("deepseek-v4-pro",),
+        preserves_reasoning_content=True,
+        recommended_for=("reasoning", "agentic_tasks", "multi_agent_collaboration"),
+    ),
+    "dashscope": ProviderCapabilities(
+        protocol="openai_compatible",
+        default_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+        well_known_models=("qwen3.6-plus", "qwen-plus", "qwen-turbo"),
+        recommended_for=("general_reasoning", "multimodal_extensions"),
+    ),
+}
+
+
+SUPPORTED_PROVIDER_TYPES = frozenset(PROVIDER_CAPABILITIES)
+
+
+def get_provider_capabilities(provider_type: str) -> ProviderCapabilities | None:
+    return PROVIDER_CAPABILITIES.get(provider_type.lower())
 
 
 def create_provider(
@@ -775,12 +838,14 @@ def create_provider(
     provider_class = providers.get(ptype)
 
     call_kwargs = dict(kwargs)
+    capabilities = get_provider_capabilities(ptype)
+
     if base_url:
         call_kwargs["base_url"] = base_url
-    elif ptype == "deepseek":
-        call_kwargs["base_url"] = "https://api.deepseek.com"
-    if headers and ptype in ("openai", "kimi", "deepseek"):
+    elif capabilities and capabilities.default_base_url:
+        call_kwargs["base_url"] = capabilities.default_base_url
+    if headers and capabilities and capabilities.protocol == "openai_compatible":
         call_kwargs["headers"] = headers
-    if ptype in ("kimi", "deepseek"):
+    if capabilities and capabilities.preserves_reasoning_content:
         call_kwargs["preserve_reasoning_content"] = True
     return provider_class(api_key, **call_kwargs)

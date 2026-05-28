@@ -192,10 +192,15 @@ async def test_list_providers_exposes_server_side_status(
     assert result["deepseek"]["configured"] is True
     assert result["deepseek"]["supported"] is True
     assert result["deepseek"]["env_var"] == "DEEPSEEK_API_KEY"
+    assert "deepseek-v4-pro" in result["deepseek"]["models"]
+    assert result["deepseek"]["capabilities"]["protocol"] == "openai_compatible"
+    assert result["deepseek"]["capabilities"]["supports_tool_calls"] is True
+    assert result["deepseek"]["capabilities"]["preserves_reasoning_content"] is True
     assert "deepseek-key" not in serialized
 
     assert result["google"]["configured"] is True
     assert result["google"]["supported"] is False
+    assert result["google"]["capabilities"] is None
     assert "后端未支持" in result["google"]["warnings"][0]
     assert "google-key" not in serialized
 
