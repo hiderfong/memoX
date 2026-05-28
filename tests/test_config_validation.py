@@ -175,6 +175,37 @@ def test_validate_config_rejects_invalid_file_access_ttl() -> None:
         validate_config(cfg)
 
 
+def test_worker_template_parses_fallback_providers() -> None:
+    cfg = Config._from_dict(
+        {
+            "app": {},
+            "server": {},
+            "coordinator": {},
+            "providers": {},
+            "worker_templates": {
+                "coder": {
+                    "provider": "kimi",
+                    "model": "kimi-latest",
+                    "fallback_providers": [
+                        {
+                            "provider": "deepseek",
+                            "model": "deepseek-v4-pro",
+                            "base_url": "https://api.deepseek.com",
+                        }
+                    ],
+                }
+            },
+            "knowledge_base": {},
+            "auth": {"enabled": False, "users": []},
+        }
+    )
+
+    fallback = cfg.worker_templates["coder"].fallback_providers[0]
+    assert fallback.provider == "deepseek"
+    assert fallback.model == "deepseek-v4-pro"
+    assert fallback.base_url == "https://api.deepseek.com"
+
+
 def test_config_example_is_valid_with_required_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MEMOX_ADMIN_PASSWORD", "dev-password")
     monkeypatch.setenv("DASHSCOPE_API_KEY", "dashscope-key")

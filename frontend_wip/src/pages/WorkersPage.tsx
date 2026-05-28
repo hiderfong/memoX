@@ -250,6 +250,7 @@ export const WorkerCard: React.FC<{
   const [model, setModel] = useState(worker.model);
   const [skills, setSkills] = useState<string[]>(worker.skills || []);
   const [tools, setTools] = useState<string[]>(worker.tools || []);
+  const [fallbackProviders, setFallbackProviders] = useState<any[]>(worker.fallback_providers || []);
   const [temperature, setTemperature] = useState(worker.temperature ?? 0.7);
   const [maxTokens, setMaxTokens] = useState(worker.max_tokens ?? 4096);
   const [showAdvanced, setShowAdvanced] = useState(false);
@@ -275,6 +276,7 @@ export const WorkerCard: React.FC<{
       setModel(worker.model);
       setSkills(worker.skills || []);
       setTools(worker.tools || []);
+      setFallbackProviders(worker.fallback_providers || []);
       setTemperature(worker.temperature ?? 0.7);
       setMaxTokens(worker.max_tokens ?? 4096);
       setIcon(worker.icon || '');
@@ -311,6 +313,8 @@ export const WorkerCard: React.FC<{
 
   const currentProvider = providers.find((p: any) => p.name === provider);
   const modelOptions = currentProvider?.models || [];
+  const providerModelOptions = (providerName: string) =>
+    providers.find((p: any) => p.name === providerName)?.models || [];
 
   const handleProviderChange = (val: string) => {
     setProvider(val);
@@ -325,7 +329,7 @@ export const WorkerCard: React.FC<{
     setSaving(true);
     try {
       await api.updateWorkerConfig(worker.id, {
-        provider, model, skills, tools, temperature,
+        provider, model, skills, tools, fallback_providers: fallbackProviders, temperature,
         max_tokens: maxTokens, icon, display_name: displayName,
       });
       message.success(`${displayName || worker.id} 配置已保存`);
@@ -343,6 +347,7 @@ export const WorkerCard: React.FC<{
     setModel(worker.model);
     setSkills(worker.skills || []);
     setTools(worker.tools || []);
+    setFallbackProviders(worker.fallback_providers || []);
     setTemperature(worker.temperature ?? 0.7);
     setMaxTokens(worker.max_tokens ?? 4096);
     setIcon(worker.icon || '');
@@ -506,6 +511,26 @@ export const WorkerCard: React.FC<{
     setToolInput('');
   };
 
+  const addFallbackProvider = () => {
+    const candidate = providers.find((p: any) => p.name !== provider && p.configured !== false && p.supported !== false)
+      || providers.find((p: any) => p.name !== provider);
+    if (!candidate) return;
+    const models = candidate.models || [];
+    setFallbackProviders([
+      ...fallbackProviders,
+      {
+        provider: candidate.name,
+        model: models[0] || '',
+        base_url: '',
+        headers: {},
+      },
+    ]);
+  };
+
+  const updateFallbackProvider = (index: number, patch: any) => {
+    setFallbackProviders(fallbackProviders.map((item, i) => i === index ? { ...item, ...patch } : item));
+  };
+
   const fmtToken = (n: number) => n >= 10000 ? (n / 1000).toFixed(1) + 'k' : String(n);
   const u = worker.token_usage || {};
 
@@ -577,6 +602,16 @@ export const WorkerCard: React.FC<{
                   <Tooltip key={t} title={TOOL_DESC[t] || `工具: ${t}`}>
                     <Tag style={{ fontSize: 11, borderRadius: 2, cursor: 'default' }}>{t}</Tag>
                   </Tooltip>
+                ))}
+              </div>
+            )}
+            {worker.fallback_providers?.length > 0 && (
+              <div>
+                <Text type="secondary" style={{ fontSize: 11, marginRight: 4 }}>Fallback</Text>
+                {worker.fallback_providers.map((fp: any, i: number) => (
+                  <Tag key={`${fp.provider}-${fp.model}-${i}`} color="purple" style={{ fontSize: 11, borderRadius: 2 }}>
+                    {fp.provider}{fp.model ? ` / ${fp.model}` : ''}
+                  </Tag>
                 ))}
               </div>
             )}
@@ -706,6 +741,56 @@ export const WorkerCard: React.FC<{
             {showAdvanced && (
               <div style={{ background: '#fafafa', padding: 12, borderRadius: 6 }}>
                 <Space direction="vertical" style={{ width: '100%' }} size={10}>
+                  <div>
+                    <Text type="secondary" style={{ fontSize: 12 }}>Provider Fallback</Text>
+                    <Space direction="vertical" style={{ width: '100%', marginTop: 4 }} size={6}>
+                      {fallbackProviders.map((fp: any, index: number) => (
+                        <Space key={index} style={{ width: '100%' }} align="start">
+                          <Select
+                            size="small"
+                            value={fp.provider}
+                            style={{ width: 130 }}
+                            onChange={(value) => {
+                              const models = providerModelOptions(value);
+                              updateFallbackProvider(index, {
+                                provider: value,
+                                model: models.includes(fp.model) ? fp.model : (models[0] || fp.model || ''),
+                              });
+                            }}
+                          >
+                            {providers.map((p: any) => (
+                              <Select.Option key={p.name} value={p.name}>
+                                {p.name}{p.configured === false ? '（未配置）' : ''}{p.supported === false ? '（未支持）' : ''}
+                              </Select.Option>
+                            ))}
+                          </Select>
+                          <AutoComplete
+                            size="small"
+                            value={fp.model}
+                            options={providerModelOptions(fp.provider).map((m: string) => ({ value: m }))}
+                            onChange={(value) => updateFallbackProvider(index, { model: value })}
+                            placeholder={model}
+                            style={{ flex: 1, minWidth: 160 }}
+                            filterOption={(inputValue, option) =>
+                              String(option?.value || '').toLowerCase().includes(inputValue.toLowerCase())
+                            }
+                          />
+                          <Tooltip title="移除此 fallback">
+                            <Button
+                              size="small"
+                              danger
+                              type="text"
+                              icon={<DeleteOutlined />}
+                              onClick={() => setFallbackProviders(fallbackProviders.filter((_, i) => i !== index))}
+                            />
+                          </Tooltip>
+                        </Space>
+                      ))}
+                      <Button size="small" icon={<PlusOutlined />} onClick={addFallbackProvider}>
+                        添加 fallback
+                      </Button>
+                    </Space>
+                  </div>
                   <div>
                     <Text type="secondary" style={{ fontSize: 12 }}>
                       Tools <span style={{ color: '#aaa', fontSize: 11 }}>(留空 = 全部可用;勾选 = 仅白名单内可调用)</span>

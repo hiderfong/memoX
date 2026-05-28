@@ -64,6 +64,11 @@ worker_templates:
     provider: "kimi"
     model: "kimi-latest"
     temperature: 0.7
+    # Optional retry fallback routes for transient provider failures
+    # such as timeouts, HTTP 429, or HTTP 5xx responses.
+    fallback_providers:
+      - provider: "deepseek"
+        model: "deepseek-v4-pro"
     icon: "💻"
     display_name: "代码专家"
     skills:

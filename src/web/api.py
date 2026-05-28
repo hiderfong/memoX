@@ -44,7 +44,13 @@ from slowapi.errors import RateLimitExceeded as RLError  # noqa: E402
 from slowapi.util import get_remote_address  # noqa: E402
 
 from agents.base_agent import ToolRegistry, create_provider  # noqa: E402
-from agents.worker_pool import WorkerAgent, WorkerConfig, get_worker_pool, init_worker_pool  # noqa: E402
+from agents.worker_pool import (  # noqa: E402
+    ProviderFallbackConfig,
+    WorkerAgent,
+    WorkerConfig,
+    get_worker_pool,
+    init_worker_pool,
+)
 from auth import AuthUser, _get_auth_from_request, init_auth  # noqa: E402
 from config import Config, FileAccessConfig, default_config_path, load_config, resolve_env_value, validate_config  # noqa: E402
 from coordinator.iterative_orchestrator import IterativeOrchestrator  # noqa: E402
@@ -90,6 +96,32 @@ def _audit_log(
             )
     except Exception:
         pass
+
+
+def _worker_fallback_routes(config: Config, template) -> list[ProviderFallbackConfig]:
+    """Resolve configured fallback provider references without exposing secrets."""
+    routes: list[ProviderFallbackConfig] = []
+    for fallback in getattr(template, "fallback_providers", []):
+        provider_name = str(getattr(fallback, "provider", "")).strip()
+        provider_config = config.providers.get(provider_name)
+        if not provider_name or provider_config is None:
+            continue
+        api_key = provider_config.resolve_api_key()
+        if not api_key.strip():
+            continue
+        routes.append(
+            ProviderFallbackConfig(
+                provider_type=provider_name,
+                api_key=api_key,
+                model=str(getattr(fallback, "model", "") or template.model),
+                base_url=str(getattr(fallback, "base_url", "") or provider_config.base_url),
+                headers={
+                    **dict(getattr(provider_config, "headers", {}) or {}),
+                    **dict(getattr(fallback, "headers", {}) or {}),
+                },
+            )
+        )
+    return routes
 
 
 # ==================== 配置 ====================
@@ -529,6 +561,7 @@ async def startup():
             temperature=template.temperature,
             tools=template.tools,
             skills=template.skills,
+            fallback_providers=_worker_fallback_routes(_config, template),
             icon=template.icon,
             display_name=template.display_name,
         )

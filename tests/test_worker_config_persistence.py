@@ -83,6 +83,37 @@ def test_persist_worker_template_updates_existing_worker(tmp_path: Path) -> None
     assert data["worker_templates"]["alpha"] == _payload("updated-model")
 
 
+def test_worker_template_payload_includes_fallback_routes_without_resolved_keys() -> None:
+    body = workers.WorkerCreateRequest(
+        name="beta",
+        provider="openai",
+        model="new-model",
+        fallback_providers=[
+            workers.WorkerFallbackProviderRequest(
+                provider="deepseek",
+                model="deepseek-v4-pro",
+                base_url="https://api.deepseek.com",
+                headers={"X-Test": "ok"},
+            )
+        ],
+    )
+
+    payload = workers._worker_template_payload(body)
+    serialized = json.dumps(payload, ensure_ascii=False)
+
+    assert payload["fallback_providers"] == [
+        {
+            "provider": "deepseek",
+            "model": "deepseek-v4-pro",
+            "base_url": "https://api.deepseek.com",
+            "headers": {"X-Test": "ok"},
+        }
+    ]
+    assert "api_key" not in serialized
+    assert "OPENAI_API_KEY" not in serialized
+    assert "DEEPSEEK_API_KEY" not in serialized
+
+
 def test_delete_worker_template_removes_only_requested_worker(tmp_path: Path) -> None:
     config_path = tmp_path / "config.yaml"
     config_path.write_text(BASE_CONFIG, encoding="utf-8")
@@ -165,6 +196,9 @@ async def test_list_providers_exposes_server_side_status(
                     "provider": "kimi",
                     "model": "kimi-latest",
                     "temperature": 0.7,
+                    "fallback_providers": [
+                        {"provider": "deepseek", "model": "deepseek-v4-pro"}
+                    ],
                 }
             },
             "knowledge_base": {"embedding_provider": "sentence-transformer"},
@@ -192,6 +226,7 @@ async def test_list_providers_exposes_server_side_status(
     assert result["deepseek"]["configured"] is True
     assert result["deepseek"]["supported"] is True
     assert result["deepseek"]["env_var"] == "DEEPSEEK_API_KEY"
+    assert "worker_fallback:coder" in result["deepseek"]["used_by"]
     assert "deepseek-v4-pro" in result["deepseek"]["models"]
     assert result["deepseek"]["capabilities"]["protocol"] == "openai_compatible"
     assert result["deepseek"]["capabilities"]["supports_tool_calls"] is True

@@ -7,21 +7,29 @@ from typing import Annotated
 
 import yaml
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from agents.base_agent import SUPPORTED_PROVIDER_TYPES, ToolRegistry, create_provider, get_provider_capabilities
-from agents.worker_pool import WorkerAgent, WorkerConfig, get_worker_pool
+from agents.worker_pool import ProviderFallbackConfig, WorkerAgent, WorkerConfig, get_worker_pool
 from auth import AuthUser, require_role
-from config import Config
+from config import Config, WorkerFallbackProviderConfig
 
 router = APIRouter(prefix="/api", tags=["workers"])
+
+
+class WorkerFallbackProviderRequest(BaseModel):
+    provider: str
+    model: str = ""
+    base_url: str = ""
+    headers: dict[str, str] = Field(default_factory=dict)
 
 
 class WorkerConfigUpdate(BaseModel):
     provider: str
     model: str
-    skills: list[str] = []
-    tools: list[str] = []
+    skills: list[str] = Field(default_factory=list)
+    tools: list[str] = Field(default_factory=list)
+    fallback_providers: list[WorkerFallbackProviderRequest] = Field(default_factory=list)
     temperature: float = 0.7
     max_tokens: int = 4096
     icon: str = ""
@@ -32,8 +40,9 @@ class WorkerCreateRequest(BaseModel):
     name: str
     provider: str
     model: str
-    skills: list[str] = []
-    tools: list[str] = []
+    skills: list[str] = Field(default_factory=list)
+    tools: list[str] = Field(default_factory=list)
+    fallback_providers: list[WorkerFallbackProviderRequest] = Field(default_factory=list)
     temperature: float = 0.7
     max_tokens: int = 4096
     icon: str = ""
@@ -72,7 +81,24 @@ def _worker_template_payload(body: WorkerConfigUpdate | WorkerCreateRequest) -> 
         payload["icon"] = body.icon
     if body.display_name:
         payload["display_name"] = body.display_name
+    fallback_providers = _fallback_provider_payloads(body.fallback_providers)
+    if fallback_providers:
+        payload["fallback_providers"] = fallback_providers
     return payload
+
+
+def _fallback_provider_payloads(fallbacks: list[WorkerFallbackProviderRequest]) -> list[dict]:
+    payloads: list[dict] = []
+    for fallback in fallbacks:
+        item = {"provider": fallback.provider}
+        if fallback.model:
+            item["model"] = fallback.model
+        if fallback.base_url:
+            item["base_url"] = fallback.base_url
+        if fallback.headers:
+            item["headers"] = dict(fallback.headers)
+        payloads.append(item)
+    return payloads
 
 
 def _provider_env_var(provider_config) -> str | None:
@@ -119,6 +145,9 @@ def _provider_usage(config, provider_name: str) -> list[str]:
     for worker_name, template in getattr(config, "worker_templates", {}).items():
         if getattr(template, "provider", None) == provider_name:
             usage.append(f"worker:{worker_name}")
+        for fallback in getattr(template, "fallback_providers", []):
+            if getattr(fallback, "provider", None) == provider_name:
+                usage.append(f"worker_fallback:{worker_name}")
 
     return usage
 
@@ -128,6 +157,34 @@ def _validate_runtime_provider(provider_name: str, provider_config) -> None:
         raise HTTPException(status_code=400, detail=f"Provider '{provider_name}' 当前后端未支持")
     if not _provider_has_api_key(provider_config):
         raise HTTPException(status_code=400, detail=f"Provider '{provider_name}' API Key 未配置")
+
+
+def _resolve_worker_fallback_routes(
+    config,
+    body: WorkerConfigUpdate | WorkerCreateRequest,
+) -> list[ProviderFallbackConfig]:
+    routes: list[ProviderFallbackConfig] = []
+    for fallback in body.fallback_providers:
+        provider_name = fallback.provider.strip()
+        if not provider_name:
+            raise HTTPException(status_code=400, detail="Fallback provider 不能为空")
+        provider_config = config.providers.get(provider_name)
+        if not provider_config:
+            raise HTTPException(status_code=400, detail=f"Fallback provider '{provider_name}' 未配置")
+        _validate_runtime_provider(provider_name, provider_config)
+        routes.append(
+            ProviderFallbackConfig(
+                provider_type=provider_name,
+                api_key=provider_config.resolve_api_key(),
+                model=fallback.model or body.model,
+                base_url=fallback.base_url or provider_config.base_url,
+                headers={
+                    **dict(getattr(provider_config, "headers", {}) or {}),
+                    **dict(fallback.headers or {}),
+                },
+            )
+        )
+    return routes
 
 
 def _read_config_document(config_path: Path) -> dict:
@@ -295,6 +352,12 @@ async def list_providers() -> list[dict]:
     provider_models: dict[str, set[str]] = {}
     for template in _config.worker_templates.values():
         provider_models.setdefault(template.provider, set()).add(template.model)
+        for fallback in getattr(template, "fallback_providers", []):
+            fallback_provider = getattr(fallback, "provider", "")
+            if fallback_provider:
+                provider_models.setdefault(fallback_provider, set()).add(
+                    getattr(fallback, "model", "") or template.model
+                )
     provider_models.setdefault(_config.coordinator.provider, set()).add(_config.coordinator.model)
 
     result = []
@@ -348,6 +411,7 @@ async def update_worker_config(
     if not provider_config:
         raise HTTPException(status_code=400, detail=f"Provider '{body.provider}' 未配置")
     _validate_runtime_provider(body.provider, provider_config)
+    fallback_routes = _resolve_worker_fallback_routes(_config, body)
 
     try:
         _persist_worker_template(_config_path(), worker_id, _worker_template_payload(body))
@@ -365,6 +429,7 @@ async def update_worker_config(
     worker.config.model = body.model
     worker.config.skills = body.skills
     worker.config.tools = body.tools
+    worker.config.fallback_providers = fallback_routes
 
     from skills.tool import LoadSkillTool
     if body.skills:
@@ -376,7 +441,7 @@ async def update_worker_config(
     worker.config.max_tokens = body.max_tokens
     worker.config.icon = body.icon
     worker.config.display_name = body.display_name
-    worker.provider = worker_provider
+    worker.refresh_provider_routes(worker_provider)
 
     if worker_id in _config.worker_templates:
         tpl = _config.worker_templates[worker_id]
@@ -385,6 +450,15 @@ async def update_worker_config(
         tpl.skills = body.skills
         tpl.tools = body.tools
         tpl.temperature = body.temperature
+        tpl.fallback_providers = [
+            WorkerFallbackProviderConfig(
+                provider=item.provider,
+                model=item.model,
+                base_url=item.base_url,
+                headers=dict(item.headers),
+            )
+            for item in body.fallback_providers
+        ]
         tpl.icon = body.icon
         tpl.display_name = body.display_name
 
@@ -415,6 +489,7 @@ async def create_worker(
     if not provider_config:
         raise HTTPException(status_code=400, detail=f"Provider '{body.provider}' 未配置")
     _validate_runtime_provider(body.provider, provider_config)
+    fallback_routes = _resolve_worker_fallback_routes(_config, body)
 
     worker_config = WorkerConfig(
         name=name,
@@ -425,6 +500,7 @@ async def create_worker(
         max_tokens=body.max_tokens,
         tools=body.tools,
         skills=body.skills,
+        fallback_providers=fallback_routes,
         icon=body.icon,
         display_name=body.display_name,
     )
@@ -447,6 +523,15 @@ async def create_worker(
         temperature=body.temperature,
         skills=body.skills,
         tools=body.tools,
+        fallback_providers=[
+            WorkerFallbackProviderConfig(
+                provider=item.provider,
+                model=item.model,
+                base_url=item.base_url,
+                headers=dict(item.headers),
+            )
+            for item in body.fallback_providers
+        ],
         icon=body.icon,
         display_name=body.display_name,
     )

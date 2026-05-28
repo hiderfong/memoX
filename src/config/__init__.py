@@ -169,6 +169,16 @@ class CoordinatorConfig:
 
 
 @dataclass
+class WorkerFallbackProviderConfig:
+    """Worker-level fallback provider route."""
+
+    provider: str
+    model: str = ""
+    base_url: str = ""
+    headers: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class WorkerTemplate:
     """Worker Agent 模板"""
     model: str
@@ -176,6 +186,7 @@ class WorkerTemplate:
     temperature: float = 0.7
     skills: list[str] = field(default_factory=list)
     tools: list[str] = field(default_factory=list)
+    fallback_providers: list[WorkerFallbackProviderConfig] = field(default_factory=list)
     mcp: dict[str, Any] = field(default_factory=dict)
     icon: str = ""
     display_name: str = ""
@@ -408,10 +419,18 @@ class Config:
             for name, config in data.get("providers", {}).items()
         }
 
-        worker_templates = {
-            name: WorkerTemplate(**config)
-            for name, config in data.get("worker_templates", {}).items()
-        }
+        worker_templates = {}
+        for name, template_config in data.get("worker_templates", {}).items():
+            template_data = dict(template_config)
+            raw_fallbacks = template_data.get("fallback_providers") or []
+            if not isinstance(raw_fallbacks, list):
+                raw_fallbacks = []
+            template_data["fallback_providers"] = [
+                WorkerFallbackProviderConfig(**item)
+                for item in raw_fallbacks
+                if isinstance(item, dict)
+            ]
+            worker_templates[name] = WorkerTemplate(**template_data)
 
         kb_data = data.get("knowledge_base", {})
         if "reranker" in kb_data:

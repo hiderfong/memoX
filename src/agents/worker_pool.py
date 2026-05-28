@@ -9,6 +9,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
+import httpx
 from loguru import logger
 
 from storage import get_store
@@ -19,6 +20,7 @@ from .base_agent import (
     MiniMaxProvider,
     ToolRegistry,
     create_provider,
+    get_provider_capabilities,
 )
 
 
@@ -63,6 +65,25 @@ class Task:
 
 
 @dataclass
+class ProviderFallbackConfig:
+    """Fallback provider route for a worker."""
+
+    provider_type: str
+    api_key: str
+    model: str
+    base_url: str = ""
+    headers: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class _ProviderRoute:
+    provider_type: str
+    model: str
+    provider: LLMProvider
+    is_fallback: bool = False
+
+
+@dataclass
 class WorkerConfig:
     """Worker Agent 配置"""
     name: str
@@ -74,6 +95,9 @@ class WorkerConfig:
     max_iterations: int = 20
     tools: list[str] = field(default_factory=list)
     skills: list[str] = field(default_factory=list)
+    fallback_providers: list[ProviderFallbackConfig] = field(default_factory=list)
+    provider_retry_attempts: int = 1
+    provider_retry_backoff_seconds: float = 0.5
     icon: str = ""
     display_name: str = ""
 
@@ -82,6 +106,9 @@ class WorkerConfig:
         """从模板创建配置"""
         provider = template.get("provider", "anthropic")
         api_key = api_keys.get(provider, "")
+        fallback_templates = template.get("fallback_providers") or []
+        if not isinstance(fallback_templates, list):
+            fallback_templates = []
 
         return cls(
             name=name,
@@ -92,7 +119,50 @@ class WorkerConfig:
             max_tokens=template.get("max_tokens", 4096),
             tools=template.get("tools", []),
             skills=template.get("skills", []),
+            fallback_providers=[
+                ProviderFallbackConfig(
+                    provider_type=str(item.get("provider", "")),
+                    api_key=api_keys.get(str(item.get("provider", "")), ""),
+                    model=str(item.get("model") or template.get("model", "claude-sonnet-4-20250514")),
+                    base_url=str(item.get("base_url", "")),
+                    headers=dict(item.get("headers", {}) or {}),
+                )
+                for item in fallback_templates
+                if isinstance(item, dict) and item.get("provider")
+            ],
         )
+
+
+def _provider_protocol(provider_type: str) -> str:
+    capabilities = get_provider_capabilities(provider_type)
+    return capabilities.protocol if capabilities else provider_type.lower()
+
+
+def _messages_include_tool_roundtrip(messages: list[dict]) -> bool:
+    for message in messages:
+        if message.get("role") == "tool":
+            return True
+        content = message.get("content")
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") in {"tool_use", "tool_result"}:
+                    return True
+    return False
+
+
+def _is_retryable_provider_error(exc: Exception) -> bool:
+    if isinstance(exc, (httpx.TimeoutException, httpx.NetworkError)):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        status_code = exc.response.status_code
+        return status_code in {408, 409, 425, 429} or status_code >= 500
+    return False
+
+
+def _provider_error_summary(exc: Exception) -> str:
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"HTTP {exc.response.status_code}"
+    return f"{type(exc).__name__}: {str(exc)[:160]}"
 
 
 class WorkerAgent:
@@ -107,6 +177,8 @@ class WorkerAgent:
             config.provider_type,
             config.api_key,
         )
+        self._provider_routes: list[_ProviderRoute] = []
+        self.refresh_provider_routes(self.provider)
 
         # 创建工具注册表
         self.tools = tools or ToolRegistry()
@@ -137,6 +209,47 @@ class WorkerAgent:
         from collections import deque
         self._log_buffer: deque[dict] = deque(maxlen=100)
         self._log_lock = __import__("threading").Lock()
+
+    def refresh_provider_routes(self, provider: LLMProvider | None = None) -> None:
+        """Rebuild primary and fallback provider routes after config changes."""
+        if provider is not None:
+            self.provider = provider
+        self._provider_routes = [
+            _ProviderRoute(
+                provider_type=self.config.provider_type,
+                model=self.config.model,
+                provider=self.provider,
+                is_fallback=False,
+            )
+        ]
+        self._provider_routes.extend(self._build_fallback_routes(self.config.fallback_providers))
+
+    def _build_fallback_routes(self, fallbacks: list[ProviderFallbackConfig]) -> list[_ProviderRoute]:
+        routes: list[_ProviderRoute] = []
+        for fallback in fallbacks:
+            if not fallback.provider_type or not fallback.api_key or not fallback.model:
+                continue
+            try:
+                provider = create_provider(
+                    fallback.provider_type,
+                    fallback.api_key,
+                    base_url=fallback.base_url,
+                    headers=fallback.headers,
+                )
+            except Exception as exc:
+                logger.warning(
+                    f"Worker {self.id}: fallback provider {fallback.provider_type!r} 初始化失败: {exc}"
+                )
+                continue
+            routes.append(
+                _ProviderRoute(
+                    provider_type=fallback.provider_type,
+                    model=fallback.model,
+                    provider=provider,
+                    is_fallback=True,
+                )
+            )
+        return routes
 
     def add_log(self, level: str, message: str, meta: dict | None = None) -> None:
         """追加一条日志（线程安全）"""
@@ -249,29 +362,19 @@ class WorkerAgent:
         """Agent 执行循环"""
         max_iterations = self.config.max_iterations
 
-        # 检测 Provider 类型，选择对应的工具格式
-        is_anthropic_compat = isinstance(self.provider, (AnthropicProvider, MiniMaxProvider))
-
-        # 按 Provider 类型获取工具定义
-        if is_anthropic_compat:
-            tool_defs = self.tools.get_anthropic_definitions()
-        else:
-            tool_defs = self.tools.get_definitions()
-
         for _iteration in range(max_iterations):
             # 调用 LLM（传入工具定义）
             chat_kwargs: dict = {
                 "temperature": self.config.temperature,
                 "max_tokens": self.config.max_tokens,
             }
-            if tool_defs:
-                chat_kwargs["tools"] = tool_defs
 
-            response = await self.provider.chat(
+            response, active_provider = await self._chat_with_provider_fallback(
                 messages=messages,
-                model=self.config.model,
-                **chat_kwargs,
+                base_kwargs=chat_kwargs,
+                on_progress=on_progress,
             )
+            is_anthropic_compat = isinstance(active_provider, (AnthropicProvider, MiniMaxProvider))
 
             # 累计 token 用量并持久化
             usage = response.usage or {}
@@ -341,7 +444,7 @@ class WorkerAgent:
                     }
                     if (
                         response.reasoning_content
-                        and getattr(self.provider, "preserve_reasoning_content", False)
+                        and getattr(active_provider, "preserve_reasoning_content", False)
                     ):
                         assistant_message["reasoning_content"] = response.reasoning_content
                     messages.append(assistant_message)
@@ -365,6 +468,105 @@ class WorkerAgent:
             return "Task completed but no content generated."
 
         return "Task reached maximum iterations without completion."
+
+    async def _chat_with_provider_fallback(
+        self,
+        messages: list[dict],
+        base_kwargs: dict[str, Any],
+        on_progress: Callable[[str], None] | None = None,
+    ) -> tuple[Any, LLMProvider]:
+        """Call the active provider, retrying transient failures and falling back when configured."""
+        last_error: Exception | None = None
+        primary_protocol = _provider_protocol(self._provider_routes[0].provider_type)
+        has_tool_roundtrip = _messages_include_tool_roundtrip(messages)
+
+        for route_index, route in enumerate(self._provider_routes):
+            route_protocol = _provider_protocol(route.provider_type)
+            if has_tool_roundtrip and route_protocol != primary_protocol:
+                self.add_log(
+                    "warning",
+                    "跳过跨协议 fallback provider",
+                    {
+                        "provider": route.provider_type,
+                        "reason": "message_history_contains_tool_results",
+                    },
+                )
+                continue
+
+            attempts = max(1, int(self.config.provider_retry_attempts) + 1)
+            for attempt in range(attempts):
+                chat_kwargs = dict(base_kwargs)
+                tool_defs = self._tool_definitions_for_provider(route.provider)
+                if tool_defs:
+                    chat_kwargs["tools"] = tool_defs
+                try:
+                    response = await route.provider.chat(
+                        messages=messages,
+                        model=route.model,
+                        **chat_kwargs,
+                    )
+                    if route.is_fallback or attempt > 0:
+                        self.add_log(
+                            "info",
+                            "LLM provider 调用恢复",
+                            {
+                                "provider": route.provider_type,
+                                "model": route.model,
+                                "attempt": attempt + 1,
+                                "fallback": route.is_fallback,
+                            },
+                        )
+                    return response, route.provider
+                except Exception as exc:
+                    last_error = exc
+                    if not _is_retryable_provider_error(exc):
+                        raise
+                    details = {
+                        "provider": route.provider_type,
+                        "model": route.model,
+                        "attempt": attempt + 1,
+                        "max_attempts": attempts,
+                        "fallback": route.is_fallback,
+                        "error": _provider_error_summary(exc),
+                    }
+                    self.add_log("warning", "LLM provider transient failure", details)
+                    logger.warning(f"Worker {self.id}: provider transient failure: {details}")
+                    if on_progress:
+                        if attempt + 1 < attempts:
+                            on_progress(
+                                f"provider_retry: {route.provider_type}/{route.model} "
+                                f"attempt {attempt + 1} failed: {details['error']}"
+                            )
+                        else:
+                            next_route = next(
+                                (
+                                    candidate
+                                    for candidate in self._provider_routes[route_index + 1:]
+                                    if not (
+                                        has_tool_roundtrip
+                                        and _provider_protocol(candidate.provider_type) != primary_protocol
+                                    )
+                                ),
+                                None,
+                            )
+                            if next_route:
+                                on_progress(
+                                    f"provider_fallback: {route.provider_type}/{route.model} -> "
+                                    f"{next_route.provider_type}/{next_route.model}: {details['error']}"
+                                )
+                    if attempt + 1 < attempts:
+                        await asyncio.sleep(max(0.0, float(self.config.provider_retry_backoff_seconds)))
+                        continue
+                    break
+
+        if last_error:
+            raise last_error
+        raise RuntimeError("No provider route available for worker")
+
+    def _tool_definitions_for_provider(self, provider: LLMProvider) -> list[dict]:
+        if isinstance(provider, (AnthropicProvider, MiniMaxProvider)):
+            return self.tools.get_anthropic_definitions()
+        return self.tools.get_definitions()
 
     def _build_system_prompt(self) -> str:
         """构建系统提示"""
@@ -457,6 +659,15 @@ class WorkerPool:
                 "provider": w.config.provider_type,
                 "skills": list(w.config.skills),
                 "tools": list(w.config.tools),
+                "fallback_providers": [
+                    {
+                        "provider": fallback.provider_type,
+                        "model": fallback.model,
+                        "base_url": fallback.base_url,
+                        "headers": {},
+                    }
+                    for fallback in w.config.fallback_providers
+                ],
                 "temperature": w.config.temperature,
                 "max_tokens": w.config.max_tokens,
                 "icon": w.config.icon,
