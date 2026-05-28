@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, createContext, useContext } from 'react';
 import { Layout, Menu, Typography, Card, Button, Upload, List, Space, Avatar, Input, message, Spin, Tag, Progress, Badge, Drawer, Timeline, Alert, Empty, Tooltip, Form, Divider, Checkbox, Modal, Tabs, Table, Select, Slider, InputNumber, AutoComplete, Switch, Segmented } from 'antd';
-import { UploadOutlined, FileTextOutlined, RobotOutlined, MessageOutlined, TeamOutlined, SettingOutlined, CloudUploadOutlined, DeleteOutlined, SendOutlined, LoadingOutlined, BulbOutlined, ThunderboltOutlined, ClockCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, InboxOutlined, UserOutlined, LockOutlined, LogoutOutlined, SafetyCertificateOutlined, LinkOutlined, FolderOpenOutlined, MailOutlined, LineChartOutlined, FileSearchOutlined, EyeOutlined, SaveOutlined, DownOutlined, UpOutlined, PlusOutlined, EditOutlined, DownloadOutlined, BgColorsOutlined, ReloadOutlined, RollbackOutlined, ExclamationCircleOutlined, ToolOutlined, DeploymentUnitOutlined } from '@ant-design/icons';
+import { UploadOutlined, FileTextOutlined, RobotOutlined, MessageOutlined, TeamOutlined, SettingOutlined, CloudUploadOutlined, DeleteOutlined, SendOutlined, LoadingOutlined, BulbOutlined, ThunderboltOutlined, ClockCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, InboxOutlined, UserOutlined, LockOutlined, LogoutOutlined, SafetyCertificateOutlined, LinkOutlined, FolderOpenOutlined, MailOutlined, LineChartOutlined, FileSearchOutlined, EyeOutlined, SaveOutlined, DownOutlined, UpOutlined, PlusOutlined, EditOutlined, DownloadOutlined, BgColorsOutlined, ReloadOutlined, RollbackOutlined, ExclamationCircleOutlined, ToolOutlined, DeploymentUnitOutlined, CopyOutlined } from '@ant-design/icons';
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip as RTooltip, Legend, ResponsiveContainer } from 'recharts';
 import { useNavigate, useLocation, Routes, Route, Link, Navigate } from 'react-router-dom';
 import axios from 'axios';
@@ -268,6 +268,7 @@ export const TaskTracePanel: React.FC<{
   const [diagnosis, setDiagnosis] = useState<TaskDiagnosis | null>(null);
   const [retrySuggestion, setRetrySuggestion] = useState<TaskRetrySuggestion | null>(null);
   const [diagnosisLoading, setDiagnosisLoading] = useState(false);
+  const [reportLoading, setReportLoading] = useState<'download' | 'copy' | null>(null);
 
   useEffect(() => {
     if (!taskId) return;
@@ -314,6 +315,42 @@ export const TaskTracePanel: React.FC<{
       return;
     }
     onRetryTask(task, false);
+  };
+  const fetchDiagnosisReport = async () => {
+    const res = await api.getTaskDiagnosisReport(taskId);
+    return res.data;
+  };
+  const downloadDiagnosisReport = async () => {
+    setReportLoading('download');
+    try {
+      const report = await fetchDiagnosisReport();
+      const blob = new Blob([report.markdown || ''], { type: report.content_type || 'text/markdown;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = report.filename || `memox-diagnosis-${taskId}.md`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      message.success('诊断报告已下载');
+    } catch {
+      message.error('下载诊断报告失败');
+    } finally {
+      setReportLoading(null);
+    }
+  };
+  const copyDiagnosisReport = async () => {
+    setReportLoading('copy');
+    try {
+      const report = await fetchDiagnosisReport();
+      await navigator.clipboard.writeText(report.markdown || report.share_text || '');
+      message.success('诊断报告已复制');
+    } catch {
+      message.error('复制诊断报告失败');
+    } finally {
+      setReportLoading(null);
+    }
   };
   const diagnosisType = diagnosis?.level === 'critical' ? 'error' : diagnosis?.level === 'warning' ? 'warning' : 'success';
 
@@ -473,6 +510,24 @@ export const TaskTracePanel: React.FC<{
                         {retrySuggestion.force_required ? '确认后强制重试' : '按建议重试'}
                       </Button>
                     )}
+                    <Space wrap>
+                      <Button
+                        size="small"
+                        icon={<DownloadOutlined />}
+                        loading={reportLoading === 'download'}
+                        onClick={downloadDiagnosisReport}
+                      >
+                        下载报告
+                      </Button>
+                      <Button
+                        size="small"
+                        icon={<CopyOutlined />}
+                        loading={reportLoading === 'copy'}
+                        onClick={copyDiagnosisReport}
+                      >
+                        复制报告
+                      </Button>
+                    </Space>
                   </Space>
                 </div>
               )}

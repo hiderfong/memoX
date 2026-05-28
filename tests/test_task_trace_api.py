@@ -183,6 +183,16 @@ def test_task_trace_groups_events_by_subtask(tmp_path, monkeypatch):
     assert any("工具调用被策略拦截" in item for item in diagnosis["root_causes"])
     assert any("Provider 调用出现波动" in item for item in diagnosis["root_causes"])
     assert diagnosis["evidence"]
+
+    report_response = client.get("/api/tasks/task_trace/diagnosis-report")
+    assert report_response.status_code == 200
+    report = report_response.json()
+    assert report["filename"] == "memox-diagnosis-task_trace.md"
+    assert report["content_type"].startswith("text/markdown")
+    assert "# MemoX Task Diagnosis Report: task_trace" in report["markdown"]
+    assert "## Retry Suggestion" in report["markdown"]
+    assert "Tool Rejections: 1" in report["markdown"]
+    assert report["share_text"].startswith("# MemoX Task Diagnosis Report")
     store.close()
 
 

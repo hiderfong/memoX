@@ -785,6 +785,116 @@ def _build_task_retry_suggestion(
     }
 
 
+def _markdown_bullets(items: list[str]) -> str:
+    return "\n".join(f"- {item}" for item in items) if items else "- 无"
+
+
+def _format_metric_value(value: Any) -> str:
+    if isinstance(value, dict):
+        return ", ".join(f"{key}={val}" for key, val in value.items()) or "{}"
+    if isinstance(value, list):
+        return str(len(value))
+    return str(value)
+
+
+def _build_task_diagnosis_report(
+    trace: dict[str, Any],
+    diagnosis: dict[str, Any],
+    retry_suggestion: dict[str, Any],
+) -> dict[str, Any]:
+    task_id = str(trace.get("task_id") or diagnosis.get("task_id") or "")
+    safe_task_id = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in task_id) or "task"
+    generated_at = datetime.now().isoformat()
+    metrics = diagnosis.get("metrics") if isinstance(diagnosis.get("metrics"), dict) else {}
+    evidence = diagnosis.get("evidence") if isinstance(diagnosis.get("evidence"), list) else []
+    failed_subtasks = metrics.get("failed_subtasks") if isinstance(metrics.get("failed_subtasks"), list) else []
+    llm_usage = metrics.get("llm_usage") if isinstance(metrics.get("llm_usage"), dict) else {}
+    max_llm_call = metrics.get("max_llm_call") if isinstance(metrics.get("max_llm_call"), dict) else {}
+    blockers = retry_suggestion.get("blockers") if isinstance(retry_suggestion.get("blockers"), list) else []
+    steps = retry_suggestion.get("steps") if isinstance(retry_suggestion.get("steps"), list) else []
+
+    lines = [
+        f"# MemoX Task Diagnosis Report: {task_id}",
+        "",
+        f"- Generated At: {generated_at}",
+        f"- Task Status: {trace.get('status', 'unknown')}",
+        f"- Diagnosis Level: {diagnosis.get('level', 'unknown')}",
+        f"- Headline: {diagnosis.get('headline', '')}",
+        "",
+        "## Summary Metrics",
+        "",
+        f"- Events: {metrics.get('event_count', 0)}",
+        f"- Failures: {metrics.get('failure_count', 0)}",
+        f"- Retries: {metrics.get('retry_count', 0)}",
+        f"- Fallbacks: {metrics.get('fallback_count', 0)}",
+        f"- Tool Calls: {metrics.get('tool_call_count', 0)}",
+        f"- Tool Rejections: {metrics.get('tool_rejected_count', 0)}",
+        f"- Worker Logs: {metrics.get('worker_log_count', 0)}",
+        f"- LLM Usage: {_format_metric_value(llm_usage)}",
+        f"- Max LLM Call: {_format_metric_value(max_llm_call)}",
+        "",
+        "## Possible Causes",
+        "",
+        _markdown_bullets([str(item) for item in diagnosis.get("root_causes", [])]),
+        "",
+        "## Recommended Actions",
+        "",
+        _markdown_bullets([str(item) for item in diagnosis.get("recommendations", [])]),
+        "",
+        "## Retry Suggestion",
+        "",
+        f"- Mode: {retry_suggestion.get('mode', '')}",
+        f"- Headline: {retry_suggestion.get('headline', '')}",
+        f"- Retry Enabled: {bool((retry_suggestion.get('retry_request') or {}).get('enabled'))}",
+        f"- Force Required: {bool(retry_suggestion.get('force_required'))}",
+        f"- Confidence: {retry_suggestion.get('confidence', '')}",
+        "",
+        "### Retry Blockers",
+        "",
+        _markdown_bullets([str(item.get("message", "")) for item in blockers if isinstance(item, dict)]),
+        "",
+        "### Retry Steps",
+        "",
+        _markdown_bullets([str(item) for item in steps]),
+        "",
+        "## Failed Subtasks",
+        "",
+    ]
+    if failed_subtasks:
+        for subtask in failed_subtasks:
+            if not isinstance(subtask, dict):
+                continue
+            lines.append(
+                f"- {subtask.get('id', '')}: status={subtask.get('status', '')}, "
+                f"worker={subtask.get('assigned_agent', '')}, error={subtask.get('error', '')}"
+            )
+    else:
+        lines.append("- 无")
+
+    lines.extend(["", "## Key Evidence", ""])
+    if evidence:
+        for event in evidence[:8]:
+            if not isinstance(event, dict):
+                continue
+            lines.append(
+                f"- [{event.get('created_at', '')}] {event.get('stage', '')}/"
+                f"{event.get('severity', '')} {event.get('label', event.get('event_type', ''))}"
+                f" subtask={event.get('subtask_id', '')} message={event.get('message', '')}"
+            )
+    else:
+        lines.append("- 无")
+
+    markdown = "\n".join(lines).strip() + "\n"
+    return {
+        "task_id": task_id,
+        "filename": f"memox-diagnosis-{safe_task_id}.md",
+        "content_type": "text/markdown; charset=utf-8",
+        "generated_at": generated_at,
+        "markdown": markdown,
+        "share_text": markdown[:4000],
+    }
+
+
 @router.post("")
 async def create_task(request: TaskRequest) -> dict:
     """创建后台任务，并立即返回可轮询的任务记录。"""
@@ -937,6 +1047,29 @@ async def get_task_retry_suggestion(task_id: str) -> dict:
         trace,
         diagnosis,
     )
+
+
+@router.get("/{task_id}/diagnosis-report")
+async def get_task_diagnosis_report(task_id: str) -> dict:
+    """导出任务诊断 Markdown 报告。"""
+    store = _gs()
+    if not store:
+        raise HTTPException(status_code=500, detail="Persistence store not initialized")
+    task = store.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    events = store.list_task_events(task_id)
+    trace = _load_task_trace_payload(task_id)
+    diagnosis = _build_task_diagnosis(trace)
+    retry_suggestion = _build_task_retry_suggestion(
+        task_id,
+        task,
+        store.get_task_job_request(task_id),
+        events,
+        trace,
+        diagnosis,
+    )
+    return _build_task_diagnosis_report(trace, diagnosis, retry_suggestion)
 
 
 @router.get("/{task_id}")

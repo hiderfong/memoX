@@ -384,6 +384,7 @@ export const api = {
   getTaskTrace: (taskId: string, params?: object) => axios.get(`${API_BASE}/tasks/${taskId}/trace`, { params }),
   getTaskDiagnosis: (taskId: string) => axios.get(`${API_BASE}/tasks/${taskId}/diagnosis`),
   getTaskRetrySuggestion: (taskId: string) => axios.get(`${API_BASE}/tasks/${taskId}/retry-suggestion`),
+  getTaskDiagnosisReport: (taskId: string) => axios.get(`${API_BASE}/tasks/${taskId}/diagnosis-report`),
 
   // Workers
   listWorkers: () => axios.get(`${API_BASE}/workers`),
