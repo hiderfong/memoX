@@ -190,6 +190,18 @@ type TaskDiagnosis = {
   generated_at?: string;
 };
 
+type TaskRetrySuggestion = {
+  mode: string;
+  headline: string;
+  retryable: boolean;
+  force_required: boolean;
+  confidence: string;
+  blockers?: { type: string; message: string }[];
+  steps?: string[];
+  retry_request?: { enabled: boolean; body?: { force?: boolean } };
+  latest_failure?: Record<string, any>;
+};
+
 const traceEventColor = (severity: string) => {
   if (severity === 'success') return 'green';
   if (severity === 'error') return 'red';
@@ -243,11 +255,18 @@ const renderTraceEventItems = (events: TaskTraceEvent[]) => (
   />
 );
 
-export const TaskTracePanel: React.FC<{ taskId: string }> = ({ taskId }) => {
+export const TaskTracePanel: React.FC<{
+  taskId: string;
+  task?: any;
+  onRetryTask?: (task: any, force?: boolean) => void;
+  retrying?: boolean;
+  retryDisabled?: boolean;
+}> = ({ taskId, task, onRetryTask, retrying = false, retryDisabled = false }) => {
   const [trace, setTrace] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [filters, setFilters] = useState<Record<string, string>>({});
   const [diagnosis, setDiagnosis] = useState<TaskDiagnosis | null>(null);
+  const [retrySuggestion, setRetrySuggestion] = useState<TaskRetrySuggestion | null>(null);
   const [diagnosisLoading, setDiagnosisLoading] = useState(false);
 
   useEffect(() => {
@@ -269,13 +288,32 @@ export const TaskTracePanel: React.FC<{ taskId: string }> = ({ taskId }) => {
   const runDiagnosis = async () => {
     setDiagnosisLoading(true);
     try {
-      const res = await api.getTaskDiagnosis(taskId);
-      setDiagnosis(res.data);
+      const [diagnosisRes, retryRes] = await Promise.all([
+        api.getTaskDiagnosis(taskId),
+        api.getTaskRetrySuggestion(taskId),
+      ]);
+      setDiagnosis(diagnosisRes.data);
+      setRetrySuggestion(retryRes.data);
     } catch {
       message.error('生成诊断摘要失败');
     } finally {
       setDiagnosisLoading(false);
     }
+  };
+  const handleSuggestedRetry = () => {
+    if (!retrySuggestion?.retry_request?.enabled || !task || !onRetryTask) return;
+    const force = Boolean(retrySuggestion.retry_request.body?.force);
+    if (force) {
+      Modal.confirm({
+        title: '确认强制重试',
+        content: '该任务需要先确认阻塞点已处理。强制重试不会绕过工具策略，只会重新入队执行。',
+        okText: '强制重试',
+        cancelText: '取消',
+        onOk: () => onRetryTask(task, true),
+      });
+      return;
+    }
+    onRetryTask(task, false);
   };
   const diagnosisType = diagnosis?.level === 'critical' ? 'error' : diagnosis?.level === 'warning' ? 'warning' : 'success';
 
@@ -395,6 +433,49 @@ export const TaskTracePanel: React.FC<{ taskId: string }> = ({ taskId }) => {
                   {renderTraceEventItems(diagnosis.evidence)}
                 </div>
               ) : null}
+              {retrySuggestion && (
+                <div>
+                  <Divider style={{ margin: '8px 0' }} />
+                  <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                    <Space wrap>
+                      <Text strong>{retrySuggestion.headline}</Text>
+                      <Tag>{retrySuggestion.mode}</Tag>
+                      <Tag color={retrySuggestion.force_required ? 'orange' : retrySuggestion.retryable ? 'green' : 'default'}>
+                        {retrySuggestion.force_required ? '需确认后强制重试' : retrySuggestion.retryable ? '可重试' : '不建议直接重试'}
+                      </Tag>
+                      <Tag>置信度 {retrySuggestion.confidence}</Tag>
+                    </Space>
+                    {retrySuggestion.blockers?.length ? (
+                      <div>
+                        <Text type="secondary">重试前检查</Text>
+                        <ul style={{ margin: '4px 0', paddingLeft: 20 }}>
+                          {retrySuggestion.blockers.map((item, index) => <li key={index}>{item.message}</li>)}
+                        </ul>
+                      </div>
+                    ) : null}
+                    {retrySuggestion.steps?.length ? (
+                      <div>
+                        <Text type="secondary">重试步骤</Text>
+                        <ul style={{ margin: '4px 0', paddingLeft: 20 }}>
+                          {retrySuggestion.steps.map((item, index) => <li key={index}>{item}</li>)}
+                        </ul>
+                      </div>
+                    ) : null}
+                    {retrySuggestion.retry_request?.enabled && task && onRetryTask && (
+                      <Button
+                        size="small"
+                        type={retrySuggestion.force_required ? 'default' : 'primary'}
+                        icon={<ReloadOutlined />}
+                        loading={retrying}
+                        disabled={retryDisabled}
+                        onClick={handleSuggestedRetry}
+                      >
+                        {retrySuggestion.force_required ? '确认后强制重试' : '按建议重试'}
+                      </Button>
+                    )}
+                  </Space>
+                </div>
+              )}
             </Space>
           }
         />
@@ -723,12 +804,12 @@ export const TasksPage: React.FC = () => {
     }
   };
 
-  const handleRetryTask = async (task: any) => {
+  const handleRetryTask = async (task: any, force: boolean = false) => {
     if (!task?.task_id || executing || retryingTaskId) return;
     setExecuting(true);
     setRetryingTaskId(task.task_id);
     try {
-      const res = await api.retryTask(task.task_id);
+      const res = await api.retryTask(task.task_id, force);
       const data = res.data;
       setCurrentTask(data);
       setSuggestions([]);
@@ -981,7 +1062,15 @@ export const TasksPage: React.FC = () => {
             {
               key: 'trace',
               label: <span><DeploymentUnitOutlined /> 执行树</span>,
-              children: <TaskTracePanel taskId={currentTask.task_id} />,
+              children: (
+                <TaskTracePanel
+                  taskId={currentTask.task_id}
+                  task={currentTask}
+                  onRetryTask={handleRetryTask}
+                  retrying={retryingTaskId === currentTask.task_id}
+                  retryDisabled={executing && retryingTaskId !== currentTask.task_id}
+                />
+              ),
             },
             {
               key: 'events',

@@ -383,6 +383,7 @@ export const api = {
   getTaskEvents: (taskId: string) => axios.get(`${API_BASE}/tasks/${taskId}/events`),
   getTaskTrace: (taskId: string, params?: object) => axios.get(`${API_BASE}/tasks/${taskId}/trace`, { params }),
   getTaskDiagnosis: (taskId: string) => axios.get(`${API_BASE}/tasks/${taskId}/diagnosis`),
+  getTaskRetrySuggestion: (taskId: string) => axios.get(`${API_BASE}/tasks/${taskId}/retry-suggestion`),
 
   // Workers
   listWorkers: () => axios.get(`${API_BASE}/workers`),
@@ -496,7 +497,7 @@ export const api = {
 
   // 任务取消
   cancelTask: (id: string) => axios.post(`${API_BASE}/tasks/${id}/cancel`),
-  retryTask: (id: string) => axios.post(`${API_BASE}/tasks/${id}/retry`),
+  retryTask: (id: string, force: boolean = false) => axios.post(`${API_BASE}/tasks/${id}/retry`, { force }),
 
   // 文档 chunks + 搜索
   getDocumentChunks: (docId: string) => axios.get(`${API_BASE}/documents/${docId}/chunks`),

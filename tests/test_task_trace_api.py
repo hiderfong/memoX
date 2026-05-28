@@ -194,3 +194,66 @@ def test_task_trace_returns_404_for_unknown_task(tmp_path, monkeypatch):
 
     assert response.status_code == 404
     store.close()
+
+
+def test_task_retry_suggestion_for_retryable_failure(tmp_path, monkeypatch):
+    store = PersistenceStore(tmp_path / "trace.db")
+    store.save_task({"task_id": "task_retry", "description": "重试任务", "status": "failed"})
+    store.save_task_job_request("task_retry", "重试任务")
+    store.add_task_event(
+        "task_retry",
+        "failed_retryable",
+        "任务失败，可重试",
+        {"failure_type": "retryable_exception", "retryable": True},
+    )
+
+    client = _client_with_store(monkeypatch, store)
+    response = client.get("/api/tasks/task_retry/retry-suggestion")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["mode"] == "manual_retry"
+    assert payload["retryable"] is True
+    assert payload["force_required"] is False
+    assert payload["retry_request"] == {
+        "enabled": True,
+        "method": "POST",
+        "path": "/api/tasks/task_retry/retry",
+        "body": {"force": False},
+    }
+    store.close()
+
+
+def test_task_retry_suggestion_flags_force_after_tool_blocker(tmp_path, monkeypatch):
+    store = PersistenceStore(tmp_path / "trace.db")
+    store.save_task({"task_id": "task_blocked", "description": "阻塞任务", "status": "failed"})
+    store.save_task_job_request("task_blocked", "阻塞任务")
+    store.add_task_event(
+        "task_blocked",
+        "failed_non_retryable",
+        "任务失败，需人工处理",
+        {"failure_type": "non_retryable_exception", "retryable": False},
+    )
+    store.log_audit_event(
+        action="tool_call",
+        resource="tool",
+        resource_id="database_query",
+        details={
+            "task_id": "task_blocked",
+            "worker_id": "writer",
+            "status": "rejected",
+            "arguments": {"query": {"statement_type": "update"}},
+        },
+    )
+
+    client = _client_with_store(monkeypatch, store)
+    response = client.get("/api/tasks/task_blocked/retry-suggestion")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["mode"] == "manual_force_after_fix"
+    assert payload["retryable"] is False
+    assert payload["force_required"] is True
+    assert payload["retry_request"]["body"] == {"force": True}
+    assert any(blocker["type"] == "tool_policy_rejection" for blocker in payload["blockers"])
+    store.close()

@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-from coordinator.task_jobs import TaskJobRequest, TaskJobRunner
+from coordinator.task_jobs import RETRYABLE_FAILURE_TYPES, TaskJobRequest, TaskJobRunner
 from web.state import get_store as _gs
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
@@ -681,6 +681,110 @@ def _build_task_diagnosis(trace: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _build_task_retry_suggestion(
+    task_id: str,
+    task: dict[str, Any],
+    job: dict[str, Any] | None,
+    events: list[dict],
+    trace: dict[str, Any],
+    diagnosis: dict[str, Any],
+) -> dict[str, Any]:
+    status = str(task.get("status") or trace.get("status") or "unknown")
+    latest_failure = _latest_failure_from_events(events)
+    failure_type = str(latest_failure.get("failure_type") or "")
+    retryable_without_force = status == "timeout" or bool(latest_failure.get("retryable")) or failure_type in RETRYABLE_FAILURE_TYPES
+    active = status in {"pending", "queued", "running"} or bool((job or {}).get("lease_owner"))
+    waiting_auto_retry = bool((job or {}).get("next_retry_at"))
+    terminal = status in {"completed", "failed", "cancelled", "timeout"}
+    diagnosis_metrics = diagnosis.get("metrics") if isinstance(diagnosis.get("metrics"), dict) else {}
+
+    blockers: list[dict[str, str]] = []
+    steps: list[str] = []
+
+    if active:
+        blockers.append({"type": "task_active", "message": "任务仍在运行或持有执行租约，当前不应重复入队。"})
+    if waiting_auto_retry:
+        blockers.append({
+            "type": "auto_retry_scheduled",
+            "message": f"任务已安排自动重试：{job.get('next_retry_at')}",
+        })
+    if status == "completed":
+        blockers.append({"type": "already_completed", "message": "任务已完成，通常不需要重试。"})
+    if diagnosis_metrics.get("tool_rejected_count", 0) > 0:
+        blockers.append({
+            "type": "tool_policy_rejection",
+            "message": "存在工具策略拦截；直接重试大概率会再次失败，需先修正工具参数或策略。",
+        })
+        _append_unique(steps, "先按诊断证据检查被拦截的工具调用，修正参数、输入路径或工具策略。")
+    if diagnosis_metrics.get("fallback_count", 0) > 0 or diagnosis_metrics.get("retry_count", 0) > 0:
+        _append_unique(steps, "确认主 provider 的模型名、限流、超时和网络状态；保留 fallback 路由后再重试。")
+    if status == "timeout" or failure_type == "timeout":
+        _append_unique(steps, "优先从 checkpoint 续跑；必要时提高 timeout_seconds 或拆小子任务。")
+    if diagnosis_metrics.get("failed_subtasks"):
+        _append_unique(steps, "先按失败子任务过滤执行树，确认失败集中在哪个 worker 或工具。")
+
+    hard_blocked = active or waiting_auto_retry or status == "completed"
+    force_required = terminal and status == "failed" and not retryable_without_force and not hard_blocked
+    retry_enabled = terminal and not hard_blocked and (retryable_without_force or force_required)
+
+    if retry_enabled and force_required:
+        mode = "manual_force_after_fix"
+        headline = "可在修复阻塞点后强制重试"
+        _append_unique(steps, "确认上述阻塞点已处理后，使用 force=true 重新入队。")
+    elif retry_enabled:
+        mode = "manual_retry"
+        headline = "适合手动重试"
+        _append_unique(steps, "使用现有 checkpoint 重新入队，系统会跳过已完成子任务。")
+    elif waiting_auto_retry:
+        mode = "wait_auto_retry"
+        headline = "建议等待自动重试"
+    elif active:
+        mode = "already_running"
+        headline = "任务仍在执行中"
+    elif status == "completed":
+        mode = "not_needed"
+        headline = "任务已完成，无需重试"
+    else:
+        mode = "blocked"
+        headline = "暂不建议直接重试"
+
+    if not steps:
+        _append_unique(steps, "查看诊断证据和执行树筛选项，确认失败原因后再决定是否重试。")
+
+    confidence = "high"
+    if force_required or diagnosis_metrics.get("tool_rejected_count", 0) > 0:
+        confidence = "medium"
+    if not events:
+        confidence = "low"
+
+    return {
+        "task_id": task_id,
+        "status": status,
+        "mode": mode,
+        "headline": headline,
+        "retryable": retry_enabled and not force_required,
+        "force_required": force_required,
+        "confidence": confidence,
+        "latest_failure": latest_failure,
+        "blockers": blockers,
+        "steps": steps,
+        "retry_request": {
+            "enabled": retry_enabled,
+            "method": "POST",
+            "path": f"/api/tasks/{task_id}/retry",
+            "body": {"force": force_required},
+        },
+        "diagnosis_level": diagnosis.get("level", "ok"),
+        "metrics": {
+            "failure_count": diagnosis_metrics.get("failure_count", 0),
+            "retry_count": diagnosis_metrics.get("retry_count", 0),
+            "fallback_count": diagnosis_metrics.get("fallback_count", 0),
+            "tool_rejected_count": diagnosis_metrics.get("tool_rejected_count", 0),
+            "llm_usage": diagnosis_metrics.get("llm_usage", {}),
+        },
+    }
+
+
 @router.post("")
 async def create_task(request: TaskRequest) -> dict:
     """创建后台任务，并立即返回可轮询的任务记录。"""
@@ -811,6 +915,28 @@ async def get_task_trace(
 async def get_task_diagnosis(task_id: str) -> dict:
     """获取任务排障诊断摘要。"""
     return _build_task_diagnosis(_load_task_trace_payload(task_id))
+
+
+@router.get("/{task_id}/retry-suggestion")
+async def get_task_retry_suggestion(task_id: str) -> dict:
+    """获取失败任务的重试建议。"""
+    store = _gs()
+    if not store:
+        raise HTTPException(status_code=500, detail="Persistence store not initialized")
+    task = store.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    events = store.list_task_events(task_id)
+    trace = _load_task_trace_payload(task_id)
+    diagnosis = _build_task_diagnosis(trace)
+    return _build_task_retry_suggestion(
+        task_id,
+        task,
+        store.get_task_job_request(task_id),
+        events,
+        trace,
+        diagnosis,
+    )
 
 
 @router.get("/{task_id}")
