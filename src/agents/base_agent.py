@@ -474,10 +474,17 @@ class AnthropicProvider(LLMProvider):
 class OpenAIProvider(LLMProvider):
     """OpenAI Provider"""
 
-    def __init__(self, api_key: str, base_url: str = "https://api.openai.com/v1", headers: dict = None):
+    def __init__(
+        self,
+        api_key: str,
+        base_url: str = "https://api.openai.com/v1",
+        headers: dict = None,
+        preserve_reasoning_content: bool = False,
+    ):
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.extra_headers = headers or {}
+        self.preserve_reasoning_content = preserve_reasoning_content
 
     async def chat(self, messages: list[dict], model: str, **kwargs) -> LLMResponse:
         """发送聊天请求"""
@@ -517,6 +524,7 @@ class OpenAIProvider(LLMProvider):
 
             return LLMResponse(
                 content=message.get("content"),
+                reasoning_content=message.get("reasoning_content"),
                 tool_calls=tool_calls,
                 finish_reason=choice.get("finish_reason", "stop"),
                 usage=data.get("usage", {}),
@@ -769,4 +777,6 @@ def create_provider(
         call_kwargs["base_url"] = base_url
     if headers and ptype in ("openai", "kimi"):
         call_kwargs["headers"] = headers
+    if ptype == "kimi":
+        call_kwargs["preserve_reasoning_content"] = True
     return provider_class(api_key, **call_kwargs)

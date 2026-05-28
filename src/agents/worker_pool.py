@@ -334,11 +334,17 @@ class WorkerAgent:
                     })
                 else:
                     # OpenAI 格式：assistant message 带 tool_calls 字段
-                    messages.append({
+                    assistant_message = {
                         "role": "assistant",
                         "content": response.content or "",
                         "tool_calls": [tc.to_dict() for tc in response.tool_calls],
-                    })
+                    }
+                    if (
+                        response.reasoning_content
+                        and getattr(self.provider, "preserve_reasoning_content", False)
+                    ):
+                        assistant_message["reasoning_content"] = response.reasoning_content
+                    messages.append(assistant_message)
                     for tool_call, result in tool_results:
                         messages.append({
                             "role": "tool",
