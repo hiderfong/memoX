@@ -55,6 +55,9 @@ providers:
     base_url: "https://api.kimi.com/coding/v1"
     headers:
       User-Agent: "claude-code/0.1.0"
+  deepseek:
+    api_key: "${DEEPSEEK_API_KEY}"
+    base_url: "https://api.deepseek.com"
 
 worker_templates:
   code_worker:

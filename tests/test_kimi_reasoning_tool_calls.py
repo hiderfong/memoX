@@ -87,3 +87,10 @@ def test_kimi_provider_requests_reasoning_preservation():
     )
 
     assert getattr(provider, "preserve_reasoning_content", False) is True
+
+
+def test_deepseek_provider_uses_openai_compatible_defaults():
+    provider = create_provider("deepseek", "test-key")
+
+    assert provider.base_url == "https://api.deepseek.com"
+    assert getattr(provider, "preserve_reasoning_content", False) is True

@@ -128,6 +128,7 @@ async def test_list_providers_exposes_server_side_status(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-key")
     monkeypatch.delenv("KIMI_API_KEY", raising=False)
 
     from config import Config
@@ -149,6 +150,10 @@ async def test_list_providers_exposes_server_side_status(
                 "kimi": {
                     "api_key": "${KIMI_API_KEY}",
                     "base_url": "https://api.kimi.com/coding/v1",
+                },
+                "deepseek": {
+                    "api_key": "${DEEPSEEK_API_KEY}",
+                    "base_url": "https://api.deepseek.com",
                 },
                 "google": {
                     "api_key": "google-key",
@@ -183,6 +188,11 @@ async def test_list_providers_exposes_server_side_status(
     assert result["kimi"]["env_var"] == "KIMI_API_KEY"
     assert "worker:coder" in result["kimi"]["used_by"]
     assert "API Key 未配置" in result["kimi"]["warnings"][0]
+
+    assert result["deepseek"]["configured"] is True
+    assert result["deepseek"]["supported"] is True
+    assert result["deepseek"]["env_var"] == "DEEPSEEK_API_KEY"
+    assert "deepseek-key" not in serialized
 
     assert result["google"]["configured"] is True
     assert result["google"]["supported"] is False

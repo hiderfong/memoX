@@ -45,6 +45,9 @@ providers:
     base_url: "https://api.kimi.com/coding/v1"  # Kimi Coding Plan
     headers:
       User-Agent: "claude-code/0.1.0"  # Kimi Coding Plan requires this header
+  deepseek:
+    api_key: "${DEEPSEEK_API_KEY}"
+    base_url: "https://api.deepseek.com"
   dashscope:
     api_key: "${DASHSCOPE_API_KEY}"  # 阿里云 DashScope (OpenAI 兼容模式)
     base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"

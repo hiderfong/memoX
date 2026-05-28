@@ -743,6 +743,7 @@ SUPPORTED_PROVIDER_TYPES = frozenset({
     "openai",
     "minimax",
     "kimi",
+    "deepseek",
     "dashscope",
 })
 
@@ -764,6 +765,7 @@ def create_provider(
         "openai": OpenAIProvider,
         "minimax": MiniMaxProvider,
         "kimi": OpenAIProvider,  # Kimi 使用 OpenAI 兼容 API
+        "deepseek": OpenAIProvider,  # DeepSeek 使用 OpenAI 兼容 API
         "dashscope": OpenAIProvider,  # 阿里云 DashScope 使用 OpenAI 兼容 API
     }
 
@@ -775,8 +777,10 @@ def create_provider(
     call_kwargs = dict(kwargs)
     if base_url:
         call_kwargs["base_url"] = base_url
-    if headers and ptype in ("openai", "kimi"):
+    elif ptype == "deepseek":
+        call_kwargs["base_url"] = "https://api.deepseek.com"
+    if headers and ptype in ("openai", "kimi", "deepseek"):
         call_kwargs["headers"] = headers
-    if ptype == "kimi":
+    if ptype in ("kimi", "deepseek"):
         call_kwargs["preserve_reasoning_content"] = True
     return provider_class(api_key, **call_kwargs)
