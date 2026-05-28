@@ -713,6 +713,28 @@ class IterativeOrchestrator:
                 },
             )
 
+        usage_match = re.match(
+            r"^llm_usage: worker=(?P<worker_id>\S+) input=(?P<input_tokens>\d+) "
+            r"output=(?P<output_tokens>\d+) call=(?P<call_count>\d+)$",
+            message,
+        )
+        if usage_match:
+            details = usage_match.groupdict()
+            input_tokens = int(details["input_tokens"])
+            output_tokens = int(details["output_tokens"])
+            return (
+                "llm_usage",
+                {
+                    "subtask_id": subtask_id,
+                    "iteration": iteration,
+                    "worker_id": details["worker_id"],
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens,
+                    "total_tokens": input_tokens + output_tokens,
+                    "call_count": int(details["call_count"]),
+                },
+            )
+
         return None
 
     def _merge(self, task: Task) -> str:

@@ -196,6 +196,7 @@ class WorkerAgent:
         # 状态
         self._running = False
         self._current_task_id: str | None = None
+        self._current_parent_task_id: str | None = None
         # 改进指令（由 IterativeOrchestrator 在每轮迭代前注入）
         self.refinement_hint: str | None = None
 
@@ -262,6 +263,14 @@ class WorkerAgent:
         }
         with self._log_lock:
             self._log_buffer.append(entry)
+        store = get_store()
+        if store:
+            try:
+                store.add_worker_log(self.id, level, message, entry["meta"], created_at=entry["timestamp"])
+            except Exception as exc:
+                logger.warning(
+                    f"Worker {self.id}: worker log persistence failed: {type(exc).__name__}: {exc}"
+                )
 
     def get_logs(self, limit: int = 50) -> list[dict]:
         """获取最近 limit 条日志"""
@@ -296,13 +305,19 @@ class WorkerAgent:
         """执行子任务"""
         self._running = True
         self._current_task_id = task.id
+        parent_task_id = str((context or {}).get("_task_id") or task.id)
+        self._current_parent_task_id = parent_task_id
         self.tools.set_audit_context({
             "worker_id": self.id,
             "worker_name": self.config.name,
-            "task_id": task.id,
+            "task_id": parent_task_id,
             "subtask_id": task.id,
         })
-        self.add_log("info", f"任务开始: {task.description[:60]}...", {"task_id": task.id})
+        self.add_log(
+            "info",
+            f"任务开始: {task.description[:60]}...",
+            {"task_id": parent_task_id, "subtask_id": task.id},
+        )
 
         logger.info(f"Worker {self.id} starting task {task.id}: {task.description[:50]}...")
 
@@ -337,19 +352,25 @@ class WorkerAgent:
 
             self._running = False
             self._current_task_id = None
+            self._current_parent_task_id = None
             self.tools.set_audit_context({})
-            self.add_log("info", "任务完成", {"task_id": task.id, "result_len": len(result)})
+            self.add_log(
+                "info",
+                "任务完成",
+                {"task_id": parent_task_id, "subtask_id": task.id, "result_len": len(result)},
+            )
 
             logger.info(f"Worker {self.id} completed task {task.id}")
             return result, None
 
         except Exception as e:
             error_msg = f"Error: {type(e).__name__}: {str(e)}"
-            self.add_log("error", error_msg, {"task_id": task.id})
+            self.add_log("error", error_msg, {"task_id": parent_task_id, "subtask_id": task.id})
             logger.error(f"Worker {self.id} failed task {task.id}: {e}")
 
             self._running = False
             self._current_task_id = None
+            self._current_parent_task_id = None
             self.tools.set_audit_context({})
 
             return "", error_msg
@@ -391,7 +412,21 @@ class WorkerAgent:
                     logger.warning(
                         f"Worker {self.id}: token usage persistence failed: {type(exc).__name__}: {exc}"
                     )
-            self.add_log("info", "LLM 调用完成", {"input_tokens": inp, "output_tokens": out, "call_count": self.call_count})
+            self.add_log(
+                "info",
+                "LLM 调用完成",
+                {
+                    "task_id": self._current_parent_task_id or self._current_task_id or "",
+                    "subtask_id": self._current_task_id or "",
+                    "input_tokens": inp,
+                    "output_tokens": out,
+                    "call_count": self.call_count,
+                },
+            )
+            if on_progress:
+                on_progress(
+                    f"llm_usage: worker={self.id} input={inp} output={out} call={self.call_count}"
+                )
 
             # 检查是否有工具调用
             if response.has_tool_calls:

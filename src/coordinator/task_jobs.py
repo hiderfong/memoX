@@ -822,6 +822,7 @@ class TaskJobRunner:
             "iteration_started": f"第 {int(details.get('iteration', 0)) + 1} 轮迭代开始",
             "subtask_pending": f"子任务 {subtask_id} 等待执行",
             "subtask_running": f"子任务 {subtask_id} 开始执行",
+            "llm_usage": f"子任务 {subtask_id} LLM 调用完成",
             "provider_retry": f"子任务 {subtask_id} provider 调用失败，正在重试",
             "provider_fallback": f"子任务 {subtask_id} 已切换 fallback provider",
             "subtask_retry_scheduled": f"子任务 {subtask_id} 执行失败，已安排重试",

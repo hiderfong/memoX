@@ -157,6 +157,35 @@ def test_task_events_round_trip(tmp_path):
     store.close()
 
 
+def test_worker_logs_round_trip_and_filters(tmp_path):
+    store = PersistenceStore(tmp_path / "test.db")
+    store.add_worker_log(
+        "researcher",
+        "info",
+        "LLM 调用完成",
+        {"task_id": "task_1", "subtask_id": "sub_1", "input_tokens": 10, "output_tokens": 5},
+        created_at="2026-05-28T10:00:00",
+    )
+    store.add_worker_log(
+        "writer",
+        "error",
+        "工具失败",
+        {"task_id": "task_1", "subtask_id": "sub_2"},
+        created_at="2026-05-28T10:01:00",
+    )
+
+    task_logs = store.list_worker_logs(task_id="task_1")
+    researcher_logs = store.list_worker_logs(worker_id="researcher")
+    subtask_logs = store.list_worker_logs(subtask_id="sub_2", level="error")
+
+    assert [log["worker_id"] for log in task_logs] == ["writer", "researcher"]
+    assert researcher_logs[0]["meta"]["input_tokens"] == 10
+    assert subtask_logs[0]["message"] == "工具失败"
+    assert store.delete_worker_logs("researcher") == 1
+    assert [log["worker_id"] for log in store.list_worker_logs(task_id="task_1")] == ["writer"]
+    store.close()
+
+
 def test_task_job_auto_retry_schedule_round_trip(tmp_path):
     store = PersistenceStore(tmp_path / "test.db")
     store.save_task({"task_id": "retry_1", "description": "retry", "status": "timeout"})
@@ -275,7 +304,7 @@ def test_runtime_schema_matches_memory_and_summary_migrations(tmp_path):
     store = PersistenceStore(tmp_path / "test.db")
 
     assert store.schema_version() == SCHEMA_VERSION
-    assert [item["version"] for item in store.applied_migrations()] == [1, 2, 3, 4, 5, 6]
+    assert [item["version"] for item in store.applied_migrations()] == [1, 2, 3, 4, 5, 6, 7]
 
     session_cols = {
         r["name"] for r in store._conn.execute("PRAGMA table_info(chat_sessions)").fetchall()
@@ -292,6 +321,18 @@ def test_runtime_schema_matches_memory_and_summary_migrations(tmp_path):
         "auto_retry_count",
         "next_retry_at",
     }.issubset(task_job_cols)
+    worker_log_cols = {
+        r["name"] for r in store._conn.execute("PRAGMA table_info(worker_logs)").fetchall()
+    }
+    assert {
+        "worker_id",
+        "level",
+        "message",
+        "task_id",
+        "subtask_id",
+        "meta",
+        "created_at",
+    }.issubset(worker_log_cols)
 
     tables = {
         r["name"]
@@ -349,11 +390,11 @@ def test_legacy_database_is_migrated_without_losing_sessions(tmp_path):
         "summary": "",
     }
     assert store.schema_version() == SCHEMA_VERSION
-    assert [item["version"] for item in store.applied_migrations()] == [1, 2, 3, 4, 5, 6]
+    assert [item["version"] for item in store.applied_migrations()] == [1, 2, 3, 4, 5, 6, 7]
     store.close()
 
     reopened = PersistenceStore(db_path)
-    assert [item["version"] for item in reopened.applied_migrations()] == [1, 2, 3, 4, 5, 6]
+    assert [item["version"] for item in reopened.applied_migrations()] == [1, 2, 3, 4, 5, 6, 7]
     reopened.close()
 
 
@@ -415,7 +456,11 @@ def test_legacy_task_jobs_table_gains_lease_columns(tmp_path):
     assert request["last_recovered_at"] == ""
     assert request["auto_retry_count"] == 0
     assert request["next_retry_at"] == ""
-    assert [item["version"] for item in store.applied_migrations()] == [1, 2, 3, 4, 5, 6]
+    worker_log_cols = {
+        r["name"] for r in store._conn.execute("PRAGMA table_info(worker_logs)").fetchall()
+    }
+    assert {"worker_id", "task_id", "subtask_id", "meta"}.issubset(worker_log_cols)
+    assert [item["version"] for item in store.applied_migrations()] == [1, 2, 3, 4, 5, 6, 7]
     store.close()
 
 
@@ -428,7 +473,7 @@ def test_sqlite_health_reports_schema_version_and_migrations(tmp_path):
 
     assert result["status"] == "ok"
     assert result["schema_version"] == SCHEMA_VERSION
-    assert [item["version"] for item in result["migrations"]] == [1, 2, 3, 4, 5, 6]
+    assert [item["version"] for item in result["migrations"]] == [1, 2, 3, 4, 5, 6, 7]
 
 
 def test_future_database_schema_is_rejected(tmp_path):

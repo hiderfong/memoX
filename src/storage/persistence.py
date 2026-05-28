@@ -8,7 +8,7 @@ from pathlib import Path
 
 from loguru import logger
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 class SchemaMigrationError(RuntimeError):
@@ -107,6 +107,20 @@ class PersistenceStore:
                 call_count INTEGER NOT NULL DEFAULT 0,
                 updated_at TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS worker_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                worker_id TEXT NOT NULL,
+                level TEXT NOT NULL,
+                message TEXT NOT NULL,
+                task_id TEXT DEFAULT '',
+                subtask_id TEXT DEFAULT '',
+                meta TEXT DEFAULT '{}',
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_worker_logs_worker_created ON worker_logs(worker_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_worker_logs_task_created ON worker_logs(task_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_worker_logs_subtask_created ON worker_logs(subtask_id, created_at DESC);
 
             CREATE INDEX IF NOT EXISTS idx_messages_session ON chat_messages(session_id);
             CREATE INDEX IF NOT EXISTS idx_task_created ON task_history(created_at);
@@ -215,6 +229,7 @@ class PersistenceStore:
             (4, "task_job_leases", self._migration_task_job_leases),
             (5, "task_job_recovery_metadata", self._migration_task_job_recovery_metadata),
             (6, "task_job_auto_retry_metadata", self._migration_task_job_auto_retry_metadata),
+            (7, "worker_logs_table", self._migration_worker_logs_table),
         ]
         applied = {
             row["version"]
@@ -288,6 +303,23 @@ class PersistenceStore:
         if "next_retry_at" not in cols:
             self._conn.execute("ALTER TABLE task_jobs ADD COLUMN next_retry_at TEXT DEFAULT ''")
         self._conn.execute("CREATE INDEX IF NOT EXISTS idx_task_jobs_next_retry ON task_jobs(next_retry_at)")
+
+    def _migration_worker_logs_table(self) -> None:
+        self._conn.executescript("""
+            CREATE TABLE IF NOT EXISTS worker_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                worker_id TEXT NOT NULL,
+                level TEXT NOT NULL,
+                message TEXT NOT NULL,
+                task_id TEXT DEFAULT '',
+                subtask_id TEXT DEFAULT '',
+                meta TEXT DEFAULT '{}',
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_worker_logs_worker_created ON worker_logs(worker_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_worker_logs_task_created ON worker_logs(task_id, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_worker_logs_subtask_created ON worker_logs(subtask_id, created_at DESC);
+        """)
 
     def schema_version(self) -> int:
         row = self._conn.execute("PRAGMA user_version").fetchone()
@@ -1179,6 +1211,93 @@ class PersistenceStore:
         """重置 Worker 的 token 用量"""
         self._conn.execute("DELETE FROM worker_token_usage WHERE worker_id = ?", (worker_id,))
         self._conn.commit()
+
+    # ==================== Worker 日志 ====================
+
+    @staticmethod
+    def _worker_log_row_to_dict(row: sqlite3.Row) -> dict:
+        try:
+            meta = json.loads(row["meta"] or "{}")
+        except json.JSONDecodeError:
+            meta = {}
+        return {
+            "id": row["id"],
+            "worker_id": row["worker_id"],
+            "level": row["level"],
+            "message": row["message"],
+            "task_id": row["task_id"] or "",
+            "subtask_id": row["subtask_id"] or "",
+            "meta": meta,
+            "created_at": row["created_at"],
+        }
+
+    def add_worker_log(
+        self,
+        worker_id: str,
+        level: str,
+        message: str,
+        meta: dict | None = None,
+        created_at: str | None = None,
+    ) -> dict:
+        """持久化一条 Worker 日志，便于任务 trace 历史排障。"""
+        meta = meta or {}
+        task_id = str(meta.get("task_id") or "")
+        subtask_id = str(meta.get("subtask_id") or "")
+        cursor = self._conn.execute(
+            """INSERT INTO worker_logs
+               (worker_id, level, message, task_id, subtask_id, meta, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (
+                worker_id,
+                level,
+                message,
+                task_id,
+                subtask_id,
+                json.dumps(meta, ensure_ascii=False),
+                created_at or datetime.now().isoformat(),
+            ),
+        )
+        self._conn.commit()
+        row = self._conn.execute("SELECT * FROM worker_logs WHERE id=?", (cursor.lastrowid,)).fetchone()
+        return self._worker_log_row_to_dict(row)
+
+    def list_worker_logs(
+        self,
+        worker_id: str | None = None,
+        task_id: str | None = None,
+        subtask_id: str | None = None,
+        level: str | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict]:
+        """分页查询 Worker 日志。"""
+        query = "SELECT * FROM worker_logs WHERE 1=1"
+        params: list = []
+        if worker_id:
+            query += " AND worker_id=?"
+            params.append(worker_id)
+        if task_id:
+            query += " AND task_id=?"
+            params.append(task_id)
+        if subtask_id:
+            query += " AND subtask_id=?"
+            params.append(subtask_id)
+        if level:
+            query += " AND level=?"
+            params.append(level)
+        query += " ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        rows = self._conn.execute(query, params).fetchall()
+        return [self._worker_log_row_to_dict(row) for row in rows]
+
+    def delete_worker_logs(self, worker_id: str | None = None) -> int:
+        """删除 Worker 日志。未指定 worker_id 时删除全部。"""
+        if worker_id:
+            cursor = self._conn.execute("DELETE FROM worker_logs WHERE worker_id=?", (worker_id,))
+        else:
+            cursor = self._conn.execute("DELETE FROM worker_logs")
+        self._conn.commit()
+        return cursor.rowcount
 
     # ── 审计日志 ──────────────────────────────────────────────
 

@@ -154,6 +154,303 @@ export const TaskEventsPanel: React.FC<{ taskId: string }> = ({ taskId }) => {
   );
 };
 
+type TaskTraceEvent = {
+  id?: number | string;
+  event_type: string;
+  label: string;
+  message?: string;
+  stage: string;
+  severity: string;
+  subtask_id?: string;
+  actor?: Record<string, string>;
+  details?: Record<string, any>;
+  created_at?: string;
+};
+
+type TaskTraceSubtask = {
+  id: string;
+  description?: string;
+  status?: string;
+  assigned_agent?: string;
+  attempts?: number;
+  dependencies?: string[];
+  acceptance_criteria?: string[];
+  result_preview?: string;
+  error?: string;
+  events?: TaskTraceEvent[];
+};
+
+type TaskDiagnosis = {
+  level: 'ok' | 'warning' | 'critical';
+  headline: string;
+  root_causes?: string[];
+  recommendations?: string[];
+  evidence?: TaskTraceEvent[];
+  metrics?: Record<string, any>;
+  generated_at?: string;
+};
+
+const traceEventColor = (severity: string) => {
+  if (severity === 'success') return 'green';
+  if (severity === 'error') return 'red';
+  if (severity === 'warning') return 'orange';
+  if (severity === 'processing') return 'blue';
+  return 'gray';
+};
+
+const traceStatusTag = (status?: string) => {
+  const config: Record<string, { color: string; text: string }> = {
+    pending: { color: 'default', text: '等待中' },
+    running: { color: 'processing', text: '执行中' },
+    completed: { color: 'success', text: '已完成' },
+    failed: { color: 'error', text: '失败' },
+    cancelled: { color: 'warning', text: '已取消' },
+    timeout: { color: 'warning', text: '超时' },
+    unknown: { color: 'default', text: '未知' },
+  };
+  const c = config[status || 'unknown'] || { color: 'default', text: status || '未知' };
+  return <Tag color={c.color}>{c.text}</Tag>;
+};
+
+const renderTraceEventItems = (events: TaskTraceEvent[]) => (
+  <Timeline
+    items={events.map((event) => {
+      const actor = event.actor || {};
+      const showDetails = ['provider', 'tool', 'llm'].includes(event.stage) || event.severity === 'warning' || event.severity === 'error';
+      return {
+        color: traceEventColor(event.severity),
+        children: (
+          <Space direction="vertical" size={4} style={{ width: '100%' }}>
+            <Space size={6} wrap>
+              <Tag color={traceEventColor(event.severity)}>{event.label || event.event_type}</Tag>
+              <Tag>{event.stage}</Tag>
+              {actor.worker_id && <Tag color="purple">{actor.worker_id}</Tag>}
+              {actor.worker && <Tag color="purple">{actor.worker}</Tag>}
+              {actor.provider && <Tag color="geekblue">{actor.provider}</Tag>}
+              {actor.model && <Tag color="cyan">{actor.model}</Tag>}
+              {event.created_at && <Text type="secondary">{dayjs(event.created_at).format('YYYY-MM-DD HH:mm:ss')}</Text>}
+            </Space>
+            {event.message && <Text>{event.message}</Text>}
+            {showDetails && event.details && Object.keys(event.details).length > 0 && (
+              <pre style={{ margin: 0, fontSize: 12, whiteSpace: 'pre-wrap', background: '#fafafa', padding: 8, borderRadius: 4 }}>
+                {JSON.stringify(event.details, null, 2)}
+              </pre>
+            )}
+          </Space>
+        ),
+      };
+    })}
+  />
+);
+
+export const TaskTracePanel: React.FC<{ taskId: string }> = ({ taskId }) => {
+  const [trace, setTrace] = useState<any>(null);
+  const [loading, setLoading] = useState(false);
+  const [filters, setFilters] = useState<Record<string, string>>({});
+  const [diagnosis, setDiagnosis] = useState<TaskDiagnosis | null>(null);
+  const [diagnosisLoading, setDiagnosisLoading] = useState(false);
+
+  useEffect(() => {
+    if (!taskId) return;
+    setLoading(true);
+    const params = Object.fromEntries(Object.entries(filters).filter(([, value]) => value));
+    api.getTaskTrace(taskId, params)
+      .then(res => setTrace(res.data))
+      .catch(() => message.error('获取执行树失败'))
+      .finally(() => setLoading(false));
+  }, [taskId, filters.subtask_id, filters.worker_id, filters.tool_name, filters.stage, filters.severity, filters.event_type]);
+
+  if (loading) return <Spin />;
+  if (!trace) return <Empty description="暂无执行树" />;
+
+  const summary = trace.summary || {};
+  const subtasks: TaskTraceSubtask[] = trace.subtasks || [];
+  const taskEvents: TaskTraceEvent[] = trace.unassigned_events || [];
+  const runDiagnosis = async () => {
+    setDiagnosisLoading(true);
+    try {
+      const res = await api.getTaskDiagnosis(taskId);
+      setDiagnosis(res.data);
+    } catch {
+      message.error('生成诊断摘要失败');
+    } finally {
+      setDiagnosisLoading(false);
+    }
+  };
+  const diagnosisType = diagnosis?.level === 'critical' ? 'error' : diagnosis?.level === 'warning' ? 'warning' : 'success';
+
+  return (
+    <Space direction="vertical" size={16} style={{ width: '100%' }}>
+      <Space wrap>
+        <Select
+          size="small"
+          allowClear
+          placeholder="阶段"
+          style={{ width: 130 }}
+          value={filters.stage || undefined}
+          onChange={(value) => setFilters(prev => ({ ...prev, stage: value || '' }))}
+          options={[
+            { value: 'task', label: '任务' },
+            { value: 'planning', label: '规划' },
+            { value: 'iteration', label: '迭代' },
+            { value: 'subtask', label: '子任务' },
+            { value: 'provider', label: 'Provider' },
+            { value: 'llm', label: 'LLM' },
+            { value: 'tool', label: '工具' },
+            { value: 'worker_log', label: '日志' },
+            { value: 'recovery', label: '恢复' },
+          ]}
+        />
+        <Select
+          size="small"
+          allowClear
+          placeholder="级别"
+          style={{ width: 120 }}
+          value={filters.severity || undefined}
+          onChange={(value) => setFilters(prev => ({ ...prev, severity: value || '' }))}
+          options={[
+            { value: 'processing', label: '执行中' },
+            { value: 'success', label: '成功' },
+            { value: 'warning', label: '警告' },
+            { value: 'error', label: '错误' },
+            { value: 'default', label: '普通' },
+          ]}
+        />
+        <Input
+          size="small"
+          placeholder="子任务"
+          style={{ width: 150 }}
+          value={filters.subtask_id || ''}
+          onChange={(event) => setFilters(prev => ({ ...prev, subtask_id: event.target.value.trim() }))}
+        />
+        <Input
+          size="small"
+          placeholder="Worker"
+          style={{ width: 140 }}
+          value={filters.worker_id || ''}
+          onChange={(event) => setFilters(prev => ({ ...prev, worker_id: event.target.value.trim() }))}
+        />
+        <Input
+          size="small"
+          placeholder="工具"
+          style={{ width: 140 }}
+          value={filters.tool_name || ''}
+          onChange={(event) => setFilters(prev => ({ ...prev, tool_name: event.target.value.trim() }))}
+        />
+        <Button
+          size="small"
+          icon={<ReloadOutlined />}
+          onClick={() => setFilters({})}
+        >
+          清除
+        </Button>
+        <Button
+          size="small"
+          type="primary"
+          icon={<FileSearchOutlined />}
+          loading={diagnosisLoading}
+          onClick={runDiagnosis}
+        >
+          诊断
+        </Button>
+      </Space>
+
+      {diagnosis && (
+        <Alert
+          type={diagnosisType}
+          showIcon
+          message={
+            <Space wrap>
+              <Text strong>{diagnosis.headline}</Text>
+              {diagnosis.generated_at && <Text type="secondary">{dayjs(diagnosis.generated_at).format('YYYY-MM-DD HH:mm:ss')}</Text>}
+            </Space>
+          }
+          description={
+            <Space direction="vertical" size={8} style={{ width: '100%' }}>
+              {diagnosis.root_causes?.length ? (
+                <div>
+                  <Text type="secondary">可能原因</Text>
+                  <ul style={{ margin: '4px 0', paddingLeft: 20 }}>
+                    {diagnosis.root_causes.map((item, index) => <li key={index}>{item}</li>)}
+                  </ul>
+                </div>
+              ) : null}
+              {diagnosis.recommendations?.length ? (
+                <div>
+                  <Text type="secondary">建议动作</Text>
+                  <ul style={{ margin: '4px 0', paddingLeft: 20 }}>
+                    {diagnosis.recommendations.map((item, index) => <li key={index}>{item}</li>)}
+                  </ul>
+                </div>
+              ) : null}
+              <Space wrap>
+                <Tag>失败 {diagnosis.metrics?.failure_count || 0}</Tag>
+                <Tag>拦截 {diagnosis.metrics?.tool_rejected_count || 0}</Tag>
+                <Tag>Fallback {diagnosis.metrics?.fallback_count || 0}</Tag>
+                <Tag>Token 峰值 {diagnosis.metrics?.max_llm_call?.total_tokens || 0}</Tag>
+              </Space>
+              {diagnosis.evidence?.length ? (
+                <div>
+                  <Text type="secondary">关键证据</Text>
+                  {renderTraceEventItems(diagnosis.evidence)}
+                </div>
+              ) : null}
+            </Space>
+          }
+        />
+      )}
+
+      <Space wrap>
+        <Tag color="blue">事件 {summary.event_count || 0}</Tag>
+        <Tag color="purple">子任务 {summary.subtask_count || 0}</Tag>
+        <Tag color="orange">重试 {summary.retry_count || 0}</Tag>
+        <Tag color="geekblue">Fallback {summary.fallback_count || 0}</Tag>
+        <Tag color="cyan">工具 {summary.tool_call_count || 0}</Tag>
+        <Tag color={summary.tool_rejected_count ? 'orange' : 'green'}>拦截 {summary.tool_rejected_count || 0}</Tag>
+        <Tag>LLM {summary.llm_usage?.total_tokens || 0} tokens</Tag>
+        <Tag color={summary.failure_count ? 'red' : 'green'}>失败 {summary.failure_count || 0}</Tag>
+        {summary.last_event_at && <Text type="secondary">最近更新 {dayjs(summary.last_event_at).format('YYYY-MM-DD HH:mm:ss')}</Text>}
+      </Space>
+
+      {taskEvents.length > 0 && (
+        <div>
+          <Title level={5} style={{ marginTop: 0 }}>任务级事件</Title>
+          {renderTraceEventItems(taskEvents)}
+        </div>
+      )}
+
+      {subtasks.length > 0 ? (
+        <List
+          dataSource={subtasks}
+          renderItem={(subtask) => (
+            <List.Item style={{ alignItems: 'stretch', display: 'block', padding: '14px 0' }}>
+              <Space direction="vertical" size={10} style={{ width: '100%' }}>
+                <Space wrap>
+                  {traceStatusTag(subtask.status)}
+                  <Text strong>{subtask.id}</Text>
+                  <Text>{subtask.description || '未命名子任务'}</Text>
+                  {subtask.assigned_agent && <Tag color="purple">{subtask.assigned_agent}</Tag>}
+                  <Tag>尝试 {subtask.attempts || 0}</Tag>
+                  {subtask.dependencies?.length ? <Tag color="cyan">依赖 {subtask.dependencies.length}</Tag> : null}
+                </Space>
+                {subtask.error && <Alert type="error" showIcon message={subtask.error} />}
+                {subtask.result_preview && (
+                  <pre style={{ whiteSpace: 'pre-wrap', margin: 0, fontSize: 12, background: '#fafafa', padding: 8, borderRadius: 4 }}>
+                    {subtask.result_preview}
+                  </pre>
+                )}
+                {subtask.events?.length ? renderTraceEventItems(subtask.events) : <Text type="secondary">暂无子任务事件</Text>}
+              </Space>
+            </List.Item>
+          )}
+        />
+      ) : (
+        <Empty description="暂无子任务执行信息" />
+      )}
+    </Space>
+  );
+};
+
 // ==================== 任务执行页面 ====================
 
 export const TasksPage: React.FC = () => {
@@ -680,6 +977,11 @@ export const TasksPage: React.FC = () => {
               key: 'files',
               label: <span><FolderOpenOutlined /> 产物文件</span>,
               children: <TaskFilesPanel taskId={currentTask.task_id} />,
+            },
+            {
+              key: 'trace',
+              label: <span><DeploymentUnitOutlined /> 执行树</span>,
+              children: <TaskTracePanel taskId={currentTask.task_id} />,
             },
             {
               key: 'events',

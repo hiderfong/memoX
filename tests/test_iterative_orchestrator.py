@@ -52,6 +52,27 @@ def make_mock_rag_engine():
     return rag
 
 
+def test_progress_parser_records_llm_usage():
+    event = IterativeOrchestrator._provider_progress_event(
+        "sub_001",
+        "llm_usage: worker=researcher input=120 output=45 call=2",
+        iteration=3,
+    )
+
+    assert event == (
+        "llm_usage",
+        {
+            "subtask_id": "sub_001",
+            "iteration": 3,
+            "worker_id": "researcher",
+            "input_tokens": 120,
+            "output_tokens": 45,
+            "total_tokens": 165,
+            "call_count": 2,
+        },
+    )
+
+
 def test_run_returns_iteration_result(tmp_path):
     provider = make_mock_provider(score=0.9)
     planner = make_mock_planner()

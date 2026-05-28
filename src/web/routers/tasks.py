@@ -1,8 +1,10 @@
 """Tasks router"""
 import contextlib
+from datetime import datetime
 from pathlib import Path
+from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
 from coordinator.task_jobs import TaskJobRequest, TaskJobRunner
@@ -119,6 +121,566 @@ def _latest_failure_from_events(events: list[dict]) -> dict:
     return {}
 
 
+_TRACE_EVENT_LABELS = {
+    "queued": "任务已入队",
+    "recovery_queued": "恢复执行已入队",
+    "retry_queued": "手动重试已入队",
+    "auto_retry_queued": "自动重试已入队",
+    "auto_retry_scheduled": "自动重试已排期",
+    "auto_retry_exhausted": "自动重试次数已用尽",
+    "planned": "规划完成",
+    "task_running": "任务开始执行",
+    "running": "任务执行中",
+    "iteration_started": "迭代开始",
+    "subtask_pending": "子任务等待执行",
+    "subtask_running": "子任务开始执行",
+    "llm_usage": "LLM 调用完成",
+    "provider_retry": "Provider 调用重试",
+    "provider_fallback": "Provider fallback 切换",
+    "subtask_retry_scheduled": "子任务重试已排期",
+    "subtask_completed": "子任务完成",
+    "subtask_failed": "子任务失败",
+    "task_completed": "任务完成",
+    "completed": "任务完成",
+    "failed": "任务失败",
+    "failed_retryable": "任务失败，可重试",
+    "failed_non_retryable": "任务失败，需人工处理",
+    "timeout": "任务超时",
+    "cancel_requested": "取消请求已发送",
+    "cancelled": "任务已取消",
+    "lease_lost": "执行租约丢失",
+    "lease_lost_stopped": "本地执行已停止",
+}
+
+
+def _trace_event_stage(event_type: str) -> str:
+    if event_type.startswith("subtask_"):
+        return "subtask"
+    if event_type.startswith("provider_"):
+        return "provider"
+    if event_type == "llm_usage":
+        return "llm"
+    if "retry" in event_type or event_type in {"recovery_queued", "lease_lost", "lease_lost_stopped"}:
+        return "recovery"
+    if event_type.startswith("iteration_"):
+        return "iteration"
+    if event_type == "planned":
+        return "planning"
+    return "task"
+
+
+def _trace_event_severity(event_type: str) -> str:
+    if event_type in {"completed", "task_completed", "subtask_completed"}:
+        return "success"
+    if event_type in {"failed", "failed_non_retryable", "subtask_failed", "auto_retry_exhausted"}:
+        return "error"
+    if event_type in {
+        "failed_retryable",
+        "timeout",
+        "lease_lost",
+        "lease_lost_stopped",
+        "provider_retry",
+        "provider_fallback",
+        "subtask_retry_scheduled",
+        "auto_retry_scheduled",
+        "cancel_requested",
+        "cancelled",
+    }:
+        return "warning"
+    if event_type in {"running", "task_running", "subtask_running", "iteration_started", "llm_usage"}:
+        return "processing"
+    return "default"
+
+
+def _extract_subtask_id(event: dict[str, Any]) -> str:
+    details = event.get("details") or {}
+    if not isinstance(details, dict):
+        return ""
+    subtask_id = details.get("subtask_id") or details.get("sub_task_id")
+    return str(subtask_id) if subtask_id else ""
+
+
+def _preview_value(value: Any, limit: int = 600) -> str:
+    if value is None:
+        return ""
+    text = str(value)
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "..."
+
+
+def _normalize_trace_event(event: dict[str, Any]) -> dict[str, Any]:
+    details = event.get("details") if isinstance(event.get("details"), dict) else {}
+    event_type = str(event.get("event_type") or "")
+    actor = {
+        key: details[key]
+        for key in ("worker_id", "worker", "provider", "model")
+        if details.get(key)
+    }
+    return {
+        "id": event.get("id"),
+        "task_id": event.get("task_id", ""),
+        "event_type": event_type,
+        "label": _TRACE_EVENT_LABELS.get(event_type, event_type or "事件"),
+        "message": event.get("message", ""),
+        "stage": _trace_event_stage(event_type),
+        "severity": _trace_event_severity(event_type),
+        "subtask_id": _extract_subtask_id(event),
+        "actor": actor,
+        "details": details,
+        "created_at": event.get("created_at", ""),
+        "source": "task_event",
+    }
+
+
+def _subtask_ids_from_checkpoint_and_events(checkpoint: dict[str, Any] | None, events: list[dict]) -> set[str]:
+    subtask_ids: set[str] = set()
+    checkpoint = checkpoint or {}
+    for raw in checkpoint.get("sub_tasks", []) if isinstance(checkpoint.get("sub_tasks"), list) else []:
+        if isinstance(raw, dict) and raw.get("id"):
+            subtask_ids.add(str(raw["id"]))
+    for event in events:
+        subtask_id = _extract_subtask_id(event)
+        if subtask_id:
+            subtask_ids.add(subtask_id)
+    return subtask_ids
+
+
+def _normalize_tool_audit_event(event: dict[str, Any]) -> dict[str, Any]:
+    details = event.get("details") if isinstance(event.get("details"), dict) else {}
+    status = str(details.get("status") or "unknown")
+    severity = "success" if status == "success" else "warning" if status == "rejected" else "error"
+    tool_name = str(event.get("resource_id") or details.get("tool_name") or "tool")
+    actor = {
+        key: details[key]
+        for key in ("worker_id", "worker_name")
+        if details.get(key)
+    }
+    return {
+        "id": f"audit:{event.get('id')}",
+        "task_id": details.get("task_id", ""),
+        "event_type": "tool_call",
+        "label": f"工具调用 {tool_name}",
+        "message": str(details.get("error") or details.get("message") or ""),
+        "stage": "tool",
+        "severity": severity,
+        "subtask_id": str(details.get("subtask_id") or ""),
+        "actor": actor,
+        "details": {
+            "tool": tool_name,
+            "status": status,
+            "arguments": details.get("arguments", {}),
+            "result": details.get("result", {}),
+            "error": details.get("error", ""),
+        },
+        "created_at": event.get("timestamp", ""),
+        "source": "tool_audit",
+    }
+
+
+def _normalize_worker_log_event(event: dict[str, Any]) -> dict[str, Any]:
+    meta = event.get("meta") if isinstance(event.get("meta"), dict) else {}
+    level = str(event.get("level") or "info").lower()
+    severity = "error" if level == "error" else "warning" if level in {"warning", "warn"} else "default"
+    message = str(event.get("message") or "")
+    is_llm_call = "input_tokens" in meta or "output_tokens" in meta
+    return {
+        "id": event.get("id") or f"worker_log:{event.get('worker_id', '')}:{event.get('timestamp', '')}:{message}",
+        "task_id": meta.get("task_id", ""),
+        "event_type": "llm_call" if is_llm_call else "worker_log",
+        "label": "LLM 调用完成" if is_llm_call else "Worker 日志",
+        "message": message,
+        "stage": "llm" if is_llm_call else "worker_log",
+        "severity": "processing" if is_llm_call else severity,
+        "subtask_id": str(meta.get("subtask_id") or ""),
+        "actor": {"worker_id": str(event.get("worker_id") or "")},
+        "details": meta,
+        "created_at": event.get("created_at") or event.get("timestamp", ""),
+        "source": "worker_log",
+    }
+
+
+def _collect_task_tool_audit_events(store, task_id: str, subtask_ids: set[str]) -> list[dict[str, Any]]:
+    events_by_id: dict[str, dict[str, Any]] = {}
+    query_task_ids = [task_id, *sorted(subtask_ids)]
+    for query_task_id in query_task_ids:
+        for event in store.list_audit_events(
+            resource="tool",
+            action="tool_call",
+            task_id=query_task_id,
+            limit=100,
+        ):
+            event_id = str(event.get("id") or f"{event.get('timestamp')}:{event.get('resource_id')}")
+            events_by_id[event_id] = event
+    return list(events_by_id.values())
+
+
+def _collect_task_worker_logs(
+    store,
+    task_id: str,
+    subtask_ids: set[str],
+    include_llm_logs: bool = True,
+) -> list[dict[str, Any]]:
+    logs_by_id: dict[str, dict[str, Any]] = {}
+    for log in store.list_worker_logs(task_id=task_id, limit=300):
+        logs_by_id[str(log.get("id"))] = log
+    for subtask_id in subtask_ids:
+        for log in store.list_worker_logs(subtask_id=subtask_id, limit=100):
+            logs_by_id[str(log.get("id"))] = log
+    logs = list(logs_by_id.values())
+    if include_llm_logs:
+        return logs
+    return [
+        log
+        for log in logs
+        if not (
+            isinstance(log.get("meta"), dict)
+            and ("input_tokens" in log["meta"] or "output_tokens" in log["meta"])
+        )
+    ]
+
+
+def _trace_event_matches(event: dict[str, Any], filters: dict[str, str]) -> bool:
+    if filters.get("subtask_id") and event.get("subtask_id") != filters["subtask_id"]:
+        return False
+    if filters.get("stage") and event.get("stage") != filters["stage"]:
+        return False
+    if filters.get("severity") and event.get("severity") != filters["severity"]:
+        return False
+    if filters.get("event_type") and event.get("event_type") != filters["event_type"]:
+        return False
+    if filters.get("worker_id"):
+        actor = event.get("actor") if isinstance(event.get("actor"), dict) else {}
+        details = event.get("details") if isinstance(event.get("details"), dict) else {}
+        if filters["worker_id"] not in {str(actor.get("worker_id") or ""), str(details.get("worker_id") or "")}:
+            return False
+    if filters.get("tool_name"):
+        details = event.get("details") if isinstance(event.get("details"), dict) else {}
+        if str(details.get("tool") or details.get("tool_name") or "") != filters["tool_name"]:
+            return False
+    if filters.get("failure_type"):
+        details = event.get("details") if isinstance(event.get("details"), dict) else {}
+        failure_type = str(details.get("failure_type") or event.get("event_type") or "")
+        if failure_type != filters["failure_type"]:
+            return False
+    return True
+
+
+def _event_sort_key(event: dict[str, Any]) -> tuple[str, str]:
+    return (str(event.get("created_at") or ""), str(event.get("id") or ""))
+
+
+def _build_task_trace(
+    task: dict[str, Any],
+    checkpoint: dict[str, Any] | None,
+    events: list[dict],
+    tool_audit_events: list[dict] | None = None,
+    worker_logs: list[dict] | None = None,
+    filters: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    task_id = task.get("task_id") or task.get("id") or (checkpoint or {}).get("task_id") or ""
+    checkpoint = checkpoint or {}
+    checkpoint_subtasks = checkpoint.get("sub_tasks") if isinstance(checkpoint.get("sub_tasks"), list) else []
+    subtask_records: dict[str, dict[str, Any]] = {}
+
+    for raw in checkpoint_subtasks:
+        if not isinstance(raw, dict):
+            continue
+        subtask_id = str(raw.get("id") or "")
+        if not subtask_id:
+            continue
+        subtask_records[subtask_id] = {
+            "id": subtask_id,
+            "description": raw.get("description", ""),
+            "status": raw.get("status", "unknown"),
+            "assigned_agent": raw.get("assigned_agent", ""),
+            "attempts": raw.get("attempts", 0),
+            "dependencies": raw.get("dependencies", []),
+            "acceptance_criteria": raw.get("acceptance_criteria", []),
+            "created_at": raw.get("created_at", ""),
+            "started_at": raw.get("started_at", ""),
+            "completed_at": raw.get("completed_at", ""),
+            "result_preview": _preview_value(raw.get("result")),
+            "error": raw.get("error", ""),
+            "events": [],
+        }
+
+    normalized_events = [_normalize_trace_event(event) for event in events]
+    normalized_events.extend(_normalize_tool_audit_event(event) for event in tool_audit_events or [])
+    normalized_events.extend(_normalize_worker_log_event(event) for event in worker_logs or [])
+    normalized_events.sort(key=_event_sort_key)
+    filters = {key: value for key, value in (filters or {}).items() if value}
+    filtered_events = [
+        event for event in normalized_events if _trace_event_matches(event, filters)
+    ]
+    unassigned_events: list[dict[str, Any]] = []
+    for event in filtered_events:
+        subtask_id = event.get("subtask_id") or ""
+        if subtask_id:
+            subtask_records.setdefault(
+                subtask_id,
+                {
+                    "id": subtask_id,
+                    "description": "",
+                    "status": "unknown",
+                    "assigned_agent": "",
+                    "attempts": 0,
+                    "dependencies": [],
+                    "acceptance_criteria": [],
+                    "created_at": "",
+                    "started_at": "",
+                    "completed_at": "",
+                    "result_preview": "",
+                    "error": "",
+                    "events": [],
+                },
+            )["events"].append(event)
+        else:
+            unassigned_events.append(event)
+
+    if filters:
+        filtered_subtasks = []
+        for subtask in subtask_records.values():
+            keep = bool(subtask["events"])
+            if filters.get("subtask_id") and subtask["id"] == filters["subtask_id"]:
+                keep = True
+            if keep:
+                filtered_subtasks.append(subtask)
+        subtasks = filtered_subtasks
+    else:
+        subtasks = list(subtask_records.values())
+    status_counts: dict[str, int] = {}
+    for subtask in subtasks:
+        status = str(subtask.get("status") or "unknown")
+        status_counts[status] = status_counts.get(status, 0) + 1
+
+    retry_event_types = {"provider_retry", "subtask_retry_scheduled", "retry_queued", "auto_retry_queued"}
+    llm_usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "call_count": 0}
+    for event in filtered_events:
+        if event["event_type"] not in {"llm_call", "llm_usage"}:
+            continue
+        details = event.get("details") or {}
+        input_tokens = int(details.get("input_tokens") or 0)
+        output_tokens = int(details.get("output_tokens") or 0)
+        llm_usage["input_tokens"] += input_tokens
+        llm_usage["output_tokens"] += output_tokens
+        llm_usage["total_tokens"] += input_tokens + output_tokens
+        llm_usage["call_count"] += 1
+
+    tool_events = [event for event in filtered_events if event["event_type"] == "tool_call"]
+    summary = {
+        "event_count": len(filtered_events),
+        "total_event_count": len(normalized_events),
+        "task_event_count": sum(1 for event in filtered_events if event.get("source") == "task_event"),
+        "tool_call_count": len(tool_events),
+        "tool_rejected_count": sum(1 for event in tool_events if (event.get("details") or {}).get("status") == "rejected"),
+        "worker_log_count": sum(1 for event in filtered_events if event.get("source") == "worker_log"),
+        "llm_usage": llm_usage,
+        "subtask_count": len(subtasks),
+        "status_counts": status_counts,
+        "retry_count": sum(1 for event in filtered_events if event["event_type"] in retry_event_types),
+        "fallback_count": sum(1 for event in filtered_events if event["event_type"] == "provider_fallback"),
+        "failure_count": sum(1 for event in filtered_events if event["severity"] == "error"),
+        "first_event_at": filtered_events[0]["created_at"] if filtered_events else "",
+        "last_event_at": filtered_events[-1]["created_at"] if filtered_events else "",
+    }
+
+    return {
+        "task_id": task_id,
+        "description": task.get("description") or checkpoint.get("description", ""),
+        "status": task.get("status") or checkpoint.get("status", "unknown"),
+        "created_at": task.get("created_at") or checkpoint.get("created_at", ""),
+        "started_at": task.get("started_at") or checkpoint.get("started_at", ""),
+        "completed_at": task.get("completed_at") or checkpoint.get("completed_at", ""),
+        "checkpoint_updated_at": checkpoint.get("updated_at", ""),
+        "summary": summary,
+        "subtasks": subtasks,
+        "unassigned_events": unassigned_events,
+        "timeline": filtered_events,
+        "filters": filters,
+    }
+
+
+def _load_task_trace_payload(task_id: str, filters: dict[str, str] | None = None) -> dict:
+    store = _gs()
+    if not store:
+        raise HTTPException(status_code=500, detail="Persistence store not initialized")
+    task = store.get_task(task_id)
+    checkpoint = store.get_task_checkpoint(task_id)
+    if not task and not checkpoint:
+        raise HTTPException(status_code=404, detail="Task not found")
+    events = store.list_task_events(task_id)
+    subtask_ids = _subtask_ids_from_checkpoint_and_events(checkpoint, events)
+    tool_audit_events = _collect_task_tool_audit_events(store, task_id, subtask_ids)
+    worker_logs = _collect_task_worker_logs(
+        store,
+        task_id,
+        subtask_ids,
+        include_llm_logs=not any(event.get("event_type") == "llm_usage" for event in events),
+    )
+    return _build_task_trace(
+        task or {"task_id": task_id},
+        checkpoint,
+        events,
+        tool_audit_events,
+        worker_logs,
+        filters,
+    )
+
+
+def _event_brief(event: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": event.get("id"),
+        "created_at": event.get("created_at", ""),
+        "stage": event.get("stage", ""),
+        "severity": event.get("severity", ""),
+        "event_type": event.get("event_type", ""),
+        "label": event.get("label", ""),
+        "subtask_id": event.get("subtask_id", ""),
+        "actor": event.get("actor", {}),
+        "message": _preview_value(event.get("message"), limit=240),
+        "details": event.get("details", {}),
+    }
+
+
+def _append_unique(items: list[str], value: str) -> None:
+    if value and value not in items:
+        items.append(value)
+
+
+def _build_task_diagnosis(trace: dict[str, Any]) -> dict[str, Any]:
+    events = trace.get("timeline") if isinstance(trace.get("timeline"), list) else []
+    subtasks = trace.get("subtasks") if isinstance(trace.get("subtasks"), list) else []
+    summary = trace.get("summary") if isinstance(trace.get("summary"), dict) else {}
+
+    failure_events = [
+        event
+        for event in events
+        if event.get("severity") == "error"
+        or event.get("event_type") in {"failed", "failed_retryable", "failed_non_retryable", "timeout"}
+    ]
+    warning_events = [event for event in events if event.get("severity") == "warning"]
+    tool_rejections = [
+        event
+        for event in events
+        if event.get("event_type") == "tool_call"
+        and (event.get("details") or {}).get("status") == "rejected"
+    ]
+    provider_events = [
+        event
+        for event in events
+        if event.get("event_type") in {"provider_retry", "provider_fallback"}
+    ]
+    worker_errors = [
+        event
+        for event in events
+        if event.get("stage") == "worker_log" and event.get("severity") == "error"
+    ]
+    failed_subtasks = [
+        subtask
+        for subtask in subtasks
+        if subtask.get("status") in {"failed", "timeout", "cancelled"} or subtask.get("error")
+    ]
+    llm_events = [
+        event
+        for event in events
+        if event.get("event_type") in {"llm_usage", "llm_call"}
+    ]
+    max_llm_call = max(
+        (
+            {
+                "subtask_id": event.get("subtask_id", ""),
+                "worker_id": ((event.get("actor") or {}).get("worker_id") or (event.get("details") or {}).get("worker_id") or ""),
+                "input_tokens": int((event.get("details") or {}).get("input_tokens") or 0),
+                "output_tokens": int((event.get("details") or {}).get("output_tokens") or 0),
+                "total_tokens": int((event.get("details") or {}).get("total_tokens") or 0)
+                or int((event.get("details") or {}).get("input_tokens") or 0)
+                + int((event.get("details") or {}).get("output_tokens") or 0),
+                "created_at": event.get("created_at", ""),
+            }
+            for event in llm_events
+        ),
+        key=lambda item: item["total_tokens"],
+        default={"subtask_id": "", "worker_id": "", "input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "created_at": ""},
+    )
+
+    root_causes: list[str] = []
+    recommendations: list[str] = []
+    if failure_events or failed_subtasks:
+        _append_unique(root_causes, "存在失败事件或失败子任务，任务结果需要人工复核。")
+        _append_unique(recommendations, "优先查看 error 级别事件和失败子任务的 worker 日志，再决定重试或拆分任务。")
+    if any(event.get("event_type") == "timeout" for event in events):
+        _append_unique(root_causes, "任务发生超时，可能是子任务耗时过长、工具调用阻塞或模型响应较慢。")
+        _append_unique(recommendations, "缩小任务范围或提高 timeout_seconds，并从 checkpoint 续跑未完成子任务。")
+    if tool_rejections:
+        tools = sorted({str((event.get("details") or {}).get("tool") or "") for event in tool_rejections if (event.get("details") or {}).get("tool")})
+        _append_unique(root_causes, f"有 {len(tool_rejections)} 次工具调用被策略拦截" + (f": {', '.join(tools)}。" if tools else "。"))
+        _append_unique(recommendations, "检查对应工具的参数和权限策略；若业务允许，再调整工具策略而不是放宽全局权限。")
+    if provider_events:
+        fallback_count = sum(1 for event in provider_events if event.get("event_type") == "provider_fallback")
+        retry_count = sum(1 for event in provider_events if event.get("event_type") == "provider_retry")
+        _append_unique(root_causes, f"Provider 调用出现波动，重试 {retry_count} 次，fallback {fallback_count} 次。")
+        _append_unique(recommendations, "保留 fallback 路由，同时检查主 provider 的超时、限流、模型名和网络稳定性。")
+    if worker_errors:
+        _append_unique(root_causes, f"Worker 日志中有 {len(worker_errors)} 条错误记录。")
+        _append_unique(recommendations, "按 worker_id 过滤执行树，定位错误集中在哪个 Worker 或子任务。")
+    if max_llm_call["total_tokens"] >= 12000:
+        _append_unique(root_causes, f"单次 LLM 调用 token 峰值较高: {max_llm_call['total_tokens']} tokens。")
+        _append_unique(recommendations, "压缩上下文、拆分输入材料，或为长上下文任务配置更合适的模型。")
+    if not root_causes:
+        _append_unique(root_causes, "未发现明确失败信号，任务 trace 看起来处于正常范围。")
+        _append_unique(recommendations, "如结果质量仍不理想，可查看子任务验收标准和最终产物内容。")
+
+    level = "ok"
+    if failure_events or failed_subtasks or worker_errors:
+        level = "critical"
+    elif warning_events or tool_rejections or provider_events or max_llm_call["total_tokens"] >= 12000:
+        level = "warning"
+
+    evidence_source = [*failure_events, *tool_rejections, *provider_events, *worker_errors]
+    evidence: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for event in evidence_source:
+        key = str(event.get("id") or f"{event.get('event_type')}:{event.get('created_at')}:{event.get('message')}")
+        if key in seen:
+            continue
+        seen.add(key)
+        evidence.append(_event_brief(event))
+        if len(evidence) >= 8:
+            break
+
+    return {
+        "task_id": trace.get("task_id", ""),
+        "status": trace.get("status", "unknown"),
+        "level": level,
+        "generated_at": datetime.now().isoformat(),
+        "headline": "任务需要处理" if level == "critical" else "任务存在风险信号" if level == "warning" else "未发现明显异常",
+        "root_causes": root_causes,
+        "recommendations": recommendations,
+        "evidence": evidence,
+        "metrics": {
+            "event_count": summary.get("event_count", 0),
+            "failure_count": summary.get("failure_count", 0),
+            "retry_count": summary.get("retry_count", 0),
+            "fallback_count": summary.get("fallback_count", 0),
+            "tool_call_count": summary.get("tool_call_count", 0),
+            "tool_rejected_count": summary.get("tool_rejected_count", 0),
+            "worker_log_count": summary.get("worker_log_count", 0),
+            "llm_usage": summary.get("llm_usage", {}),
+            "max_llm_call": max_llm_call,
+            "failed_subtasks": [
+                {
+                    "id": subtask.get("id", ""),
+                    "status": subtask.get("status", ""),
+                    "assigned_agent": subtask.get("assigned_agent", ""),
+                    "error": _preview_value(subtask.get("error"), limit=240),
+                }
+                for subtask in failed_subtasks
+            ],
+        },
+    }
+
+
 @router.post("")
 async def create_task(request: TaskRequest) -> dict:
     """创建后台任务，并立即返回可轮询的任务记录。"""
@@ -219,6 +781,36 @@ async def get_task_events(task_id: str) -> dict:
     if not store.get_task(task_id):
         raise HTTPException(status_code=404, detail="Task not found")
     return {"task_id": task_id, "events": store.list_task_events(task_id)}
+
+
+@router.get("/{task_id}/trace")
+async def get_task_trace(
+    task_id: str,
+    subtask_id: str | None = Query(default=None),
+    worker_id: str | None = Query(default=None),
+    tool_name: str | None = Query(default=None),
+    stage: str | None = Query(default=None),
+    severity: str | None = Query(default=None),
+    event_type: str | None = Query(default=None),
+    failure_type: str | None = Query(default=None),
+) -> dict:
+    """获取任务执行树和归一化 trace。"""
+    filters = {
+        "subtask_id": subtask_id or "",
+        "worker_id": worker_id or "",
+        "tool_name": tool_name or "",
+        "stage": stage or "",
+        "severity": severity or "",
+        "event_type": event_type or "",
+        "failure_type": failure_type or "",
+    }
+    return _load_task_trace_payload(task_id, filters)
+
+
+@router.get("/{task_id}/diagnosis")
+async def get_task_diagnosis(task_id: str) -> dict:
+    """获取任务排障诊断摘要。"""
+    return _build_task_diagnosis(_load_task_trace_payload(task_id))
 
 
 @router.get("/{task_id}")

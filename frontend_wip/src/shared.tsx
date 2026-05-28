@@ -381,6 +381,8 @@ export const api = {
   // 任务文件
   getTaskFiles: (taskId: string) => axios.get(`${API_BASE}/tasks/${taskId}/files`),
   getTaskEvents: (taskId: string) => axios.get(`${API_BASE}/tasks/${taskId}/events`),
+  getTaskTrace: (taskId: string, params?: object) => axios.get(`${API_BASE}/tasks/${taskId}/trace`, { params }),
+  getTaskDiagnosis: (taskId: string) => axios.get(`${API_BASE}/tasks/${taskId}/diagnosis`),
 
   // Workers
   listWorkers: () => axios.get(`${API_BASE}/workers`),

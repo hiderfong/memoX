@@ -339,6 +339,14 @@ async def clear_worker_logs(
     if not worker_pool or worker_id not in worker_pool._workers:
         raise HTTPException(status_code=404, detail="Worker 不存在")
     worker_pool._workers[worker_id].clear_logs()
+    try:
+        from storage import get_store
+
+        store = get_store()
+        if store:
+            store.delete_worker_logs(worker_id)
+    except Exception:
+        pass
     return {"success": True, "message": "日志已清空"}
 
 
