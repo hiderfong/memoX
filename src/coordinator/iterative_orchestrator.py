@@ -164,7 +164,13 @@ class IterativeOrchestrator:
         try:
             if self._mode == "parallel":
                 return await self._run_parallel(task, description, ctx, on_task_update)
-            return await self._run_iterations(task, description, ctx, on_task_update)
+            return await self._run_iterations(
+                task,
+                description,
+                ctx,
+                on_task_update,
+                preserve_completed_subtasks=complexity_value == "resume",
+            )
         except asyncio.CancelledError:
             logger.warning(f"[Orchestrator] 任务 {task.id} 已被取消")
             task.status = TaskStatus.CANCELLED
@@ -188,6 +194,7 @@ class IterativeOrchestrator:
         description: str,
         ctx: dict[str, Any],
         on_task_update: TaskUpdateCallback | None = None,
+        preserve_completed_subtasks: bool = False,
     ) -> IterationResult:
         """迭代执行主循环（可被取消）"""
         # Step 3: 创建沙箱 + MailBus
@@ -214,6 +221,8 @@ class IterativeOrchestrator:
             # 每一轮质量未达标后的 refinement 都必须重新执行子任务，否则后续轮次只会
             # 反复评估同一份低质量输出，无法真正改进。
             for st in task.sub_tasks:
+                if preserve_completed_subtasks and iteration == 0 and st.status == TaskStatus.COMPLETED:
+                    continue
                 st.status = TaskStatus.PENDING
                 st.result = None
                 st.error = None
@@ -495,12 +504,27 @@ class IterativeOrchestrator:
                 }
                 for st in ready
             }
+            progress_updates: list[asyncio.Task] = []
+
+            def handle_worker_progress(subtask_id: str, message: str) -> None:
+                provider_event = self._provider_progress_event(subtask_id, message, iteration)
+                if provider_event is None:
+                    return
+                event_type, details = provider_event
+                progress_updates.append(
+                    asyncio.create_task(
+                        self._emit_task_update(on_task_update, task, event_type, details)
+                    )
+                )
 
             results = await self._worker_pool.execute_parallel(
                 ready,
                 context=base_context,
+                on_progress=handle_worker_progress,
                 per_task_contexts=per_task_ctx,
             )
+            if progress_updates:
+                await asyncio.gather(*progress_updates)
 
             for st, result, error in results:
                 if error and st.attempts < self._subtask_max_attempts:
@@ -641,6 +665,55 @@ class IterativeOrchestrator:
         result = on_task_update(task, event_type, details or {})
         if inspect.isawaitable(result):
             await result
+
+    @staticmethod
+    def _provider_progress_event(
+        subtask_id: str,
+        message: str,
+        iteration: int,
+    ) -> tuple[str, dict[str, Any]] | None:
+        if not isinstance(message, str):
+            return None
+
+        retry_match = re.match(
+            r"^provider_retry: (?P<provider>[^/]+)/(?P<model>.*?) attempt (?P<attempt>\d+) failed: (?P<error>.*)$",
+            message,
+        )
+        if retry_match:
+            details = retry_match.groupdict()
+            return (
+                "provider_retry",
+                {
+                    "subtask_id": subtask_id,
+                    "iteration": iteration,
+                    "provider": details["provider"],
+                    "model": details["model"],
+                    "attempt": int(details["attempt"]),
+                    "error": details["error"],
+                },
+            )
+
+        fallback_match = re.match(
+            r"^provider_fallback: (?P<from_provider>[^/]+)/(?P<from_model>.*?) -> "
+            r"(?P<to_provider>[^/]+)/(?P<to_model>.*?): (?P<error>.*)$",
+            message,
+        )
+        if fallback_match:
+            details = fallback_match.groupdict()
+            return (
+                "provider_fallback",
+                {
+                    "subtask_id": subtask_id,
+                    "iteration": iteration,
+                    "from_provider": details["from_provider"],
+                    "from_model": details["from_model"],
+                    "to_provider": details["to_provider"],
+                    "to_model": details["to_model"],
+                    "error": details["error"],
+                },
+            )
+
+        return None
 
     def _merge(self, task: Task) -> str:
         """读取所有 Agent 沙箱文件，合并到 shared/，返回摘要"""

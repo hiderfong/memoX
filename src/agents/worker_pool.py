@@ -385,7 +385,12 @@ class WorkerAgent:
             self.call_count += 1
             store = get_store()
             if store:
-                store.increment_worker_token_usage(self.id, inp, out)
+                try:
+                    store.increment_worker_token_usage(self.id, inp, out)
+                except Exception as exc:
+                    logger.warning(
+                        f"Worker {self.id}: token usage persistence failed: {type(exc).__name__}: {exc}"
+                    )
             self.add_log("info", "LLM 调用完成", {"input_tokens": inp, "output_tokens": out, "call_count": self.call_count})
 
             # 检查是否有工具调用
