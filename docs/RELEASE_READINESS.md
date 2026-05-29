@@ -21,7 +21,7 @@ owner and written exception.
 | Tool policy | Network and database permissions are reviewed for the deployment environment |
 | Tool audit | Admins can filter `success`, `rejected`, and `error` tool calls by tool/task/worker |
 | Frontend | Settings and System Status admin pages load without console errors |
-| I2V | If enabled, DashScope key, file signing secret, local upload fallback, and endpoint tests pass |
+| I2V / media studio | If enabled, DashScope key, file signing secret, local upload fallback, background queue, retry, and endpoint tests pass |
 | Tests | Backend tests, lint, frontend build, and at least one smoke test pass |
 
 ## Configuration Checks
@@ -38,6 +38,10 @@ owner and written exception.
   `image_to_video.model` and `image_to_video.edit_model` match the deployed
   DashScope models, and `/api/videos/i2v` can process both public URLs and
   local `/api/files/{name}` references.
+- Confirm `/api/videos/i2v/jobs`, `/api/videos/i2v/batch/jobs`, and
+  `/api/videos/edit/jobs` return queued media assets, `/api/videos/jobs/status`
+  reports bounded queue pressure, and failed assets can be retried through
+  `/api/videos/assets/{asset_id}/retry`.
 - Confirm `ops.auto_backup_enabled`, `ops.auto_backup_interval_hours`,
   `ops.max_backups`, and retention settings match the expected user data volume.
 - Set `ops.archive_mirror_dir` when the host has an attached backup disk or

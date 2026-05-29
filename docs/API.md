@@ -135,8 +135,16 @@ Worker 创建、更新和删除接口会持久化修改 `config.yaml` 中的 `wo
 | `POST` | `/api/images/generate` | 文生图 |
 | `POST` | `/api/videos/generate` | 文生视频 |
 | `POST` | `/api/videos/i2v` | 图生视频 |
+| `POST` | `/api/videos/i2v/jobs` | 提交单条图生视频后台任务，立即返回媒体资产记录 |
 | `POST` | `/api/videos/i2v/batch` | 批量图生视频，逐项返回成功或错误 |
+| `POST` | `/api/videos/i2v/batch/jobs` | 批量提交图生视频后台任务，返回每条 queued 媒体资产 |
 | `POST` | `/api/videos/edit` | 视频编辑，支持视频 URL、提示词和参考图片 |
+| `POST` | `/api/videos/edit/jobs` | 提交视频编辑后台任务，立即返回媒体资产记录 |
+| `GET` | `/api/videos/assets` | 查询媒体作品库，支持 `kind`、`status`、`operation`、`limit` |
+| `GET` | `/api/videos/assets/{asset_id}` | 获取单条媒体资产状态，用于轮询后台任务结果 |
+| `POST` | `/api/videos/assets/{asset_id}/retry` | 复用原素材、Prompt 和参数重试失败的媒体任务 |
+| `DELETE` | `/api/videos/assets/{asset_id}` | 删除媒体资产记录，不删除远端生成文件 |
+| `GET` | `/api/videos/jobs/status` | 查看媒体后台队列运行槽位、等待数和持久化 queued/running 数 |
 | `GET` | `/api/health` | 健康检查 |
 | `GET` | `/api/system/health` | 管理员系统巡检：配置、索引、SQLite、磁盘，并返回最近备份、后台任务、知识图谱质量告警、质量门禁与最近导入触发追踪等运维状态 |
 | `GET` | `/api/system/backups` | 管理员查看本地备份归档 |

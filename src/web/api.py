@@ -675,6 +675,15 @@ async def startup():
             default_duration=i2v_cfg.default_duration,
         )
 
+    try:
+        from web.routers.imaging import mark_interrupted_media_assets
+
+        interrupted_media = mark_interrupted_media_assets()
+        if interrupted_media:
+            logger.warning(f"   - {interrupted_media} 个媒体后台任务已标记为可重试失败")
+    except Exception as e:
+        logger.warning(f"   - 媒体后台任务恢复检查失败: {e}")
+
     # 初始化记忆管理器
     if _config and _config.memory.enabled:
         store = get_store()

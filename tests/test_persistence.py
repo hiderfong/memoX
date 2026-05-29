@@ -10,7 +10,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 from src.ops.readiness import _sqlite_quick_check
 from storage.persistence import SCHEMA_VERSION, PersistenceStore, SchemaMigrationError
 
-EXPECTED_MIGRATIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9]
+EXPECTED_MIGRATIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
 
 
 def test_session_create_and_list(tmp_path):
@@ -262,6 +262,55 @@ def test_knowledge_graph_quality_snapshots_round_trip(tmp_path):
     store.close()
 
 
+def test_media_assets_round_trip_and_filters(tmp_path):
+    store = PersistenceStore(tmp_path / "test.db")
+
+    first = store.save_media_asset({
+        "id": "media_1",
+        "kind": "video",
+        "status": "queued",
+        "operation": "i2v",
+        "source_url": "https://cdn/source.png",
+        "prompt": "slow push in",
+        "input_mode": "url",
+        "parameters": {"duration": 5, "resolution": "720P"},
+    }, created_at="2026-05-29T10:00:00")
+    second = store.save_media_asset({
+        "id": "media_2",
+        "kind": "video",
+        "status": "failed",
+        "operation": "video_edit",
+        "source_url": "https://cdn/source.mp4",
+        "prompt": "make it cinematic",
+        "error": "bad source",
+    }, created_at="2026-05-29T10:05:00")
+
+    assert first["id"] == "media_1"
+    assert first["status"] == "queued"
+    assert first["parameters"]["duration"] == 5
+    assert second["status"] == "failed"
+    updated = store.save_media_asset({
+        "id": "media_1",
+        "kind": "video",
+        "status": "success",
+        "operation": "i2v",
+        "url": "https://cdn/out.mp4",
+        "source_url": "https://cdn/source.png",
+        "prompt": "slow push in",
+        "input_mode": "url",
+        "parameters": {"duration": 5, "resolution": "720P"},
+    })
+    assert updated["created_at"] == first["created_at"]
+    assert store.get_media_asset("media_1")["url"] == "https://cdn/out.mp4"
+    assert [item["id"] for item in store.list_media_assets(limit=10)] == ["media_2", "media_1"]
+    assert [item["id"] for item in store.list_media_assets(operation="i2v")] == ["media_1"]
+    assert [item["id"] for item in store.list_media_assets(status="failed")] == ["media_2"]
+    assert store.delete_media_asset("media_1") is True
+    assert store.delete_media_asset("missing") is False
+    assert [item["id"] for item in store.list_media_assets(limit=10)] == ["media_2"]
+    store.close()
+
+
 def test_task_job_auto_retry_schedule_round_trip(tmp_path):
     store = PersistenceStore(tmp_path / "test.db")
     store.save_task({"task_id": "retry_1", "description": "retry", "status": "timeout"})
@@ -441,6 +490,23 @@ def test_runtime_schema_matches_memory_and_summary_migrations(tmp_path):
         "metrics",
         "created_at",
     }.issubset(kg_snapshot_cols)
+    media_cols = {
+        r["name"] for r in store._conn.execute("PRAGMA table_info(media_assets)").fetchall()
+    }
+    assert {
+        "id",
+        "kind",
+        "status",
+        "operation",
+        "url",
+        "source_url",
+        "prompt",
+        "input_mode",
+        "error",
+        "parameters",
+        "created_at",
+        "updated_at",
+    }.issubset(media_cols)
 
     tables = {
         r["name"]

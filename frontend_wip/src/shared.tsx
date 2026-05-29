@@ -744,8 +744,16 @@ export const api = {
   deleteKnowledgeGraphTriple: (data: KnowledgeGraphTripleMutation) =>
     axios.post(`${API_BASE}/knowledge/graph/triples/delete`, data),
   generateI2V: (data: any) => axios.post(`${API_BASE}/videos/i2v`, data),
+  enqueueI2VJob: (data: any) => axios.post(`${API_BASE}/videos/i2v/jobs`, data),
   generateI2VBatch: (items: any[]) => axios.post(`${API_BASE}/videos/i2v/batch`, { items }),
+  enqueueI2VBatchJobs: (items: any[]) => axios.post(`${API_BASE}/videos/i2v/batch/jobs`, { items }),
   editVideo: (data: any) => axios.post(`${API_BASE}/videos/edit`, data),
+  enqueueVideoEditJob: (data: any) => axios.post(`${API_BASE}/videos/edit/jobs`, data),
+  listVideoAssets: (params?: any) => axios.get(`${API_BASE}/videos/assets`, { params }),
+  getVideoJobsStatus: () => axios.get(`${API_BASE}/videos/jobs/status`),
+  getVideoAsset: (assetId: string) => axios.get(`${API_BASE}/videos/assets/${assetId}`),
+  retryVideoAsset: (assetId: string) => axios.post(`${API_BASE}/videos/assets/${assetId}/retry`),
+  deleteVideoAsset: (assetId: string) => axios.delete(`${API_BASE}/videos/assets/${assetId}`),
 
   // 任务反馈
   submitTaskFeedback: (taskId: string, feedback: string) =>

@@ -12,6 +12,7 @@ const ChatPage = lazy(() => import('./pages/ChatPage').then(({ ChatPage }) => ({
 const TasksPage = lazy(() => import('./pages/TasksPage').then(({ TasksPage }) => ({ default: TasksPage })));
 const ScheduledTasksPage = lazy(() => import('./pages/ScheduledTasksPage').then(({ ScheduledTasksPage }) => ({ default: ScheduledTasksPage })));
 const WorkflowsPage = lazy(() => import('./pages/WorkflowsPage').then(({ WorkflowsPage }) => ({ default: WorkflowsPage })));
+const MediaStudioPage = lazy(() => import('./pages/MediaStudioPage').then(({ MediaStudioPage }) => ({ default: MediaStudioPage })));
 const WorkersPage = lazy(() => import('./pages/WorkersPage').then(({ WorkersPage }) => ({ default: WorkersPage })));
 const SystemStatusPage = lazy(() => import('./pages/SystemStatusPage').then(({ SystemStatusPage }) => ({ default: SystemStatusPage })));
 const SettingsPage = lazy(() => import('./pages/SettingsPage').then(({ SettingsPage }) => ({ default: SettingsPage })));
@@ -93,6 +94,7 @@ const App: FC = () => {
                 <Route path="/tasks" element={lazyRoute(<TasksPage />)} />
                 <Route path="/scheduled-tasks" element={lazyRoute(<ScheduledTasksPage />)} />
                 <Route path="/workflows" element={lazyRoute(<WorkflowsPage />)} />
+                <Route path="/media" element={lazyRoute(<MediaStudioPage />)} />
                 <Route path="/workers" element={lazyRoute(<WorkersPage />)} />
                 <Route path="/system" element={lazyRoute(<SystemStatusPage />)} />
                 <Route path="/settings" element={lazyRoute(<SettingsPage />)} />

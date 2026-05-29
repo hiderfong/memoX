@@ -3,12 +3,13 @@
 import contextlib
 import json
 import sqlite3
+import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
 
 from loguru import logger
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 
 class SchemaMigrationError(RuntimeError):
@@ -247,6 +248,27 @@ class PersistenceStore:
             );
             CREATE INDEX IF NOT EXISTS idx_kg_quality_snapshots_created
                 ON knowledge_graph_quality_snapshots(created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS media_assets (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                status TEXT NOT NULL,
+                operation TEXT NOT NULL,
+                url TEXT NOT NULL DEFAULT '',
+                source_url TEXT NOT NULL DEFAULT '',
+                prompt TEXT NOT NULL DEFAULT '',
+                input_mode TEXT NOT NULL DEFAULT '',
+                error TEXT NOT NULL DEFAULT '',
+                parameters TEXT DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_media_assets_created
+                ON media_assets(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_media_assets_kind_created
+                ON media_assets(kind, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_media_assets_status_created
+                ON media_assets(status, created_at DESC);
         """)
         self._run_migrations()
         self._conn.commit()
@@ -265,6 +287,7 @@ class PersistenceStore:
             (7, "worker_logs_table", self._migration_worker_logs_table),
             (8, "knowledge_graph_review_decisions", self._migration_knowledge_graph_review_decisions),
             (9, "knowledge_graph_quality_snapshots", self._migration_knowledge_graph_quality_snapshots),
+            (10, "media_assets", self._migration_media_assets),
         ]
         applied = {
             row["version"]
@@ -393,6 +416,30 @@ class PersistenceStore:
             );
             CREATE INDEX IF NOT EXISTS idx_kg_quality_snapshots_created
                 ON knowledge_graph_quality_snapshots(created_at DESC);
+        """)
+
+    def _migration_media_assets(self) -> None:
+        self._conn.executescript("""
+            CREATE TABLE IF NOT EXISTS media_assets (
+                id TEXT PRIMARY KEY,
+                kind TEXT NOT NULL,
+                status TEXT NOT NULL,
+                operation TEXT NOT NULL,
+                url TEXT NOT NULL DEFAULT '',
+                source_url TEXT NOT NULL DEFAULT '',
+                prompt TEXT NOT NULL DEFAULT '',
+                input_mode TEXT NOT NULL DEFAULT '',
+                error TEXT NOT NULL DEFAULT '',
+                parameters TEXT DEFAULT '{}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_media_assets_created
+                ON media_assets(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_media_assets_kind_created
+                ON media_assets(kind, created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_media_assets_status_created
+                ON media_assets(status, created_at DESC);
         """)
 
     def schema_version(self) -> int:
@@ -1770,6 +1817,112 @@ class PersistenceStore:
         ).fetchall()
         snapshots = [self._kg_quality_snapshot_row_to_dict(row) for row in rows]
         return list(reversed(snapshots))
+
+    # ==================== 媒体资产（media_assets）====================
+
+    @staticmethod
+    def _media_asset_row_to_dict(row: sqlite3.Row) -> dict:
+        return {
+            "id": row["id"],
+            "kind": row["kind"],
+            "status": row["status"],
+            "operation": row["operation"],
+            "url": row["url"],
+            "source_url": row["source_url"],
+            "prompt": row["prompt"],
+            "input_mode": row["input_mode"],
+            "error": row["error"],
+            "parameters": json.loads(row["parameters"]) if row["parameters"] else {},
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    def save_media_asset(self, asset: dict, *, created_at: str | None = None) -> dict:
+        """Persist a generated media result or failed generation attempt."""
+        now = datetime.now().isoformat()
+        asset_id = str(asset.get("id") or f"media_{uuid.uuid4().hex}")
+        status = str(asset.get("status") or "success")
+        if status not in {"queued", "running", "success", "failed"}:
+            raise ValueError("media asset status must be queued, running, success or failed")
+
+        existing = self._conn.execute(
+            "SELECT created_at FROM media_assets WHERE id=?",
+            (asset_id,),
+        ).fetchone()
+        original_created_at = (
+            existing["created_at"]
+            if existing
+            else created_at or str(asset.get("created_at") or now)
+        )
+        parameters = asset.get("parameters") or {}
+        self._conn.execute(
+            """INSERT INTO media_assets
+               (id, kind, status, operation, url, source_url, prompt, input_mode,
+                error, parameters, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET
+                   kind=excluded.kind,
+                   status=excluded.status,
+                   operation=excluded.operation,
+                   url=excluded.url,
+                   source_url=excluded.source_url,
+                   prompt=excluded.prompt,
+                   input_mode=excluded.input_mode,
+                   error=excluded.error,
+                   parameters=excluded.parameters,
+                   updated_at=excluded.updated_at""",
+            (
+                asset_id,
+                str(asset.get("kind") or "video"),
+                status,
+                str(asset.get("operation") or ""),
+                str(asset.get("url") or ""),
+                str(asset.get("source_url") or ""),
+                str(asset.get("prompt") or ""),
+                str(asset.get("input_mode") or ""),
+                str(asset.get("error") or ""),
+                json.dumps(parameters, ensure_ascii=False),
+                original_created_at,
+                now,
+            ),
+        )
+        self._conn.commit()
+        row = self._conn.execute("SELECT * FROM media_assets WHERE id=?", (asset_id,)).fetchone()
+        return self._media_asset_row_to_dict(row)
+
+    def get_media_asset(self, asset_id: str) -> dict | None:
+        row = self._conn.execute("SELECT * FROM media_assets WHERE id=?", (asset_id,)).fetchone()
+        return self._media_asset_row_to_dict(row) if row else None
+
+    def list_media_assets(
+        self,
+        *,
+        kind: str | None = None,
+        status: str | None = None,
+        operation: str | None = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        safe_limit = max(1, min(int(limit), 200))
+        query = "SELECT * FROM media_assets WHERE 1=1"
+        params: list = []
+        if kind:
+            query += " AND kind=?"
+            params.append(kind)
+        if status:
+            query += " AND status=?"
+            params.append(status)
+        if operation:
+            query += " AND operation=?"
+            params.append(operation)
+        query += " ORDER BY created_at DESC, id DESC LIMIT ?"
+        params.append(safe_limit)
+        rows = self._conn.execute(query, params).fetchall()
+        return [self._media_asset_row_to_dict(row) for row in rows]
+
+    def delete_media_asset(self, asset_id: str) -> bool:
+        cursor = self._conn.execute("DELETE FROM media_assets WHERE id=?", (asset_id,))
+        self._conn.commit()
+        return cursor.rowcount > 0
 
     # ==================== 跨会话记忆（memories）====================
 

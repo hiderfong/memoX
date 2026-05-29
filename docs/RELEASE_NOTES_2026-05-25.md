@@ -29,6 +29,10 @@ real-user deployments.
 - Completed I2V Phase 2: Wan2.7 `input.media` protocol, local upload fallback
   through DashScope temporary OSS, batch I2V API, video editing API, and
   knowledge-base image entry points.
+- Added a React media creation workspace with batch I2V submission, video
+  editing, persisted media assets, queued/running/success/failed status,
+  retry for failed assets, startup interruption recovery, and a bounded
+  in-process media task queue.
 - Added a productized knowledge graph exploration payload and UI with entity
   search, neighborhood depth, predicate and confidence filters, core-entity
   facets, and relation provenance.
