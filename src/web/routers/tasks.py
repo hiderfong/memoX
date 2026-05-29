@@ -141,6 +141,7 @@ _TRACE_EVENT_LABELS = {
     "subtask_completed": "子任务完成",
     "subtask_failed": "子任务失败",
     "task_completed": "任务完成",
+    "task_failed": "任务失败",
     "completed": "任务完成",
     "failed": "任务失败",
     "failed_retryable": "任务失败，可重试",

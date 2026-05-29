@@ -99,6 +99,20 @@ class ErrorOrchestrator(FastOrchestrator):
         raise self.exc
 
 
+class FailedResultOrchestrator(FastOrchestrator):
+    async def run(self, description, context=None, active_group_ids=None, task_id=None, on_task_update=None):
+        await asyncio.sleep(0)
+        return IterationResult(
+            task_id=task_id,
+            shared_dir="",
+            final_score=0.0,
+            iterations=[IterationRecord(iteration=0, score=0.0, improvements=["provider failure"])],
+            result_summary="[执行失败]\nConnectError: network unavailable",
+            status="failed",
+            error="ConnectError: network unavailable",
+        )
+
+
 class FlakyOrchestrator(FastOrchestrator):
     def __init__(self):
         super().__init__()
@@ -268,6 +282,28 @@ async def test_task_job_runner_retryable_exception_is_classified(tmp_path):
     assert failed_event["details"]["failure_type"] == "retryable_exception"
     assert failed_event["details"]["retryable"] is True
     assert failed_event["details"]["error_type"] == "OSError"
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_task_job_runner_persists_failed_orchestrator_result(tmp_path):
+    store = PersistenceStore(tmp_path / "jobs.db")
+    runner = TaskJobRunner(FailedResultOrchestrator(), None, store, {}, owner_id="runner_fail")
+
+    runner.submit(TaskJobRequest(description="失败结果", task_id="task_fixed"))
+    await _wait_until_done(runner)
+
+    persisted = store.get_task("task_fixed")
+    assert persisted["status"] == "failed"
+    assert persisted["final_score"] == 0.0
+    assert "ConnectError" in persisted["result"]
+    failed_event = [
+        event for event in store.list_task_events("task_fixed")
+        if event["event_type"] == "failed_retryable"
+    ][-1]
+    assert failed_event["details"]["failure_type"] == "retryable_exception"
+    assert failed_event["details"]["retryable"] is True
+    assert failed_event["details"]["error_type"] == "OrchestratorFailed"
     store.close()
 
 

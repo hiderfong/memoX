@@ -194,6 +194,92 @@ def test_execute_with_deps_retries_failed_subtask(tmp_path):
     assert any(event == "subtask_retry_scheduled" for event, _details in updates)
 
 
+def test_execute_with_deps_skips_dependents_when_dependency_fails(tmp_path):
+    from agents.worker_pool import SubTask, Task, TaskStatus
+
+    first = SubTask(id="sub_a", description="上游任务")
+    second = SubTask(id="sub_b", description="下游任务", dependencies=["sub_a"])
+    task = Task(id="task_dep_fail", description="依赖失败测试", sub_tasks=[first, second])
+    dispatched = []
+    updates = []
+
+    async def fake_execute_parallel(tasks, context=None, on_progress=None, per_task_contexts=None):
+        dispatched.extend(t.id for t in tasks)
+        return [(tasks[0], "", "upstream failed")]
+
+    def on_update(task_, event_type, details):
+        updates.append((event_type, details))
+
+    pool = MagicMock()
+    pool.execute_parallel = fake_execute_parallel
+    pool.get_worker_for = MagicMock(return_value=None)
+
+    orchestrator = IterativeOrchestrator(
+        planner=MagicMock(),
+        worker_pool=pool,
+        provider=MagicMock(),
+        rag_engine=None,
+        model="test-model",
+        base_workspace=tmp_path,
+        subtask_max_attempts=1,
+    )
+
+    asyncio.run(orchestrator._execute_with_deps(task, {}, on_task_update=on_update))
+
+    assert dispatched == ["sub_a"]
+    assert first.status == TaskStatus.FAILED
+    assert second.status == TaskStatus.FAILED
+    assert second.error == "依赖子任务失败: sub_a"
+    assert any(
+        event == "subtask_failed" and details.get("failed_dependencies") == ["sub_a"]
+        for event, details in updates
+    )
+
+
+def test_run_fails_when_subtasks_exhaust_attempts_even_if_threshold_low(tmp_path):
+    from agents.worker_pool import SubTask, Task, TaskStatus
+
+    sub = SubTask(id="sub_fail", description="会失败的任务")
+    task = Task(id="task_fail", description="失败测试", sub_tasks=[sub])
+    planner = MagicMock()
+    planner.plan_task = AsyncMock(return_value=(task, MagicMock(value="simple")))
+    provider = make_mock_provider(score=0.9)
+    updates = []
+
+    async def fake_execute_parallel(tasks, context=None, on_progress=None, per_task_contexts=None):
+        return [(tasks[0], "", "ConnectError: network unavailable")]
+
+    def on_update(task_, event_type, details):
+        updates.append((event_type, details))
+
+    pool = MagicMock()
+    pool.execute_parallel = fake_execute_parallel
+    pool.get_worker_for = MagicMock(return_value=None)
+
+    orchestrator = IterativeOrchestrator(
+        planner=planner,
+        worker_pool=pool,
+        provider=provider,
+        rag_engine=None,
+        model="test-model",
+        base_workspace=tmp_path,
+        quality_threshold=0.3,
+        max_iterations=3,
+        subtask_max_attempts=1,
+    )
+
+    result = asyncio.run(orchestrator.run("任务描述", on_task_update=on_update))
+
+    assert result.status == "failed"
+    assert result.final_score == 0.0
+    assert "sub_fail" in (result.error or "")
+    assert len(result.iterations) == 1
+    assert task.status == TaskStatus.FAILED
+    assert task.error and "sub_fail" in task.error
+    assert any(event == "task_failed" for event, _details in updates)
+    provider.chat.assert_not_called()
+
+
 def test_run_resumes_from_checkpoint_without_replanning_completed_subtasks(tmp_path):
     provider = make_mock_provider(score=0.9)
     planner = MagicMock()

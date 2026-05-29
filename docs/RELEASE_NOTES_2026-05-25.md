@@ -33,6 +33,8 @@ real-user deployments.
   editing, persisted media assets, queued/running/success/failed status,
   retry for failed assets, startup interruption recovery, and a bounded
   in-process media task queue.
+- Hardened multi-agent task terminal handling so exhausted or failed subtasks
+  cannot be reported as completed by fallback quality scoring.
 - Added a productized knowledge graph exploration payload and UI with entity
   search, neighborhood depth, predicate and confidence filters, core-entity
   facets, and relation provenance.
@@ -107,9 +109,8 @@ GitHub PR checks:
 
 - Expand knowledge graph productization with optional external notification
   delivery for graph quality alerts and pre-rollout quality gates.
-- Add a dedicated frontend batch I2V/video-editing workspace if users need
-  multi-asset creative production beyond the current API and document-preview
-  entry point.
+- Run real-key media-generation smoke tests against DashScope-compatible I2V
+  credentials before opening the media workspace to production traffic.
 - Consider CSV or diagnostic-bundle export for tool audit events if support
   workflows need offline review.
 - Plan an external job backend before scaling beyond the current single-node

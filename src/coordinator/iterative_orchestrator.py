@@ -49,6 +49,8 @@ class IterationResult:
     final_score: float
     iterations: list[IterationRecord]
     result_summary: str = ""
+    status: Literal["completed", "failed", "cancelled"] = "completed"
+    error: str | None = None
 
 
 class IterativeOrchestrator:
@@ -183,6 +185,7 @@ class IterativeOrchestrator:
                 final_score=0.0,
                 iterations=[],
                 result_summary="(任务已取消)",
+                status="cancelled",
             )
         finally:
             self._running_tasks.pop(task.id, None)
@@ -239,6 +242,15 @@ class IterativeOrchestrator:
             # Step 7: 合并沙箱 → shared/
             merged_summary = self._merge(task)
 
+            unfinished_subtasks = self._unfinished_subtasks(task)
+            if unfinished_subtasks:
+                failure_summary = self._format_unfinished_subtasks(unfinished_subtasks)
+                score = 0.0
+                improvements = [failure_summary]
+                history.append(IterationRecord(iteration=iteration, score=score, improvements=improvements))
+                logger.warning(f"[Orchestrator] 任务 {task.id} 子任务未全部完成，终止迭代: {failure_summary}")
+                break
+
             # Step 8: 质量评估
             score, improvements = await self._evaluate(description, merged_summary, iteration)
             history.append(IterationRecord(iteration=iteration, score=score, improvements=improvements))
@@ -286,6 +298,35 @@ class IterativeOrchestrator:
         except Exception as e:
             logger.warning(f"[Orchestrator] 邮件日志导出失败: {e}")
 
+        unfinished_subtasks = self._unfinished_subtasks(task)
+        if unfinished_subtasks:
+            failure_summary = self._format_unfinished_subtasks(unfinished_subtasks)
+            result_summary = self._with_failure_summary(merged_summary, failure_summary)
+            task.status = TaskStatus.FAILED
+            task.result = result_summary[:2000]
+            task.error = failure_summary
+            task.completed_at = datetime.now().isoformat()
+            await self._emit_task_update(
+                on_task_update,
+                task,
+                "task_failed",
+                {
+                    "final_score": score,
+                    "iterations": len(history),
+                    "error": failure_summary,
+                    "failed_subtasks": [st.id for st in unfinished_subtasks],
+                },
+            )
+            return IterationResult(
+                task_id=task.id,
+                shared_dir=str(shared_dir),
+                final_score=score,
+                iterations=history,
+                result_summary=result_summary[:2000],
+                status="failed",
+                error=failure_summary,
+            )
+
         task.status = TaskStatus.COMPLETED
         task.result = merged_summary[:2000]
         task.completed_at = datetime.now().isoformat()
@@ -301,6 +342,7 @@ class IterativeOrchestrator:
             final_score=score,
             iterations=history,
             result_summary=merged_summary[:2000],
+            status="completed",
         )
 
     async def _inject_rag_context(
@@ -424,13 +466,16 @@ class IterativeOrchestrator:
             except Exception as e:
                 logger.warning(f"[Orchestrator] Agent 通信日志导出失败: {e}")
 
-            task.status = TaskStatus.COMPLETED
+            failed_parallel_results = [item for item in result.subtask_results if not item.success]
+            parallel_error = self._format_parallel_failures(result.subtask_results)
+            task.status = TaskStatus.FAILED if failed_parallel_results else TaskStatus.COMPLETED
             task.result = result.aggregated_content[:2000]
+            task.error = parallel_error
             task.completed_at = datetime.now().isoformat()
             await self._emit_task_update(
                 on_task_update,
                 task,
-                "task_completed",
+                "task_failed" if failed_parallel_results else "task_completed",
                 {"final_score": result.final_score, "subtask_count": len(result.subtask_results)},
             )
             return IterationResult(
@@ -445,6 +490,8 @@ class IterativeOrchestrator:
                     )
                 ],
                 result_summary=result.aggregated_content[:2000],
+                status="failed" if failed_parallel_results else "completed",
+                error=parallel_error,
             )
         except asyncio.CancelledError:
             logger.warning(f"[Orchestrator] 任务 {task.id} 已被取消")
@@ -458,6 +505,7 @@ class IterativeOrchestrator:
                 final_score=0.0,
                 iterations=[],
                 result_summary="(任务已取消)",
+                status="cancelled",
             )
         finally:
             self._running_tasks.pop(task.id, None)
@@ -478,9 +526,38 @@ class IterativeOrchestrator:
             for st in task.sub_tasks
             if st.status == TaskStatus.COMPLETED
         }
+        failed: dict[str, str] = {
+            st.id: st.error or st.result or ""
+            for st in task.sub_tasks
+            if st.status == TaskStatus.FAILED
+        }
         pending = [st for st in task.sub_tasks if st.status != TaskStatus.COMPLETED]
 
         while pending:
+            blocked = [st for st in pending if any(dep in failed for dep in st.dependencies)]
+            for st in blocked:
+                failed_dependencies = [dep for dep in st.dependencies if dep in failed]
+                st.status = TaskStatus.FAILED
+                st.error = "依赖子任务失败: " + ", ".join(failed_dependencies)
+                st.completed_at = datetime.now().isoformat()
+                failed[st.id] = st.error
+                pending.remove(st)
+                await self._emit_task_update(
+                    on_task_update,
+                    task,
+                    "subtask_failed",
+                    {
+                        "subtask_id": st.id,
+                        "attempt": st.attempts,
+                        "error": st.error,
+                        "failed_dependencies": failed_dependencies,
+                        "iteration": iteration,
+                    },
+                )
+
+            if not pending:
+                break
+
             ready = [st for st in pending if all(d in completed for d in st.dependencies)]
             if not ready:
                 logger.error(f"[Orchestrator] 循环依赖或死锁，剩余: {[st.id for st in pending]}")
@@ -553,7 +630,10 @@ class IterativeOrchestrator:
                 st.result = result
                 st.error = error
                 st.completed_at = datetime.now().isoformat()
-                completed[st.id] = result or error or ""
+                if error:
+                    failed[st.id] = error
+                else:
+                    completed[st.id] = result or ""
                 pending.remove(st)
                 await self._emit_task_update(
                     on_task_update,
@@ -740,6 +820,39 @@ class IterativeOrchestrator:
             )
 
         return None
+
+    @staticmethod
+    def _unfinished_subtasks(task: Task) -> list[SubTask]:
+        return [st for st in task.sub_tasks if st.status != TaskStatus.COMPLETED]
+
+    @staticmethod
+    def _format_unfinished_subtasks(subtasks: list[SubTask]) -> str:
+        parts = []
+        for st in subtasks:
+            reason = (st.error or st.result or "未完成").replace("\n", " ").strip()
+            if len(reason) > 240:
+                reason = f"{reason[:237]}..."
+            parts.append(f"{st.id} status={st.status.value} attempts={st.attempts}: {reason}")
+        return "子任务未全部成功: " + "; ".join(parts)
+
+    @staticmethod
+    def _format_parallel_failures(subtask_results: list[Any]) -> str | None:
+        failed = [item for item in subtask_results if not getattr(item, "success", False)]
+        if not failed:
+            return None
+        parts = []
+        for item in failed:
+            reason = (getattr(item, "error", None) or "未完成").replace("\n", " ").strip()
+            if len(reason) > 240:
+                reason = f"{reason[:237]}..."
+            parts.append(f"{getattr(item, 'subtask_id', 'subtask')} worker={getattr(item, 'worker_name', '')}: {reason}")
+        return "子任务未全部成功: " + "; ".join(parts)
+
+    @staticmethod
+    def _with_failure_summary(merged_summary: str, failure_summary: str) -> str:
+        if merged_summary and merged_summary != "(无输出)":
+            return f"{merged_summary}\n\n[执行失败]\n{failure_summary}"
+        return f"[执行失败]\n{failure_summary}"
 
     def _merge(self, task: Task) -> str:
         """读取所有 Agent 沙箱文件，合并到 shared/，返回摘要"""

@@ -21,6 +21,7 @@ TERMINAL_STATUSES = {"completed", "failed", "cancelled", "timeout"}
 DEFAULT_LEASE_SECONDS = 60.0
 FAILURE_USER_CANCELLED = "user_cancelled"
 FAILURE_ORCHESTRATOR_CANCELLED = "orchestrator_cancelled"
+FAILURE_ORCHESTRATOR_FAILED = "orchestrator_failed"
 FAILURE_LEASE_LOST = "lease_lost"
 FAILURE_TIMEOUT = "timeout"
 FAILURE_RETRYABLE_EXCEPTION = "retryable_exception"
@@ -334,7 +335,9 @@ class TaskJobRunner:
 
         try:
             result = await self._execute_orchestrator(request)
-            status = "cancelled" if result.result_summary == "(任务已取消)" else "completed"
+            status = result.status if result.status in TERMINAL_STATUSES else "completed"
+            if result.result_summary == "(任务已取消)":
+                status = "cancelled"
             reason = None
             if status == "cancelled":
                 reason = self._pop_terminal_reason(
@@ -343,6 +346,15 @@ class TaskJobRunner:
                     default_retryable=False,
                     default_message="编排器返回取消状态",
                 )
+            elif status == "failed":
+                failure_type, retryable = self._classify_failure_text(result.error or result.result_summary)
+                reason = {
+                    "failure_type": failure_type,
+                    "retryable": retryable,
+                    "error_type": "OrchestratorFailed",
+                    "error": result.error or result.result_summary,
+                    "owner_id": self._owner_id,
+                }
             suggestions = []
             if status == "completed" and request.generate_suggestions and self._task_planner:
                 placeholder_task = Task(
@@ -387,8 +399,8 @@ class TaskJobRunner:
             self._store.save_task(payload)
             self._store.add_task_event(
                 result.task_id,
-                status,
-                "任务已完成" if status == "completed" else reason.get("message", "任务已取消"),
+                self._terminal_event_type(status, reason),
+                self._terminal_result_message(status, reason),
                 {
                     "final_score": result.final_score,
                     "iterations": len(result.iterations),
@@ -397,6 +409,8 @@ class TaskJobRunner:
             )
             self._store.clear_task_job_auto_retry(result.task_id)
             self._result_cache[result.task_id] = payload
+            if status == "failed" and reason:
+                self._schedule_auto_retry_if_needed(task_id, reason.get("failure_type", ""))
         except asyncio.TimeoutError:
             logger.warning(f"[TaskJobRunner] 任务 {task_id} 执行超时")
             details = {
@@ -648,6 +662,24 @@ class TaskJobRunner:
             delay = min(delay, self._auto_retry_max_delay_seconds)
         return max(0.0, delay)
 
+    @classmethod
+    def _terminal_event_type(cls, status: str, reason: dict[str, Any] | None = None) -> str:
+        if status != "failed":
+            return status
+        retryable = bool((reason or {}).get("retryable"))
+        return "failed_retryable" if retryable else "failed_non_retryable"
+
+    @staticmethod
+    def _terminal_result_message(status: str, reason: dict[str, Any] | None = None) -> str:
+        if status == "completed":
+            return "任务已完成"
+        if status == "failed":
+            retryable = bool((reason or {}).get("retryable"))
+            return "任务执行失败（可重试）" if retryable else "任务执行失败（不可重试）"
+        if status == "cancelled":
+            return (reason or {}).get("message", "任务已取消")
+        return status
+
     @staticmethod
     def _parse_datetime(value: str) -> datetime | None:
         try:
@@ -655,10 +687,21 @@ class TaskJobRunner:
         except (TypeError, ValueError):
             return None
 
-    @staticmethod
-    def _classify_exception(exc: Exception) -> tuple[str, bool]:
+    @classmethod
+    def _classify_exception(cls, exc: Exception) -> tuple[str, bool]:
         name = type(exc).__name__.lower()
         text = str(exc).lower()
+        retryable = isinstance(exc, (ConnectionError, OSError)) or cls._looks_retryable_text(f"{name} {text}")
+        return (FAILURE_RETRYABLE_EXCEPTION, True) if retryable else (FAILURE_NON_RETRYABLE_EXCEPTION, False)
+
+    @classmethod
+    def _classify_failure_text(cls, text: str) -> tuple[str, bool]:
+        retryable = cls._looks_retryable_text(text)
+        return (FAILURE_RETRYABLE_EXCEPTION, True) if retryable else (FAILURE_ORCHESTRATOR_FAILED, False)
+
+    @staticmethod
+    def _looks_retryable_text(text: str) -> bool:
+        lowered = text.lower()
         retryable_markers = (
             "timeout",
             "timed out",
@@ -671,10 +714,7 @@ class TaskJobRunner:
             "unavailable",
             "busy",
         )
-        retryable = isinstance(exc, (ConnectionError, OSError)) or any(
-            marker in name or marker in text for marker in retryable_markers
-        )
-        return (FAILURE_RETRYABLE_EXCEPTION, True) if retryable else (FAILURE_NON_RETRYABLE_EXCEPTION, False)
+        return any(marker in lowered for marker in retryable_markers)
 
     def _latest_failure(self, task_id: str) -> dict[str, Any]:
         for event in reversed(self._store.list_task_events(task_id)):
@@ -829,6 +869,7 @@ class TaskJobRunner:
             "subtask_completed": f"子任务 {subtask_id} 已完成",
             "subtask_failed": f"子任务 {subtask_id} 执行失败",
             "task_completed": "任务执行完成",
+            "task_failed": "任务执行失败",
             "task_cancelled": "任务已取消",
         }
         return messages.get(event_type, event_type)
