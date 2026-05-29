@@ -101,6 +101,10 @@ MEMOX_BROWSER_E2E=1 uv run --extra dev pytest tests/e2e/test_admin_ui_browser_fl
 uv run --extra dev python scripts/docker_smoke_test.py
 ```
 
+Real-key provider checks that require unrestricted external network access are
+tracked separately in `docs/EXTERNAL_AGENT_E2E_RUNBOOK.md`. Use that runbook for
+DeepSeek, MiniMax, Kimi, and DashScope I2V validation.
+
 For a faster code-review loop, the following targeted tests cover the current
 task execution, tool policy, audit, and operational API paths:
 
