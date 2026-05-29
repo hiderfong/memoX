@@ -8,7 +8,7 @@ from pathlib import Path
 
 from loguru import logger
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 9
 
 
 class SchemaMigrationError(RuntimeError):
@@ -214,6 +214,39 @@ class PersistenceStore:
             CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id);
             CREATE INDEX IF NOT EXISTS idx_memories_category ON memories(category);
             CREATE INDEX IF NOT EXISTS idx_memories_created ON memories(created_at DESC);
+
+            CREATE TABLE IF NOT EXISTS knowledge_graph_review_decisions (
+                candidate_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                note TEXT NOT NULL DEFAULT '',
+                details TEXT DEFAULT '{}',
+                username TEXT NOT NULL DEFAULT '',
+                user_role TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_kg_review_status_updated
+                ON knowledge_graph_review_decisions(status, updated_at DESC);
+
+            CREATE TABLE IF NOT EXISTS knowledge_graph_quality_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                health_score INTEGER NOT NULL DEFAULT 0,
+                risk_level TEXT NOT NULL DEFAULT 'low',
+                relation_count INTEGER NOT NULL DEFAULT 0,
+                entity_count INTEGER NOT NULL DEFAULT 0,
+                source_doc_count INTEGER NOT NULL DEFAULT 0,
+                source_chunk_count INTEGER NOT NULL DEFAULT 0,
+                candidate_count INTEGER NOT NULL DEFAULT 0,
+                open_candidate_count INTEGER NOT NULL DEFAULT 0,
+                decided_candidate_count INTEGER NOT NULL DEFAULT 0,
+                low_confidence_ratio REAL NOT NULL DEFAULT 0.0,
+                isolated_relation_ratio REAL NOT NULL DEFAULT 0.0,
+                open_review_backlog_ratio REAL NOT NULL DEFAULT 0.0,
+                metrics TEXT DEFAULT '{}',
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_kg_quality_snapshots_created
+                ON knowledge_graph_quality_snapshots(created_at DESC);
         """)
         self._run_migrations()
         self._conn.commit()
@@ -230,6 +263,8 @@ class PersistenceStore:
             (5, "task_job_recovery_metadata", self._migration_task_job_recovery_metadata),
             (6, "task_job_auto_retry_metadata", self._migration_task_job_auto_retry_metadata),
             (7, "worker_logs_table", self._migration_worker_logs_table),
+            (8, "knowledge_graph_review_decisions", self._migration_knowledge_graph_review_decisions),
+            (9, "knowledge_graph_quality_snapshots", self._migration_knowledge_graph_quality_snapshots),
         ]
         applied = {
             row["version"]
@@ -319,6 +354,45 @@ class PersistenceStore:
             CREATE INDEX IF NOT EXISTS idx_worker_logs_worker_created ON worker_logs(worker_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_worker_logs_task_created ON worker_logs(task_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_worker_logs_subtask_created ON worker_logs(subtask_id, created_at DESC);
+        """)
+
+    def _migration_knowledge_graph_review_decisions(self) -> None:
+        self._conn.executescript("""
+            CREATE TABLE IF NOT EXISTS knowledge_graph_review_decisions (
+                candidate_id TEXT PRIMARY KEY,
+                status TEXT NOT NULL,
+                note TEXT NOT NULL DEFAULT '',
+                details TEXT DEFAULT '{}',
+                username TEXT NOT NULL DEFAULT '',
+                user_role TEXT NOT NULL DEFAULT '',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_kg_review_status_updated
+                ON knowledge_graph_review_decisions(status, updated_at DESC);
+        """)
+
+    def _migration_knowledge_graph_quality_snapshots(self) -> None:
+        self._conn.executescript("""
+            CREATE TABLE IF NOT EXISTS knowledge_graph_quality_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                health_score INTEGER NOT NULL DEFAULT 0,
+                risk_level TEXT NOT NULL DEFAULT 'low',
+                relation_count INTEGER NOT NULL DEFAULT 0,
+                entity_count INTEGER NOT NULL DEFAULT 0,
+                source_doc_count INTEGER NOT NULL DEFAULT 0,
+                source_chunk_count INTEGER NOT NULL DEFAULT 0,
+                candidate_count INTEGER NOT NULL DEFAULT 0,
+                open_candidate_count INTEGER NOT NULL DEFAULT 0,
+                decided_candidate_count INTEGER NOT NULL DEFAULT 0,
+                low_confidence_ratio REAL NOT NULL DEFAULT 0.0,
+                isolated_relation_ratio REAL NOT NULL DEFAULT 0.0,
+                open_review_backlog_ratio REAL NOT NULL DEFAULT 0.0,
+                metrics TEXT DEFAULT '{}',
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_kg_quality_snapshots_created
+                ON knowledge_graph_quality_snapshots(created_at DESC);
         """)
 
     def schema_version(self) -> int:
@@ -1527,6 +1601,175 @@ class PersistenceStore:
         cursor = self._conn.execute("DELETE FROM ops_events WHERE created_at < ?", (cutoff_iso,))
         self._conn.commit()
         return cursor.rowcount
+
+    # ── 知识图谱审核决策 ───────────────────────────────────────
+
+    @staticmethod
+    def _kg_review_decision_row_to_dict(row: sqlite3.Row) -> dict:
+        return {
+            "candidate_id": row["candidate_id"],
+            "status": row["status"],
+            "note": row["note"],
+            "details": json.loads(row["details"]) if row["details"] else {},
+            "username": row["username"],
+            "user_role": row["user_role"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+        }
+
+    def set_knowledge_graph_review_decision(
+        self,
+        candidate_id: str,
+        status: str,
+        *,
+        note: str = "",
+        details: dict | None = None,
+        username: str = "",
+        user_role: str = "",
+    ) -> dict:
+        """Create or update a knowledge-graph review decision."""
+        candidate_id = str(candidate_id or "").strip()
+        status = str(status or "").strip()
+        if not candidate_id:
+            raise ValueError("candidate_id is required")
+        if status not in {"accepted", "ignored", "snoozed", "open"}:
+            raise ValueError("invalid review decision status")
+
+        now = datetime.now().isoformat()
+        existing = self._conn.execute(
+            "SELECT created_at FROM knowledge_graph_review_decisions WHERE candidate_id=?",
+            (candidate_id,),
+        ).fetchone()
+        created_at = existing["created_at"] if existing else now
+        self._conn.execute(
+            """INSERT INTO knowledge_graph_review_decisions
+               (candidate_id, status, note, details, username, user_role, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(candidate_id) DO UPDATE SET
+                   status=excluded.status,
+                   note=excluded.note,
+                   details=excluded.details,
+                   username=excluded.username,
+                   user_role=excluded.user_role,
+                   updated_at=excluded.updated_at""",
+            (
+                candidate_id,
+                status,
+                note,
+                json.dumps(details or {}, ensure_ascii=False),
+                username,
+                user_role,
+                created_at,
+                now,
+            ),
+        )
+        self._conn.commit()
+        row = self._conn.execute(
+            "SELECT * FROM knowledge_graph_review_decisions WHERE candidate_id=?",
+            (candidate_id,),
+        ).fetchone()
+        return self._kg_review_decision_row_to_dict(row)
+
+    def get_knowledge_graph_review_decision(self, candidate_id: str) -> dict | None:
+        row = self._conn.execute(
+            "SELECT * FROM knowledge_graph_review_decisions WHERE candidate_id=?",
+            (candidate_id,),
+        ).fetchone()
+        return self._kg_review_decision_row_to_dict(row) if row else None
+
+    def list_knowledge_graph_review_decisions(self, status: str | None = None) -> list[dict]:
+        query = "SELECT * FROM knowledge_graph_review_decisions"
+        params: list = []
+        if status:
+            query += " WHERE status=?"
+            params.append(status)
+        query += " ORDER BY updated_at DESC"
+        rows = self._conn.execute(query, params).fetchall()
+        return [self._kg_review_decision_row_to_dict(row) for row in rows]
+
+    def delete_knowledge_graph_review_decision(self, candidate_id: str) -> bool:
+        cursor = self._conn.execute(
+            "DELETE FROM knowledge_graph_review_decisions WHERE candidate_id=?",
+            (candidate_id,),
+        )
+        self._conn.commit()
+        return cursor.rowcount > 0
+
+    # ── 知识图谱质量指标快照 ───────────────────────────────────
+
+    @staticmethod
+    def _kg_quality_snapshot_row_to_dict(row: sqlite3.Row) -> dict:
+        return {
+            "id": row["id"],
+            "health_score": row["health_score"],
+            "risk_level": row["risk_level"],
+            "relation_count": row["relation_count"],
+            "entity_count": row["entity_count"],
+            "source_doc_count": row["source_doc_count"],
+            "source_chunk_count": row["source_chunk_count"],
+            "candidate_count": row["candidate_count"],
+            "open_candidate_count": row["open_candidate_count"],
+            "decided_candidate_count": row["decided_candidate_count"],
+            "low_confidence_ratio": row["low_confidence_ratio"],
+            "isolated_relation_ratio": row["isolated_relation_ratio"],
+            "open_review_backlog_ratio": row["open_review_backlog_ratio"],
+            "metrics": json.loads(row["metrics"]) if row["metrics"] else {},
+            "created_at": row["created_at"],
+        }
+
+    def save_knowledge_graph_quality_snapshot(self, metrics: dict, *, created_at: str | None = None) -> dict:
+        """Persist one knowledge-graph quality metrics snapshot."""
+        metrics = dict(metrics or {})
+        created_at = created_at or datetime.now().isoformat()
+        cursor = self._conn.execute(
+            """INSERT INTO knowledge_graph_quality_snapshots
+               (health_score, risk_level, relation_count, entity_count, source_doc_count,
+                source_chunk_count, candidate_count, open_candidate_count, decided_candidate_count,
+                low_confidence_ratio, isolated_relation_ratio, open_review_backlog_ratio,
+                metrics, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                int(metrics.get("health_score") or 0),
+                str(metrics.get("risk_level") or "low"),
+                int(metrics.get("relation_count") or 0),
+                int(metrics.get("entity_count") or 0),
+                int(metrics.get("source_doc_count") or 0),
+                int(metrics.get("source_chunk_count") or 0),
+                int(metrics.get("candidate_count") or 0),
+                int(metrics.get("open_candidate_count") or 0),
+                int(metrics.get("decided_candidate_count") or 0),
+                float(metrics.get("low_confidence_ratio") or 0.0),
+                float(metrics.get("isolated_relation_ratio") or 0.0),
+                float(metrics.get("open_review_backlog_ratio") or 0.0),
+                json.dumps(metrics, ensure_ascii=False),
+                created_at,
+            ),
+        )
+        self._conn.execute(
+            """DELETE FROM knowledge_graph_quality_snapshots
+               WHERE id NOT IN (
+                   SELECT id FROM knowledge_graph_quality_snapshots
+                   ORDER BY created_at DESC, id DESC
+                   LIMIT 500
+               )"""
+        )
+        self._conn.commit()
+        row = self._conn.execute(
+            "SELECT * FROM knowledge_graph_quality_snapshots WHERE id=?",
+            (cursor.lastrowid,),
+        ).fetchone()
+        return self._kg_quality_snapshot_row_to_dict(row)
+
+    def list_knowledge_graph_quality_snapshots(self, limit: int = 30) -> list[dict]:
+        safe_limit = max(1, min(int(limit), 500))
+        rows = self._conn.execute(
+            """SELECT * FROM knowledge_graph_quality_snapshots
+               ORDER BY created_at DESC, id DESC
+               LIMIT ?""",
+            (safe_limit,),
+        ).fetchall()
+        snapshots = [self._kg_quality_snapshot_row_to_dict(row) for row in rows]
+        return list(reversed(snapshots))
 
     # ==================== 跨会话记忆（memories）====================
 

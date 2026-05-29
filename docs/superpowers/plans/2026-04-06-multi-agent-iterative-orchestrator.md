@@ -1,5 +1,8 @@
 # 多 Agent 迭代协作系统实现计划
 
+> **Plan status (2026-05-29):** Archived reference. The checkbox list below is the original execution breakdown and is not an authoritative current backlog.
+> Use implementation files, tests, release notes, and handoff docs for current project status.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 实现 MailBus、沙箱管理、真实工具（文件/Shell/邮件）、依赖注入与质量评估迭代的多 Agent 协作系统，修复依赖传递 Bug 并替换现有 `/api/tasks` 执行逻辑。

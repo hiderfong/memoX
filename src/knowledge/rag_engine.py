@@ -290,6 +290,15 @@ class RAGEngine:
         self.chunk_strategy = chunk_strategy
         self.enable_graph = enable_graph
 
+        def _graph_config_str(name: str, default: str = "") -> str:
+            raw = getattr(graph_config, name, default) if graph_config is not None else default
+            return raw if isinstance(raw, str) else default
+
+        self.graph_llm_provider = _graph_config_str("graph_llm_provider")
+        self.graph_llm_api_key = _graph_config_str("graph_llm_api_key")
+        self.graph_llm_base_url = _graph_config_str("graph_llm_base_url")
+        self.graph_llm_model = _graph_config_str("graph_llm_model")
+
         # 混合检索初始化
         if self.hybrid_search_enabled:
             bm25_indexer = get_bm25_indexer(bm25_persist_path)
@@ -499,12 +508,19 @@ class RAGEngine:
 
         # 知识图谱（启用时同步写入三元组）
         if self._knowledge_graph is not None:
-            for c in chunks:
-                from .knowledge_graph import _extract_triples_rule_based
-                triples = _extract_triples_rule_based(c.content, c.id)
-                for t in triples:
-                    self._knowledge_graph.add_triple(t)
-            self._knowledge_graph.save()
+            result = await self._knowledge_graph.build_from_chunks(
+                chunks,
+                llm_provider=self.graph_llm_provider,
+                llm_api_key=self.graph_llm_api_key,
+                llm_base_url=self.graph_llm_base_url,
+                llm_model=self.graph_llm_model,
+                use_llm=bool(self.graph_llm_api_key),
+            )
+            print(
+                "[RAG] Knowledge graph updated: "
+                f"added={result.get('added', 0)} method={result.get('method', 'rule')} "
+                f"fallback_chunks={result.get('llm_fallback_chunks', 0)}"
+            )
 
     async def delete_document(self, doc_id: str, collection_name: str = "documents") -> bool:
         """从知识库删除文档，同时串行化索引/manifest 写操作。"""
@@ -517,7 +533,7 @@ class RAGEngine:
         if self._hybrid_retriever is not None:
             self._hybrid_retriever.bm25_indexer.delete_by_doc_id(doc_id)
         if self._knowledge_graph is not None:
-            self._knowledge_graph.remove_by_chunk_id(doc_id)
+            self._knowledge_graph.remove_by_doc_id(doc_id)
         if doc_id in self._documents:
             del self._documents[doc_id]
         return count

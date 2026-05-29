@@ -1,5 +1,8 @@
 # 图生视频 (Image-to-Video) Implementation Plan
 
+> **Plan status (2026-05-29):** Completed and archived. Phase 1 and the later Phase 2 delta are implemented; the unchecked boxes below are preserved as the original execution breakdown, not as an active backlog.
+> Current behavior is summarized in `docs/superpowers/specs/2026-04-14-image-to-video-design.md`, `docs/CHANGESET_HANDOFF.md`, and the related tests.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 让用户通过 UI 按钮或 coordinator LLM 的 `[[I2V:...]]` 标记，把对话中的图片转换为视频（DashScope `wan2.7-i2v`）。
@@ -1131,7 +1134,7 @@ git commit -m "feat(frontend): wire I2V button on chat images + SSE event handli
 
 在 README 或 CLAUDE.md 的"部署注意"一节补一句：
 
-> 若 MemoX 部署在私网，DashScope 无法拉取 `/api/files/...`；请使用 LLM 生成图（自带公网 URL）或等待 Phase 2 的文件上传兜底。
+> Historical note: Phase 2 now includes the backend DashScope temporary OSS upload fallback for private/local `/api/files/...` assets.
 
 - [ ] **Step 4: Final Commit**
 

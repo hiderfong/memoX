@@ -1,17 +1,5 @@
-import React, { useState, useEffect, useRef, createContext, useContext } from 'react';
-import { Layout, Menu, Typography, Card, Button, Upload, List, Space, Avatar, Input, message, Spin, Tag, Progress, Badge, Drawer, Timeline, Alert, Empty, Tooltip, Form, Divider, Checkbox, Modal, Tabs, Table, Select, Slider, InputNumber, AutoComplete, Switch, Segmented } from 'antd';
-import { UploadOutlined, FileTextOutlined, RobotOutlined, MessageOutlined, TeamOutlined, SettingOutlined, CloudUploadOutlined, DeleteOutlined, SendOutlined, LoadingOutlined, BulbOutlined, ThunderboltOutlined, ClockCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, InboxOutlined, UserOutlined, LockOutlined, LogoutOutlined, SafetyCertificateOutlined, LinkOutlined, FolderOpenOutlined, MailOutlined, LineChartOutlined, FileSearchOutlined, EyeOutlined, SaveOutlined, DownOutlined, UpOutlined, PlusOutlined, EditOutlined, DownloadOutlined, BgColorsOutlined, ReloadOutlined, RollbackOutlined, ExclamationCircleOutlined, ToolOutlined, DeploymentUnitOutlined } from '@ant-design/icons';
-import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip as RTooltip, Legend, ResponsiveContainer } from 'recharts';
-import { useNavigate, useLocation, Routes, Route, Link, Navigate } from 'react-router-dom';
+import { createContext, useEffect, useState } from 'react';
 import axios from 'axios';
-import dayjs from 'dayjs';
-import { I2VModal } from './components/I2VModal';
-import { WorkflowsPage } from './pages/WorkflowsPage';
-
-const { Header, Sider, Content } = Layout;
-const { Title, Text } = Typography;
-const { TextArea } = Input;
-const { Dragger } = Upload;
 
 // ==================== 响应式 Hook ====================
 
@@ -170,6 +158,207 @@ export interface ToolPolicyResponse {
   };
 }
 
+export interface KnowledgeGraphNode {
+  id: string;
+  name: string;
+  val: number;
+  degree: number;
+  evidence_count: number;
+  source_doc_count: number;
+  matched?: boolean;
+}
+
+export interface KnowledgeGraphLink {
+  source: string | KnowledgeGraphNode;
+  target: string | KnowledgeGraphNode;
+  label: string;
+  predicate: string;
+  confidence: number;
+  source_chunk_id?: string;
+  source_doc_id?: string;
+}
+
+export interface KnowledgeGraphEntity {
+  id: string;
+  name: string;
+  degree: number;
+  evidence_count: number;
+  source_doc_count: number;
+}
+
+export interface KnowledgeGraphPayload {
+  nodes: KnowledgeGraphNode[];
+  links: KnowledgeGraphLink[];
+  stats: Record<string, any>;
+  entities: KnowledgeGraphEntity[];
+  predicates: Array<{ predicate: string; count: number }>;
+  matched_entity?: string | null;
+  filters: {
+    entity: string;
+    query: string;
+    depth: number;
+    limit: number;
+    min_confidence: number;
+    predicate: string;
+  };
+}
+
+export interface KnowledgeGraphTripleMutation {
+  subject: string;
+  predicate: string;
+  object: string;
+  source_chunk_id?: string;
+  confidence?: number;
+}
+
+export type KnowledgeGraphQualityCandidateType =
+  | 'duplicate_entity'
+  | 'ambiguous_entity'
+  | 'low_confidence_relation'
+  | 'isolated_relation'
+  | 'conflicting_relation'
+  | string;
+
+export interface KnowledgeGraphQualityCandidate {
+  id: string;
+  fingerprint: string;
+  type: KnowledgeGraphQualityCandidateType;
+  severity: 'high' | 'medium' | 'low' | string;
+  score: number;
+  title: string;
+  description: string;
+  entities?: string[];
+  triple?: KnowledgeGraphTripleMutation;
+  related_triples?: KnowledgeGraphTripleMutation[];
+  action?: {
+    type: string;
+    source?: string;
+    target?: string;
+    new_entity?: string;
+    triple?: KnowledgeGraphTripleMutation;
+    triples?: KnowledgeGraphTripleMutation[];
+  };
+  reasons?: string[];
+  decision?: KnowledgeGraphReviewDecision;
+  stale_decision?: KnowledgeGraphReviewDecision;
+}
+
+export type KnowledgeGraphReviewStatus = 'open' | 'accepted' | 'ignored' | 'snoozed';
+
+export interface KnowledgeGraphReviewDecision {
+  candidate_id: string;
+  status: KnowledgeGraphReviewStatus;
+  note: string;
+  details: Record<string, any>;
+  username: string;
+  user_role: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface KnowledgeGraphQualityGateViolation {
+  level: 'warning' | 'error' | string;
+  code: string;
+  title: string;
+  message: string;
+  value: number;
+  threshold: number;
+}
+
+export interface KnowledgeGraphQualityGate {
+  enabled: boolean;
+  passed: boolean;
+  status: ReadinessStatus;
+  message: string;
+  violations: KnowledgeGraphQualityGateViolation[];
+  thresholds: Record<string, number | boolean>;
+  metrics?: Record<string, number>;
+}
+
+export interface KnowledgeGraphQualityTrigger {
+  action: string;
+  doc_id: string;
+  filename: string;
+  document_action?: string;
+  chunk_count?: number;
+  relation_count?: number;
+  previous_health_score?: number | null;
+  current_health_score?: number;
+  health_drop?: number;
+}
+
+export interface KnowledgeGraphQualityMetrics {
+  health_score: number;
+  risk_level: 'low' | 'medium' | 'high' | string;
+  relation_count: number;
+  entity_count: number;
+  source_doc_count: number;
+  source_chunk_count: number;
+  triples_per_source_chunk: number;
+  candidate_count: number;
+  duplicate_entity_ratio: number;
+  low_confidence_ratio: number;
+  isolated_relation_ratio: number;
+  conflicting_relation_ratio: number;
+  ambiguous_entity_ratio?: number;
+  review_backlog_ratio: number;
+  open_candidate_count?: number;
+  decided_candidate_count?: number;
+  open_review_backlog_ratio?: number;
+  alerts?: KnowledgeGraphQualityAlert[];
+  quality_gate?: KnowledgeGraphQualityGate;
+  trigger?: KnowledgeGraphQualityTrigger;
+}
+
+export interface KnowledgeGraphQualityAlert {
+  level: 'warning' | 'error' | string;
+  code: string;
+  title: string;
+  message: string;
+  value: number;
+  threshold: number;
+  action: string;
+}
+
+export interface KnowledgeGraphQualitySnapshot extends KnowledgeGraphQualityMetrics {
+  id: number;
+  metrics: KnowledgeGraphQualityMetrics;
+  created_at: string;
+}
+
+export interface KnowledgeGraphQualityPayload {
+  summary: {
+    total_candidates: number;
+    returned_candidates: number;
+    duplicate_entity_count: number;
+    low_confidence_relation_count: number;
+    isolated_relation_count: number;
+    conflicting_relation_count: number;
+    ambiguous_entity_count?: number;
+    average_confidence: number;
+    quality_metrics?: KnowledgeGraphQualityMetrics;
+    quality_gate?: KnowledgeGraphQualityGate;
+    trigger?: KnowledgeGraphQualityTrigger;
+    latest_snapshot_id?: number;
+    hidden_decided_count?: number;
+    stale_decision_count?: number;
+    nodes?: number;
+    edges?: number;
+  };
+  candidates: KnowledgeGraphQualityCandidate[];
+  thresholds: {
+    confidence_threshold: number;
+    limit: number;
+  };
+  filters?: {
+    status?: string;
+  };
+}
+
+export interface KnowledgeGraphQualityHistoryPayload {
+  snapshots: KnowledgeGraphQualitySnapshot[];
+}
+
 export interface LifecycleCleanupResult {
   ok: boolean;
   status: ReadinessStatus;
@@ -245,6 +434,8 @@ export const opsEventLabel = (eventType?: string) => {
   if (eventType === 'restore_execute') return '真实恢复';
   if (eventType === 'restore_drill') return '恢复演练';
   if (eventType === 'lifecycle_cleanup') return '生命周期清理';
+  if (eventType === 'knowledge_graph_quality_alert') return '图谱质量';
+  if (eventType === 'knowledge_graph_governance_task') return '图谱治理';
   return eventType || '运维事件';
 };
 
@@ -256,6 +447,8 @@ export const opsEventTypeOptions = [
   'restore_execute',
   'restore_drill',
   'lifecycle_cleanup',
+  'knowledge_graph_quality_alert',
+  'knowledge_graph_governance_task',
 ];
 
 export const opsEventStatusOptions: ReadinessStatus[] = ['ok', 'warning', 'error'];
@@ -502,8 +695,57 @@ export const api = {
 
   // 文档 chunks + 搜索
   getDocumentChunks: (docId: string) => axios.get(`${API_BASE}/documents/${docId}/chunks`),
+  getDocumentMediaAssets: (docId: string) => axios.get(`${API_BASE}/documents/${docId}/media-assets`),
   searchDocuments: (q: string, groupIds?: string) =>
     axios.get(`${API_BASE}/documents/search`, { params: { q, group_ids: groupIds } }),
+  getKnowledgeGraph: (params?: {
+    entity?: string;
+    q?: string;
+    depth?: number;
+    limit?: number;
+    min_confidence?: number;
+    predicate?: string;
+  }) => axios.get<KnowledgeGraphPayload>(`${API_BASE}/knowledge/graph`, { params }),
+  getKnowledgeGraphQuality: (params?: { confidence_threshold?: number; limit?: number; status?: string }) =>
+    axios.get<KnowledgeGraphQualityPayload>(`${API_BASE}/knowledge/graph/quality`, { params }),
+  getKnowledgeGraphQualityHistory: (params?: { limit?: number }) =>
+    axios.get<KnowledgeGraphQualityHistoryPayload>(`${API_BASE}/knowledge/graph/quality/history`, { params }),
+  setKnowledgeGraphQualityDecision: (data: {
+    candidate_id: string;
+    status: KnowledgeGraphReviewStatus;
+    note?: string;
+    details?: Record<string, any>;
+  }) => axios.post<{ success: boolean; decision: KnowledgeGraphReviewDecision }>(
+    `${API_BASE}/knowledge/graph/quality/decisions`,
+    data,
+  ),
+  setKnowledgeGraphQualityDecisions: (data: {
+    decisions: Array<{
+      candidate_id: string;
+      status: KnowledgeGraphReviewStatus;
+      note?: string;
+      details?: Record<string, any>;
+    }>;
+  }) => axios.post<{ success: boolean; updated: number; decisions: KnowledgeGraphReviewDecision[] }>(
+    `${API_BASE}/knowledge/graph/quality/decisions/batch`,
+    data,
+  ),
+  mergeKnowledgeGraphEntities: (data: { source: string; target: string }) =>
+    axios.post(`${API_BASE}/knowledge/graph/entities/merge`, data),
+  splitKnowledgeGraphEntity: (data: {
+    source: string;
+    new_entity: string;
+    triples: KnowledgeGraphTripleMutation[];
+  }) => axios.post(`${API_BASE}/knowledge/graph/entities/split`, data),
+  updateKnowledgeGraphTriple: (data: {
+    old: KnowledgeGraphTripleMutation;
+    new: KnowledgeGraphTripleMutation;
+  }) => axios.put(`${API_BASE}/knowledge/graph/triples`, data),
+  deleteKnowledgeGraphTriple: (data: KnowledgeGraphTripleMutation) =>
+    axios.post(`${API_BASE}/knowledge/graph/triples/delete`, data),
+  generateI2V: (data: any) => axios.post(`${API_BASE}/videos/i2v`, data),
+  generateI2VBatch: (items: any[]) => axios.post(`${API_BASE}/videos/i2v/batch`, { items }),
+  editVideo: (data: any) => axios.post(`${API_BASE}/videos/edit`, data),
 
   // 任务反馈
   submitTaskFeedback: (taskId: string, feedback: string) =>

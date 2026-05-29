@@ -1,5 +1,8 @@
 # 多 Agent 协作功能测试实现计划
 
+> **Plan status (2026-05-29):** Archived reference. The checkbox list below is the original execution breakdown and is not an authoritative current backlog.
+> Use implementation files, tests, release notes, and handoff docs for current project status.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 建立集成层（6 个场景，Mock LLM，纳入 CI）+ E2E 层（真实 MiniMax，渐进式）两层测试体系，全面验证多 Agent 协作工作流无卡点。

@@ -119,7 +119,7 @@ def _wait_for_http(url: str, managed: ManagedProcess, timeout_seconds: float = 6
     raise RuntimeError(f"Timed out waiting for {url}: {last_error}\n\n--- log tail ---\n{_tail(managed.log_path)}")
 
 
-def _write_browser_config(root: Path) -> Path:
+def _write_browser_config(root: Path, *, enable_graph: bool = False) -> Path:
     data = root / "data"
     for name in ["chroma", "uploads", "skills"]:
         (data / name).mkdir(parents=True, exist_ok=True)
@@ -199,7 +199,7 @@ def _write_browser_config(root: Path) -> Path:
                 "rrf_k": 60,
                 "chunk_strategy": "size",
             },
-            "enable_graph": False,
+            "enable_graph": enable_graph,
             "graph_persist_path": str(data / "knowledge_graph.gml"),
             "manifest_path": str(data / "documents_manifest.json"),
             "graph_llm_provider": "dashscope",
@@ -244,6 +244,17 @@ def _write_browser_config(root: Path) -> Path:
     config_path = root / "config.yaml"
     config_path.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
     return config_path
+
+
+def _seed_knowledge_graph_quality_issue(root: Path) -> None:
+    from src.knowledge.knowledge_graph import NetworkXKnowledgeGraph, Triple
+
+    graph_path = root / "data" / "knowledge_graph.gml"
+    kg = NetworkXKnowledgeGraph(persist_path=str(graph_path), enabled=True)
+    kg.add_triple(Triple("MemoX", "支持", "长期记忆", "doc_ok_chunk_0", 0.92))
+    kg.add_triple(Triple("MemoX", "包含", "知识图谱", "doc_ok_chunk_1", 0.88))
+    kg.add_triple(Triple("噪声实体", "关联", "偶发对象", "doc_bad_chunk_0", 0.25))
+    kg.save()
 
 
 def _start_backend(tmp_path: Path, config_path: Path) -> ManagedProcess:
@@ -404,6 +415,94 @@ def test_admin_settings_web_policy_and_tool_audit_browser_flow(tmp_path: Path) -
                     '[data-testid="web-max-search-results"] input, input[data-testid="web-max-search-results"]'
                 )
             ).to_have_value("13")
+
+            assert console_errors == []
+        finally:
+            if browser is not None:
+                browser.close()
+            if playwright is not None:
+                playwright.stop()
+    finally:
+        _stop_process(frontend)
+        _stop_process(backend)
+
+
+def test_knowledge_graph_governance_status_deeplink_and_resolution_browser_flow(tmp_path: Path) -> None:
+    config_path = _write_browser_config(tmp_path, enable_graph=True)
+    _seed_knowledge_graph_quality_issue(tmp_path)
+    backend: ManagedProcess | None = None
+    frontend: ManagedProcess | None = None
+    backend_base_url = f"http://127.0.0.1:{BACKEND_PORT}"
+    frontend_base_url = f"http://127.0.0.1:{FRONTEND_PORT}"
+
+    try:
+        backend = _start_backend(tmp_path, config_path)
+        frontend = _start_frontend(tmp_path)
+        token = _login_and_token(backend_base_url)
+        auth_headers = {"Authorization": f"Bearer {token}"}
+        quality = httpx.get(
+            f"{backend_base_url}/api/knowledge/graph/quality",
+            params={"confidence_threshold": 0.6, "status": "all"},
+            headers=auth_headers,
+            timeout=10,
+        )
+        quality.raise_for_status()
+        assert quality.json()["summary"]["quality_gate"]["passed"] is False
+        health = httpx.get(f"{backend_base_url}/api/system/health", headers=auth_headers, timeout=10)
+        health.raise_for_status()
+        assert health.json()["ops"]["last_knowledge_graph_governance_task"]["status"] in {"warning", "error"}
+
+        console_errors: list[str] = []
+        playwright = None
+        browser = None
+        try:
+            playwright = sync_playwright().start()
+            browser = playwright.chromium.launch(headless=True)
+        except PlaywrightError as exc:
+            if playwright is not None:
+                playwright.stop()
+            pytest.skip(f"Playwright browser is not available in this environment: {str(exc).splitlines()[0]}")
+
+        try:
+            page = browser.new_page(viewport={"width": 1280, "height": 720})
+            page.on(
+                "console",
+                lambda message: console_errors.append(message.text) if message.type == "error" else None,
+            )
+
+            page.goto(f"{frontend_base_url}/login")
+            expect(page.get_by_role("heading", name="MemoX")).to_be_visible()
+            page.get_by_placeholder("用户名").fill(USERNAME)
+            page.get_by_placeholder("密码").fill(PASSWORD)
+            page.get_by_role("button", name=re.compile(r"登\s*录")).click()
+            expect(page).to_have_url(re.compile(r".*/documents$"))
+
+            page.goto(f"{frontend_base_url}/system")
+            expect(page.get_by_text("知识图谱治理任务待处理")).to_be_visible()
+            expect(page.get_by_text(re.compile(r"低置信度\s*1"))).to_be_visible()
+            expect(page.get_by_text(re.compile(r"孤立关系\s*1"))).to_be_visible()
+            page.get_by_role("button", name="处理图谱").click()
+            expect(page).to_have_url(re.compile(r".*/documents\?view=graph&quality=open#graph-quality-queue"))
+
+            quality_queue = page.get_by_test_id("graph-quality-queue")
+            quality_queue.scroll_into_view_if_needed()
+            expect(quality_queue).to_contain_text("质量审核队列")
+            candidate_title = "低置信度关系：噪声实体 关联 偶发对象"
+            expect(quality_queue.get_by_text(candidate_title)).to_be_visible()
+
+            candidate_row = page.locator("li").filter(has_text=candidate_title).first
+            candidate_row.get_by_label("删除关系").click()
+            page.get_by_role("button", name="删除").click()
+            expect(page.get_by_text("关系已删除")).to_be_visible()
+            expect(quality_queue.get_by_text(candidate_title)).not_to_be_visible(timeout=15_000)
+
+            resolved = httpx.get(f"{backend_base_url}/api/system/health", headers=auth_headers, timeout=10)
+            resolved.raise_for_status()
+            assert resolved.json()["ops"]["last_knowledge_graph_governance_task"]["status"] == "ok"
+
+            page.goto(f"{frontend_base_url}/system")
+            expect(page.get_by_text("知识图谱治理任务待处理")).not_to_be_visible()
+            expect(page.get_by_text("已恢复")).to_be_visible()
 
             assert console_errors == []
         finally:

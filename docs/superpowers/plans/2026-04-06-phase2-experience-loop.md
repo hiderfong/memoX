@@ -1,5 +1,8 @@
 # Phase 2 — 体验闭环 Implementation Plan
 
+> **Plan status (2026-05-29):** Archived reference. The checkbox list below is the original execution breakdown and is not an authoritative current backlog.
+> Use implementation files, tests, release notes, and handoff docs for current project status.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Complete Phase 2 of MemoX optimization roadmap: fix chat stream persistence gap, add session history sidebar to ChatPage, add task cancel API endpoint, and wire both into the frontend.

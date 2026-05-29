@@ -506,7 +506,11 @@ class IterativeOrchestrator:
             }
             progress_updates: list[asyncio.Task] = []
 
-            def handle_worker_progress(subtask_id: str, message: str) -> None:
+            def handle_worker_progress(
+                subtask_id: str,
+                message: str,
+                progress_updates: list[asyncio.Task] = progress_updates,
+            ) -> None:
                 provider_event = self._provider_progress_event(subtask_id, message, iteration)
                 if provider_event is None:
                     return

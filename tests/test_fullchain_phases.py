@@ -255,7 +255,7 @@ class TestPhase1:
             metadata={"type": "webpage"},
         )
 
-        with patch("web.api.WebPageParser") as MockParser:
+        with patch("web.routers.documents._check_url_not_ssrf"), patch("web.api.WebPageParser") as MockParser:
             instance = MockParser.return_value
             instance.fetch_url = AsyncMock(return_value=mock_doc)
             instance.chunk = AsyncMock(return_value=[])

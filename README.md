@@ -10,6 +10,7 @@
 | 🔀 **多 Agent 并行** | 复杂任务拆分为多个子任务，多个独立 Agent 并行执行 |
 | ⚙️ **独立 Agent 配置** | 每个 Agent 可配置不同的大模型、API Key、技能、MCP |
 | 📂 **知识库 RAG** | 文档上传 → 解析 → 向量存储 → 智能问答 |
+| 🎬 **图生视频工作流** | 聊天图片/知识库图片 → I2V 生成，支持本地素材上传兜底、批量接口和视频编辑 |
 | 🌐 **跨平台 Web UI** | 响应式设计，支持桌面和移动端 |
 
 ## 项目结构
@@ -88,6 +89,18 @@ auth:
 file_access:
   signing_secret: "${MEMOX_FILE_SIGNING_SECRET:-}"
   signed_url_ttl_seconds: 300
+
+knowledge_base:
+  enable_graph: false
+  graph_llm_provider: "dashscope"
+  graph_llm_model: "qwen-turbo"
+  graph_llm_api_key: "${DASHSCOPE_API_KEY}"
+
+image_to_video:
+  enabled: false
+  model: "wan2.7-i2v"
+  edit_model: "wan2.7-videoedit"
+  api_key: "${DASHSCOPE_API_KEY}"
 ```
 
 `auth.enabled=true` 时，启动会拒绝空密码；如果 `MEMOX_ADMIN_PASSWORD` 未设置，后端会直接报出配置错误。

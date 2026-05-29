@@ -75,6 +75,7 @@ image_to_video:
   enabled: true
   provider: "dashscope"
   model: "wan2.7-i2v"
+  edit_model: "wan2.7-videoedit"
   api_key: "${DASHSCOPE_API_KEY}"
   default_resolution: "720P"
   default_duration: 5
@@ -174,7 +175,17 @@ knowledge_base:
   graph_persist_path: "./data/knowledge_graph.gml"
   # LLM 抽取三元组的配置（enable_graph=true 时生效）
   graph_llm_provider: "dashscope"  # 用于三元组抽取的 LLM
+  graph_llm_model: "qwen-turbo"
+  graph_llm_base_url: ""
   graph_llm_api_key: "${DASHSCOPE_API_KEY}"
+  graph_quality_gate:
+    enabled: true
+    min_health_score: 75
+    max_low_confidence_ratio: 0.15
+    max_isolated_relation_ratio: 0.20
+    max_open_review_backlog_ratio: 0.40
+    require_relations: false
+    min_relation_count: 1
 
 # 记忆管理配置
 memory:

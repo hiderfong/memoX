@@ -35,6 +35,7 @@ def _write_config(root: Path) -> Path:
             "skills_dir": str(data / "skills"),
             "embedding_provider": "hash",
             "embedding_model": "hash-test",
+            "enable_graph": True,
             "hybrid_search": {
                 "enabled": True,
                 "bm25_persist_path": str(data / "bm25_index.pkl"),
@@ -254,6 +255,34 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
             )
             assert lifecycle_execute.status_code == 200
             lifecycle_execute_payload = lifecycle_execute.json()
+            store.save_knowledge_graph_quality_snapshot({
+                "health_score": 68,
+                "risk_level": "medium",
+                "relation_count": 10,
+                "low_confidence_ratio": 0.22,
+                "isolated_relation_ratio": 0.1,
+                "open_review_backlog_ratio": 0.5,
+            })
+            store.record_ops_event(
+                event_type="knowledge_graph_quality_alert",
+                status="warning",
+                action="quality_alert",
+                message="图谱健康分需关注",
+                details={"alerts": [{"code": "health_score_warning"}], "health_score": 68},
+            )
+            store.record_ops_event(
+                event_type="knowledge_graph_governance_task",
+                status="warning",
+                action="governance_task_opened",
+                message="知识图谱治理任务待处理",
+                details={
+                    "task_key": "test-governance",
+                    "health_score": 68,
+                    "suggested_actions": [
+                        {"type": "review_quality_queue", "title": "处理图谱质量审核队列"}
+                    ],
+                },
+            )
 
             events = client.get("/api/system/events?limit=10", headers={"Authorization": f"Bearer {admin_token}"})
             assert events.status_code == 200
@@ -407,6 +436,18 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
     assert refreshed_payload["ops"]["last_index_repair"]["details"]["action"] == "index_repair"
     assert refreshed_payload["ops"]["last_restore_drill"]["details"]["name"] == Path(manual_payload["archive"]).name
     assert refreshed_payload["ops"]["last_restore_execute"]["details"]["action"] == "rejected"
+    assert refreshed_payload["ops"]["last_knowledge_graph_quality_alert"]["status"] == "warning"
+    assert refreshed_payload["ops"]["last_knowledge_graph_quality_alert"]["details"]["health_score"] == 68
+    assert refreshed_payload["ops"]["last_knowledge_graph_governance_task"]["status"] == "warning"
+    assert refreshed_payload["ops"]["last_knowledge_graph_governance_task"]["details"]["task_key"] == "test-governance"
+    assert refreshed_payload["ops"]["last_knowledge_graph_quality_snapshot"]["health_score"] == 68
+    assert refreshed_payload["ops"]["knowledge_graph_quality_gate"]["passed"] is False
+    assert {
+        item["code"]
+        for item in refreshed_payload["ops"]["knowledge_graph_quality_gate"]["violations"]
+    } >= {"health_score_below_gate", "low_confidence_ratio_above_gate"}
+    refreshed_checks = {check["name"]: check for check in refreshed_payload["checks"]}
+    assert refreshed_checks["knowledge_graph_quality_gate"]["status"] == "warning"
     assert events_payload["count"] >= 6
     assert events_payload["total"] >= events_payload["count"]
     assert events_payload["offset"] == 0
@@ -418,6 +459,8 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
         "restore_execute",
         "restore_drill",
         "lifecycle_cleanup",
+        "knowledge_graph_quality_alert",
+        "knowledge_graph_governance_task",
     }
     assert restore_events_payload["count"] == 1
     assert restore_events_payload["total"] == 1

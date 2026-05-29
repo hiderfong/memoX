@@ -21,6 +21,7 @@ owner and written exception.
 | Tool policy | Network and database permissions are reviewed for the deployment environment |
 | Tool audit | Admins can filter `success`, `rejected`, and `error` tool calls by tool/task/worker |
 | Frontend | Settings and System Status admin pages load without console errors |
+| I2V | If enabled, DashScope key, file signing secret, local upload fallback, and endpoint tests pass |
 | Tests | Backend tests, lint, frontend build, and at least one smoke test pass |
 
 ## Configuration Checks
@@ -33,6 +34,10 @@ owner and written exception.
 - Confirm `/api/files/` is not in `auth.public_paths` and
   `MEMOX_FILE_SIGNING_SECRET` is set when external services need to fetch local
   uploads through short-lived URLs.
+- If `image_to_video.enabled=true`, confirm `DASHSCOPE_API_KEY` is set,
+  `image_to_video.model` and `image_to_video.edit_model` match the deployed
+  DashScope models, and `/api/videos/i2v` can process both public URLs and
+  local `/api/files/{name}` references.
 - Confirm `ops.auto_backup_enabled`, `ops.auto_backup_interval_hours`,
   `ops.max_backups`, and retention settings match the expected user data volume.
 - Set `ops.archive_mirror_dir` when the host has an attached backup disk or
@@ -167,8 +172,9 @@ Decision: GO / NO-GO
   but this is not a distributed multi-runner queue.
 - The React build may emit bundle-size warnings as the admin UI grows. Treat
   warnings as a performance follow-up before broad rollout.
-- LLM-assisted knowledge graph extraction currently has rule-based fallback
-  behavior where provider integration is unavailable.
+- LLM-assisted knowledge graph extraction uses the configured provider and
+  falls back per chunk to rule-based extraction; validate provider, model, cost,
+  and graph quality before enabling it broadly.
 - Local backup archives are sensitive and remain on the host unless mirrored or
   copied off-host.
 - Browser-based dynamic crawling depends on Playwright browser availability in

@@ -670,6 +670,7 @@ async def startup():
         init_i2v_client(
             api_key=i2v_cfg.resolve_api_key(),
             model=i2v_cfg.model,
+            edit_model=i2v_cfg.edit_model,
             default_resolution=i2v_cfg.default_resolution,
             default_duration=i2v_cfg.default_duration,
         )

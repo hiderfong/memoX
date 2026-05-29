@@ -1,27 +1,24 @@
-import React, { useState, useEffect, useRef, createContext, useContext } from 'react';
-import { Layout, Menu, Typography, Card, Button, Upload, List, Space, Avatar, Input, message, Spin, Tag, Progress, Badge, Drawer, Timeline, Alert, Empty, Tooltip, Form, Divider, Checkbox, Modal, Tabs, Table, Select, Slider, InputNumber, AutoComplete, Switch, Segmented } from 'antd';
-import { UploadOutlined, FileTextOutlined, RobotOutlined, MessageOutlined, TeamOutlined, SettingOutlined, CloudUploadOutlined, DeleteOutlined, SendOutlined, LoadingOutlined, BulbOutlined, ThunderboltOutlined, ClockCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, InboxOutlined, UserOutlined, LockOutlined, LogoutOutlined, SafetyCertificateOutlined, LinkOutlined, FolderOpenOutlined, MailOutlined, LineChartOutlined, FileSearchOutlined, EyeOutlined, SaveOutlined, DownOutlined, UpOutlined, PlusOutlined, EditOutlined, DownloadOutlined, BgColorsOutlined, ReloadOutlined, RollbackOutlined, ExclamationCircleOutlined, ToolOutlined, DeploymentUnitOutlined } from '@ant-design/icons';
-import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip as RTooltip, Legend, ResponsiveContainer } from 'recharts';
-import { useNavigate, useLocation, Routes, Route, Link, Navigate } from 'react-router-dom';
-import axios from 'axios';
-import dayjs from 'dayjs';
+import { Suspense, lazy, useContext, useEffect, useState, type FC, type ReactNode } from 'react';
+import { Spin } from 'antd';
+import { useNavigate, Routes, Route, Navigate } from 'react-router-dom';
 
-import { MOBILE_BREAKPOINT, useIsMobile, API_BASE, KnowledgeGroup, ReadinessStatus, SystemCheck, SystemHealthReport, BackupArchiveSummary, OpsEvent, OpsEventsResponse, LifecycleCleanupResult, statusTagColor, statusBadge, statusLabel, opsEventLabel, opsEventTypeOptions, opsEventStatusOptions, opsEventActorLabel, formatBytes, formatDuration, AuthUser, AuthContextType, AuthContext, TOKEN_KEY, USER_KEY, api } from './shared';
+import { AuthContext, TOKEN_KEY, USER_KEY, api, type AuthUser } from './shared';
 
-import { LoginPage } from './pages/LoginPage';
 import { AppLayout } from './components/AppLayout';
-import { DocumentsPage } from './pages/DocumentsPage';
-import { ChatPage } from './pages/ChatPage';
-import { TasksPage } from './pages/TasksPage';
-import { ScheduledTasksPage } from './pages/ScheduledTasksPage';
-import { WorkersPage } from './pages/WorkersPage';
-import { SystemStatusPage } from './pages/SystemStatusPage';
-import { SettingsPage } from './pages/SettingsPage';
-import { WorkflowsPage } from './pages/WorkflowsPage';
+
+const LoginPage = lazy(() => import('./pages/LoginPage').then(({ LoginPage }) => ({ default: LoginPage })));
+const DocumentsPage = lazy(() => import('./pages/DocumentsPage').then(({ DocumentsPage }) => ({ default: DocumentsPage })));
+const ChatPage = lazy(() => import('./pages/ChatPage').then(({ ChatPage }) => ({ default: ChatPage })));
+const TasksPage = lazy(() => import('./pages/TasksPage').then(({ TasksPage }) => ({ default: TasksPage })));
+const ScheduledTasksPage = lazy(() => import('./pages/ScheduledTasksPage').then(({ ScheduledTasksPage }) => ({ default: ScheduledTasksPage })));
+const WorkflowsPage = lazy(() => import('./pages/WorkflowsPage').then(({ WorkflowsPage }) => ({ default: WorkflowsPage })));
+const WorkersPage = lazy(() => import('./pages/WorkersPage').then(({ WorkersPage }) => ({ default: WorkersPage })));
+const SystemStatusPage = lazy(() => import('./pages/SystemStatusPage').then(({ SystemStatusPage }) => ({ default: SystemStatusPage })));
+const SettingsPage = lazy(() => import('./pages/SettingsPage').then(({ SettingsPage }) => ({ default: SettingsPage })));
 
 // ==================== 受保护路由 ====================
 
-const RequireAuth: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+const RequireAuth: FC<{ children: ReactNode }> = ({ children }) => {
   const { user } = useContext(AuthContext);
   const navigate = useNavigate();
 
@@ -33,10 +30,20 @@ const RequireAuth: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   return <>{children}</>;
 };
 
+const PageFallback: FC = () => (
+  <div style={{ display: 'grid', minHeight: 240, placeItems: 'center' }}>
+    <Spin />
+  </div>
+);
+
+const lazyRoute = (element: ReactNode) => (
+  <Suspense fallback={<PageFallback />}>{element}</Suspense>
+);
+
 
 // ==================== 主应用 ====================
 
-const App: React.FC = () => {
+const App: FC = () => {
   const [user, setUser] = useState<AuthUser | null>(() => {
     try {
       const stored = localStorage.getItem(USER_KEY);
@@ -75,20 +82,20 @@ const App: React.FC = () => {
   return (
     <AuthContext.Provider value={{ user, token, login, logout }}>
       <Routes>
-        <Route path="/login" element={user ? <Navigate to="/documents" replace /> : <LoginPage />} />
+        <Route path="/login" element={user ? <Navigate to="/documents" replace /> : lazyRoute(<LoginPage />)} />
         <Route path="/*" element={
           <RequireAuth>
             <AppLayout>
               <Routes>
                 <Route path="/" element={<Navigate to="/documents" replace />} />
-                <Route path="/documents" element={<DocumentsPage />} />
-                <Route path="/chat" element={<ChatPage />} />
-                <Route path="/tasks" element={<TasksPage />} />
-                <Route path="/scheduled-tasks" element={<ScheduledTasksPage />} />
-                <Route path="/workflows" element={<WorkflowsPage />} />
-                <Route path="/workers" element={<WorkersPage />} />
-                <Route path="/system" element={<SystemStatusPage />} />
-                <Route path="/settings" element={<SettingsPage />} />
+                <Route path="/documents" element={lazyRoute(<DocumentsPage />)} />
+                <Route path="/chat" element={lazyRoute(<ChatPage />)} />
+                <Route path="/tasks" element={lazyRoute(<TasksPage />)} />
+                <Route path="/scheduled-tasks" element={lazyRoute(<ScheduledTasksPage />)} />
+                <Route path="/workflows" element={lazyRoute(<WorkflowsPage />)} />
+                <Route path="/workers" element={lazyRoute(<WorkersPage />)} />
+                <Route path="/system" element={lazyRoute(<SystemStatusPage />)} />
+                <Route path="/settings" element={lazyRoute(<SettingsPage />)} />
               </Routes>
             </AppLayout>
           </RequireAuth>

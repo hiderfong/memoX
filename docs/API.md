@@ -61,8 +61,18 @@ Authorization: Bearer <token>
 | `POST` | `/api/documents/url` | 抓取网页并导入知识库 |
 | `DELETE` | `/api/documents/{doc_id}` | 删除文档，仅管理员 |
 | `GET` | `/api/documents/{doc_id}/chunks` | 获取文档分块 |
+| `GET` | `/api/documents/{doc_id}/media-assets` | 获取文档预览中可用的图片资产，不泄露本地文件路径 |
 | `PUT` | `/api/documents/{doc_id}/group` | 移动文档到指定分组，仅管理员 |
 | `GET` | `/api/documents/search` | 搜索文档，支持 `q` 和 `group_ids` |
+| `GET` | `/api/knowledge/graph` | 获取知识图谱探索 payload，支持 `entity`、`q`、`depth`、`limit`、`min_confidence`、`predicate` 筛选，返回节点、关系、统计、核心实体、关系 facets 与来源 chunk |
+| `GET` | `/api/knowledge/graph/quality` | 获取知识图谱质量审核候选，支持 `confidence_threshold`、`limit` 和 `status`；返回候选内容指纹、过期旧决策标记、身份冲突与来源簇分歧拆分建议，以及 `quality_metrics` 抽取质量指标、`quality_gate` 门禁结果、导入触发追踪和阈值告警，并将告警状态去重写入 `knowledge_graph_quality_alert` 运维事件；门禁失败或健康分明显下降时同步生成 `knowledge_graph_governance_task` 治理事件，治理操作恢复后写入 resolved 事件 |
+| `GET` | `/api/knowledge/graph/quality/history` | 获取最近知识图谱质量指标快照，支持 `limit`，用于趋势监控 |
+| `POST` | `/api/knowledge/graph/quality/decisions` | 保存知识图谱审核候选决策，仅管理员；建议在 `details.candidate_fingerprint` 写入候选指纹，避免旧决策压住内容已变化的候选 |
+| `POST` | `/api/knowledge/graph/quality/decisions/batch` | 批量保存知识图谱审核候选决策，仅管理员，单次最多 100 个候选 |
+| `POST` | `/api/knowledge/graph/entities/merge` | 合并重复实体，仅管理员 |
+| `POST` | `/api/knowledge/graph/entities/split` | 按选定关系将实体的一部分证据拆到新实体，仅管理员，单次最多 100 条关系 |
+| `PUT` | `/api/knowledge/graph/triples` | 修正单条知识图谱关系，仅管理员 |
+| `POST` | `/api/knowledge/graph/triples/delete` | 删除单条知识图谱关系，仅管理员 |
 | `GET` | `/api/groups` | 列出文档分组 |
 | `POST` | `/api/groups` | 创建文档分组 |
 | `PUT` | `/api/groups/{group_id}` | 更新分组，仅管理员 |
@@ -125,10 +135,12 @@ Worker 创建、更新和删除接口会持久化修改 `config.yaml` 中的 `wo
 | `POST` | `/api/images/generate` | 文生图 |
 | `POST` | `/api/videos/generate` | 文生视频 |
 | `POST` | `/api/videos/i2v` | 图生视频 |
+| `POST` | `/api/videos/i2v/batch` | 批量图生视频，逐项返回成功或错误 |
+| `POST` | `/api/videos/edit` | 视频编辑，支持视频 URL、提示词和参考图片 |
 | `GET` | `/api/health` | 健康检查 |
-| `GET` | `/api/system/health` | 管理员系统巡检：配置、索引、SQLite、磁盘 |
+| `GET` | `/api/system/health` | 管理员系统巡检：配置、索引、SQLite、磁盘，并返回最近备份、后台任务、知识图谱质量告警、质量门禁与最近导入触发追踪等运维状态 |
 | `GET` | `/api/system/backups` | 管理员查看本地备份归档 |
-| `GET` | `/api/system/events` | 管理员查看运维事件，支持 `event_type`、`status`、`limit`、`offset` 过滤与分页，返回 `total` 与事件详情 |
+| `GET` | `/api/system/events` | 管理员查看运维事件，支持 `event_type`、`status`、`limit`、`offset` 过滤与分页，返回 `total` 与事件详情；图谱质量告警事件类型为 `knowledge_graph_quality_alert`，图谱治理任务事件类型为 `knowledge_graph_governance_task` |
 | `GET` | `/api/system/tool-audit` | 管理员查看工具调用审计，支持 `tool_name`、`status`、`worker_id`、`task_id`、`limit`、`offset` 过滤与分页，返回脱敏参数摘要、结果预览和状态汇总 |
 | `GET/PUT` | `/api/system/tool-policy` | 管理员查看、保存网络、Web 抓取、浏览器爬虫和数据库工具权限策略；数据源连接串会脱敏显示，保存脱敏占位时保留原始值 |
 | `GET` | `/api/system/diagnostics/export` | 管理员导出 zip 诊断包，包含健康报告、备份清单、运维事件、索引一致性、脱敏配置与日志尾部；设置 `ops.archive_mirror_dir` 后会同步镜像一份 |

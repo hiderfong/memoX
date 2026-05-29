@@ -10,7 +10,16 @@ able to map each slice to files, behavior, tests, and residual risk.
 
 The current changes move MemoX closer to a long-running real-user deployment by
 hardening tool permissions, making tool calls auditable, exposing policy and
-audit controls in the admin UI, and documenting release readiness.
+audit controls in the admin UI, completing I2V Phase 2 media workflows, and
+documenting release readiness. It also adds a more product-ready knowledge
+graph exploration surface so users can search entities, filter relations, and
+trace relation evidence. The graph surface now also includes administrator
+governance actions for merging duplicate entities, splitting selected entity
+evidence into a new entity, and correcting or deleting bad relations, plus a
+generated quality review queue for likely duplicates, low-confidence relations,
+isolated weak relations, and identity conflicts. Review decisions are persisted
+so accepted, ignored, or snoozed candidates do not keep reappearing in the
+default queue.
 
 The highest-risk paths covered by tests are:
 
@@ -22,6 +31,11 @@ The highest-risk paths covered by tests are:
   admin filtering.
 - Tool policy API persistence, redacted config handling, and permission checks.
 - Admin Settings and System Status UI flows for policy review and audit search.
+- I2V Phase 2 paths for local upload fallback, batch generation, video editing,
+  and knowledge-base image entry points.
+- Knowledge graph payload shaping and UI exploration for entity search,
+  predicate/quality filtering, graph statistics, relation provenance, and
+  human correction workflows.
 
 ## Suggested Review Slices
 
@@ -147,8 +161,8 @@ Review focus:
 
 Key residual risk:
 
-- The production build still reports chunk-size warnings; this is not a release
-  blocker, but it is a performance follow-up.
+- Several older page files still carry broad copied import lists. They do not
+  block the current build, but a later cleanup pass would improve maintainability.
 
 ### 6. Release and operations documentation
 
@@ -174,6 +188,103 @@ Key residual risk:
 - Readiness docs are only useful if operators actually fill in the go/no-go
   record for each release.
 
+### 7. I2V Phase 2 media workflow
+
+Primary files:
+
+- `src/imaging/i2v_client.py`
+- `src/web/routers/imaging.py`
+- `src/web/routers/documents.py`
+- `frontend_wip/src/pages/DocumentsPage.tsx`
+- `tests/test_i2v_client.py`
+- `tests/test_i2v_api.py`
+
+Review focus:
+
+- Wan2.7 I2V uses the current `input.media` request shape while preserving the
+  legacy `input.img_url` shape for older models.
+- Local `/api/files/{name}` images are uploaded to DashScope temporary OSS and
+  submitted with `X-DashScope-OssResourceResolve: enable`.
+- Batch I2V returns per-item success/error results instead of failing the whole
+  batch on one bad source.
+- Video editing uses the configured `image_to_video.edit_model`.
+- Knowledge-base previews expose image assets without leaking local filesystem
+  paths.
+
+Key residual risk:
+
+- The UI currently exposes document-preview I2V, while batch I2V and video
+  editing are backend APIs ready for a richer creative workspace.
+
+### 8. Knowledge graph product exploration
+
+Primary files:
+
+- `src/knowledge/knowledge_graph.py`
+- `src/web/routers/documents.py`
+- `frontend_wip/src/components/KnowledgeGraphView.tsx`
+- `frontend_wip/src/shared.tsx`
+- `tests/test_knowledge_graph.py`
+- `tests/test_knowledge_graph_api.py`
+
+Review focus:
+
+- `/api/knowledge/graph` returns renderable nodes/links plus stats, core
+  entities, predicate facets, active filters, and relation provenance.
+- Entity search can focus a bounded neighborhood by depth without dumping the
+  whole graph into the browser.
+- Predicate and confidence filters make noisy extracted relations easier to
+  inspect.
+- The graph UI exposes top entities, relation evidence, source chunk ids, and
+  clickable entity focus.
+- Administrators can merge duplicate entities, split selected relation evidence
+  into a new entity, and correct or delete individual relations from the
+  relation-evidence table.
+- `/api/knowledge/graph/quality` produces deterministic review candidates so
+  administrators can start from likely issues instead of manually scanning the
+  graph.
+- Identity-conflict and source-cluster divergence candidates include executable
+  split suggestions with a source entity, suggested new entity, and the relation
+  evidence to migrate.
+- `/api/knowledge/graph/quality/decisions` persists accepted, ignored, and
+  snoozed candidate decisions in SQLite, with candidate fingerprints so changed
+  issues are reactivated rather than hidden by stale decisions.
+- `/api/knowledge/graph/quality/decisions/batch` lets administrators persist up
+  to 100 candidate decisions in one request, and the UI exposes page-level
+  multi-select bulk actions plus expandable relation evidence.
+- The quality payload includes `quality_metrics` for health score, source
+  coverage, extraction density, low-confidence ratio, isolated-relation ratio,
+  and open review backlog, with a matching UI panel for operational monitoring.
+- Quality metric snapshots are persisted in SQLite and exposed through
+  `/api/knowledge/graph/quality/history`; the graph UI renders a compact recent
+  health trend.
+- `quality_metrics.alerts` now reports threshold-based warning/error items for
+  low health, health drops, low-confidence ratio, isolated-relation ratio, and
+  open review backlog; the graph UI renders the top alerts above the metrics.
+- Graph quality alerts are routed into deduplicated
+  `knowledge_graph_quality_alert` ops events and surfaced on System Status,
+  giving operators one place to see backup, lifecycle, task-runner, and graph
+  health signals.
+- `knowledge_base.graph_quality_gate` now provides a configurable non-blocking
+  quality gate for graph health, low-confidence ratio, isolated-relation ratio,
+  and open review backlog; gate failures are included in the graph quality
+  payload and `/api/system/health` readiness checks.
+- Document upload and URL import now record graph quality snapshots immediately
+  after extraction, including the triggering document id/name and health-score
+  drop versus the previous snapshot for regression triage.
+- Gate failures, warning alerts, or import-driven health drops now open
+  deduplicated `knowledge_graph_governance_task` operational events containing
+  suggested admin actions; System Status surfaces the latest open governance
+  task next to graph quality.
+- Quality decisions and graph mutation endpoints re-run the same quality check
+  and record `governance_task_resolved` once no actionable graph governance
+  issue remains.
+
+Key residual risk:
+
+- Split suggestions are still heuristic and intentionally conservative; richer
+  semantic clustering can build on the current executable action format.
+
 ## Recommended Commit Split
 
 1. `tooling: add network safety checks for web-capable tools`
@@ -182,7 +293,9 @@ Key residual risk:
 4. `system: expose tool policy and audit admin APIs`
 5. `frontend: add tool policy and audit admin views`
 6. `tests: cover tool policy, audit, and e2e admin flow`
-7. `docs: add release readiness and changeset handoff`
+7. `media: complete I2V phase 2 backend and document entry points`
+8. `knowledge: add graph exploration and governance UI`
+9. `docs: add release readiness and changeset handoff`
 
 If keeping this as a single PR, reviewers should still walk the slices in the
 order above. Network/database policy changes should be reviewed before UI
@@ -223,9 +336,9 @@ Latest local verification:
 
 | Command | Result |
 |---|---|
-| `uv run --extra dev ruff check .` | Passed |
-| `uv run --extra dev pytest` | `561 passed, 3 skipped` |
-| `cd frontend_wip && npm run build` | Passed; Vite reported the known large-chunk warning |
+| `.venv/bin/python -m ruff check src tests` | Passed |
+| `.venv/bin/python -m pytest tests --ignore=tests/e2e -q --tb=short` | Passed; one skipped |
+| `cd frontend_wip && npm run build` | Passed; no Vite large chunk warning |
 | `git diff --check` | Passed |
 
 Recommended for release:
@@ -246,11 +359,9 @@ Manual browser smoke path:
 
 ## Known Follow-Ups
 
-- Split large frontend bundles if the React build warning becomes user-visible
-  on slow networks.
-- Replace the current knowledge graph LLM extraction fallback with a real
-  provider-backed batch extractor when graph extraction becomes a product
-  priority.
+- Expand knowledge graph productization with optional external notification
+  delivery for quality alerts, semantic split clustering, and graph quality
+  checks before broad rollout.
 - Consider exporting tool audit data as CSV or diagnostics attachment if support
   workflows need offline review.
 - Add a true multi-runner queue or external job backend before horizontal

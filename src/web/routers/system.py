@@ -408,6 +408,56 @@ def _lifecycle_policy_from_config(config) -> LifecyclePolicy:
     )
 
 
+def _refresh_readiness_status(result: dict) -> None:
+    statuses = {check.get("status") for check in result.get("checks", [])}
+    if "error" in statuses:
+        status = "error"
+    elif "warning" in statuses:
+        status = "warning"
+    else:
+        status = "ok"
+    result["status"] = status
+    result["ok"] = status != "error"
+
+
+def _knowledge_graph_quality_snapshot_summary(snapshot: dict | None) -> dict | None:
+    if not snapshot:
+        return None
+    metrics = snapshot.get("metrics") if isinstance(snapshot.get("metrics"), dict) else snapshot
+    return {
+        "id": snapshot.get("id"),
+        "created_at": snapshot.get("created_at"),
+        "health_score": metrics.get("health_score"),
+        "risk_level": metrics.get("risk_level"),
+        "relation_count": metrics.get("relation_count"),
+        "low_confidence_ratio": metrics.get("low_confidence_ratio"),
+        "isolated_relation_ratio": metrics.get("isolated_relation_ratio"),
+        "open_review_backlog_ratio": metrics.get("open_review_backlog_ratio", metrics.get("review_backlog_ratio")),
+        "trigger": metrics.get("trigger") if isinstance(metrics.get("trigger"), dict) else None,
+        "quality_gate": metrics.get("quality_gate") if isinstance(metrics.get("quality_gate"), dict) else None,
+    }
+
+
+def _knowledge_graph_quality_gate_report(config, snapshot: dict | None) -> dict:
+    from knowledge.knowledge_graph import evaluate_knowledge_graph_quality_gate
+
+    if not config.knowledge_base.enable_graph:
+        gate = evaluate_knowledge_graph_quality_gate({}, {
+            "enabled": False,
+            "min_health_score": config.knowledge_base.graph_quality_gate.min_health_score,
+            "max_low_confidence_ratio": config.knowledge_base.graph_quality_gate.max_low_confidence_ratio,
+            "max_isolated_relation_ratio": config.knowledge_base.graph_quality_gate.max_isolated_relation_ratio,
+            "max_open_review_backlog_ratio": config.knowledge_base.graph_quality_gate.max_open_review_backlog_ratio,
+            "require_relations": config.knowledge_base.graph_quality_gate.require_relations,
+            "min_relation_count": config.knowledge_base.graph_quality_gate.min_relation_count,
+        })
+        gate["message"] = "知识图谱未启用。"
+        return gate
+
+    metrics = snapshot.get("metrics") if snapshot and isinstance(snapshot.get("metrics"), dict) else (snapshot or {})
+    return evaluate_knowledge_graph_quality_gate(metrics, config.knowledge_base.graph_quality_gate)
+
+
 def _system_health_report(request: Request) -> dict:
     from web.api import _config, _rag_engine
 
@@ -437,6 +487,9 @@ def _system_health_report(request: Request) -> dict:
     latest_index_repair = None
     latest_diagnostics_export = None
     latest_lifecycle_cleanup = None
+    latest_knowledge_graph_quality_alert = None
+    latest_knowledge_graph_governance_task = None
+    latest_knowledge_graph_quality_snapshot = None
     task_job_stats = None
     try:
         from storage import get_store
@@ -449,6 +502,10 @@ def _system_health_report(request: Request) -> dict:
             latest_index_repair = store.get_latest_ops_event("index_repair")
             latest_diagnostics_export = store.get_latest_ops_event("diagnostics_export")
             latest_lifecycle_cleanup = store.get_latest_ops_event("lifecycle_cleanup")
+            latest_knowledge_graph_quality_alert = store.get_latest_ops_event("knowledge_graph_quality_alert")
+            latest_knowledge_graph_governance_task = store.get_latest_ops_event("knowledge_graph_governance_task")
+            quality_snapshots = store.list_knowledge_graph_quality_snapshots(limit=1)
+            latest_knowledge_graph_quality_snapshot = quality_snapshots[-1] if quality_snapshots else None
             task_job_stats = store.get_task_job_stats()
     except Exception:
         latest_event = None
@@ -457,6 +514,9 @@ def _system_health_report(request: Request) -> dict:
         latest_index_repair = None
         latest_diagnostics_export = None
         latest_lifecycle_cleanup = None
+        latest_knowledge_graph_quality_alert = None
+        latest_knowledge_graph_governance_task = None
+        latest_knowledge_graph_quality_snapshot = None
 
     try:
         from ops.maintenance import get_maintenance_runner
@@ -464,6 +524,20 @@ def _system_health_report(request: Request) -> dict:
         maintenance_runner = get_maintenance_runner()
     except Exception:
         maintenance_runner = None
+
+    knowledge_graph_quality_gate = _knowledge_graph_quality_gate_report(_config, latest_knowledge_graph_quality_snapshot)
+    knowledge_graph_quality_snapshot = _knowledge_graph_quality_snapshot_summary(latest_knowledge_graph_quality_snapshot)
+    result.setdefault("checks", []).append({
+        "name": "knowledge_graph_quality_gate",
+        "status": knowledge_graph_quality_gate["status"],
+        "message": knowledge_graph_quality_gate["message"],
+        "details": {
+            "gate": knowledge_graph_quality_gate,
+            "latest_snapshot": knowledge_graph_quality_snapshot,
+        },
+        "duration_ms": 0,
+    })
+    _refresh_readiness_status(result)
 
     result["ops"] = {
         "auto_backup_enabled": _config.ops.auto_backup_enabled,
@@ -487,6 +561,10 @@ def _system_health_report(request: Request) -> dict:
         "last_index_repair": latest_index_repair,
         "last_diagnostics_export": latest_diagnostics_export,
         "last_lifecycle_cleanup": latest_lifecycle_cleanup,
+        "last_knowledge_graph_quality_alert": latest_knowledge_graph_quality_alert,
+        "last_knowledge_graph_governance_task": latest_knowledge_graph_governance_task,
+        "last_knowledge_graph_quality_snapshot": knowledge_graph_quality_snapshot,
+        "knowledge_graph_quality_gate": knowledge_graph_quality_gate,
     }
     return result
 

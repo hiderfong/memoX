@@ -1,7 +1,7 @@
 # Worker Skill Loader — Design Spec
 
 **Date**: 2026-04-11
-**Status**: Draft (pending user review)
+**Status**: Implemented / archived reference (2026-05-29)
 **Author**: brainstormed with Claude
 
 ## Background

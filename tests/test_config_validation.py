@@ -175,6 +175,28 @@ def test_validate_config_rejects_invalid_file_access_ttl() -> None:
         validate_config(cfg)
 
 
+def test_validate_config_rejects_invalid_graph_quality_gate() -> None:
+    cfg = Config._from_dict(
+        {
+            "app": {},
+            "server": {},
+            "coordinator": {},
+            "providers": {},
+            "worker_templates": {},
+            "knowledge_base": {
+                "graph_quality_gate": {
+                    "min_health_score": 101,
+                    "max_low_confidence_ratio": 1.2,
+                }
+            },
+            "auth": {"enabled": False, "users": []},
+        }
+    )
+
+    with pytest.raises(ConfigError, match="knowledge_base.graph_quality_gate.min_health_score"):
+        validate_config(cfg)
+
+
 def test_worker_template_parses_fallback_providers() -> None:
     cfg = Config._from_dict(
         {

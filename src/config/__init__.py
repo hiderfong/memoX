@@ -74,6 +74,20 @@ def validate_config(config: "Config") -> None:
     if config.file_access.signed_url_ttl_seconds < 1:
         errors.append("file_access.signed_url_ttl_seconds 必须至少为 1")
 
+    graph_quality_gate = config.knowledge_base.graph_quality_gate
+    if not 0 <= graph_quality_gate.min_health_score <= 100:
+        errors.append("knowledge_base.graph_quality_gate.min_health_score 必须位于 0 到 100 之间")
+    for field_name in (
+        "max_low_confidence_ratio",
+        "max_isolated_relation_ratio",
+        "max_open_review_backlog_ratio",
+    ):
+        value = float(getattr(graph_quality_gate, field_name))
+        if not 0 <= value <= 1:
+            errors.append(f"knowledge_base.graph_quality_gate.{field_name} 必须位于 0 到 1 之间")
+    if graph_quality_gate.min_relation_count < 0:
+        errors.append("knowledge_base.graph_quality_gate.min_relation_count 不能为负数")
+
     database_policy = config.tool_policy.database
     if database_policy.default_access_mode not in {"read_only", "write", "admin"}:
         errors.append("tool_policy.database.default_access_mode 必须是 read_only、write 或 admin")
@@ -248,6 +262,20 @@ class RerankerConfig:
     enabled: bool = False
     model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
 
+
+@dataclass
+class KnowledgeGraphQualityGateConfig:
+    """知识图谱质量门禁配置。"""
+
+    enabled: bool = True
+    min_health_score: int = 75
+    max_low_confidence_ratio: float = 0.15
+    max_isolated_relation_ratio: float = 0.2
+    max_open_review_backlog_ratio: float = 0.4
+    require_relations: bool = False
+    min_relation_count: int = 1
+
+
 @dataclass
 class KnowledgeBaseConfig:
     """知识库配置"""
@@ -278,11 +306,18 @@ class KnowledgeBaseConfig:
     manifest_path: str = "./data/documents_manifest.json"
     graph_llm_provider: str = "dashscope"
     graph_llm_api_key: str = ""
+    graph_llm_base_url: str = ""
+    graph_llm_model: str = "qwen-turbo"
+    graph_quality_gate: KnowledgeGraphQualityGateConfig = field(default_factory=KnowledgeGraphQualityGateConfig)
 
     def __post_init__(self):
+        if isinstance(self.graph_quality_gate, dict):
+            self.graph_quality_gate = KnowledgeGraphQualityGateConfig(**self.graph_quality_gate)
         self.neo4j_uri = resolve_env_value(self.neo4j_uri)
         self.neo4j_user = resolve_env_value(self.neo4j_user)
         self.neo4j_password = resolve_env_value(self.neo4j_password)
+        self.graph_llm_api_key = resolve_env_value(self.graph_llm_api_key)
+        self.graph_llm_base_url = resolve_env_value(self.graph_llm_base_url)
 
 
 @dataclass
@@ -348,6 +383,7 @@ class ImageToVideoConfig:
     enabled: bool = False
     provider: str = "dashscope"
     model: str = "wan2.7-i2v"
+    edit_model: str = "wan2.7-videoedit"
     api_key: str = ""
     default_resolution: str = "720P"
     default_duration: int = 5
@@ -432,9 +468,11 @@ class Config:
             ]
             worker_templates[name] = WorkerTemplate(**template_data)
 
-        kb_data = data.get("knowledge_base", {})
+        kb_data = dict(data.get("knowledge_base", {}))
         if "reranker" in kb_data:
             kb_data["reranker"] = RerankerConfig(**kb_data["reranker"])
+        if "graph_quality_gate" in kb_data:
+            kb_data["graph_quality_gate"] = KnowledgeGraphQualityGateConfig(**kb_data["graph_quality_gate"])
         knowledge_base = KnowledgeBaseConfig(**kb_data)
 
         auth_data = data.get("auth", {})

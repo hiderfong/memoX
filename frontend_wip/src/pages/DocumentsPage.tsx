@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, createContext, useContext } from 'react';
 import { Layout, Menu, Typography, Card, Button, Upload, List, Space, Avatar, Input, message, Spin, Tag, Progress, Badge, Drawer, Timeline, Alert, Empty, Tooltip, Form, Divider, Checkbox, Modal, Tabs, Table, Select, Slider, InputNumber, AutoComplete, Switch, Segmented } from 'antd';
-import { UploadOutlined, FileTextOutlined, RobotOutlined, MessageOutlined, TeamOutlined, SettingOutlined, CloudUploadOutlined, DeleteOutlined, SendOutlined, LoadingOutlined, BulbOutlined, ThunderboltOutlined, ClockCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, InboxOutlined, UserOutlined, LockOutlined, LogoutOutlined, SafetyCertificateOutlined, LinkOutlined, FolderOpenOutlined, MailOutlined, LineChartOutlined, FileSearchOutlined, EyeOutlined, SaveOutlined, DownOutlined, UpOutlined, PlusOutlined, EditOutlined, DownloadOutlined, BgColorsOutlined, ReloadOutlined, RollbackOutlined, ExclamationCircleOutlined, ToolOutlined, DeploymentUnitOutlined } from '@ant-design/icons';
+import { UploadOutlined, FileTextOutlined, RobotOutlined, MessageOutlined, TeamOutlined, SettingOutlined, CloudUploadOutlined, DeleteOutlined, SendOutlined, LoadingOutlined, BulbOutlined, ThunderboltOutlined, ClockCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, InboxOutlined, UserOutlined, LockOutlined, LogoutOutlined, SafetyCertificateOutlined, LinkOutlined, FolderOpenOutlined, MailOutlined, LineChartOutlined, FileSearchOutlined, EyeOutlined, SaveOutlined, DownOutlined, UpOutlined, PlusOutlined, EditOutlined, DownloadOutlined, BgColorsOutlined, ReloadOutlined, RollbackOutlined, ExclamationCircleOutlined, ToolOutlined, DeploymentUnitOutlined, VideoCameraOutlined } from '@ant-design/icons';
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip as RTooltip, Legend, ResponsiveContainer } from 'recharts';
 import { useNavigate, useLocation, Routes, Route, Link, Navigate } from 'react-router-dom';
 import axios from 'axios';
@@ -20,6 +20,18 @@ import { KnowledgeGraphView } from '../components/KnowledgeGraphView';
 
 export const DocumentsPage: React.FC = () => {
   const isMobile = useIsMobile();
+  const location = useLocation();
+  const navigate = useNavigate();
+  const searchParams = new URLSearchParams(location.search);
+  const deepLinkView = searchParams.get('view');
+  const graphQualityStatusParam = searchParams.get('quality');
+  const initialGraphQualityStatus = ['open', 'all', 'accepted', 'ignored', 'snoozed'].includes(graphQualityStatusParam || '')
+    ? graphQualityStatusParam || 'open'
+    : 'open';
+  const shouldOpenGraph = deepLinkView === 'graph' || location.hash === '#graph-quality-queue';
+  const shouldFocusQualityQueue = shouldOpenGraph && (
+    location.hash === '#graph-quality-queue' || Boolean(graphQualityStatusParam)
+  );
   const [viewMode, setViewMode] = useState<'list' | 'graph'>('list');
   const [documents, setDocuments] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -46,6 +58,10 @@ export const DocumentsPage: React.FC = () => {
   const [previewDoc, setPreviewDoc] = useState<any>(null);
   const [previewChunks, setPreviewChunks] = useState<any[]>([]);
   const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewMediaAssets, setPreviewMediaAssets] = useState<any[]>([]);
+  const [i2vModalOpen, setI2vModalOpen] = useState(false);
+  const [i2vSourceUrl, setI2vSourceUrl] = useState('');
+  const [docI2VResults, setDocI2VResults] = useState<any[]>([]);
 
   const fetchDocuments = async () => {
     setLoading(true);
@@ -72,6 +88,28 @@ export const DocumentsPage: React.FC = () => {
     fetchDocuments();
     fetchGroups();
   }, []);
+
+  useEffect(() => {
+    if (shouldOpenGraph) setViewMode('graph');
+  }, [shouldOpenGraph]);
+
+  const handleViewModeChange = (val: string | number) => {
+    const nextViewMode = val as 'list' | 'graph';
+    setViewMode(nextViewMode);
+    const nextParams = new URLSearchParams(location.search);
+    if (nextViewMode === 'graph') {
+      nextParams.set('view', 'graph');
+    } else {
+      nextParams.delete('view');
+      nextParams.delete('quality');
+    }
+    const nextSearch = nextParams.toString();
+    navigate({
+      pathname: location.pathname,
+      search: nextSearch ? `?${nextSearch}` : '',
+      hash: nextViewMode === 'graph' ? location.hash : '',
+    }, { replace: true });
+  };
 
   const handleUpload = async (file: File) => {
     setUploading(true);
@@ -163,12 +201,20 @@ export const DocumentsPage: React.FC = () => {
   const handlePreview = async (doc: any) => {
     setPreviewDoc(doc);
     setPreviewLoading(true);
+    setPreviewMediaAssets([]);
     try {
       const res = await api.getDocumentChunks(doc.id);
       setPreviewChunks(res.data.chunks || []);
+      try {
+        const mediaRes = await api.getDocumentMediaAssets(doc.id);
+        setPreviewMediaAssets(mediaRes.data.assets || []);
+      } catch (assetErr) {
+        setPreviewMediaAssets([]);
+      }
     } catch (err) {
       message.error('获取文档内容失败');
       setPreviewChunks([]);
+      setPreviewMediaAssets([]);
     } finally {
       setPreviewLoading(false);
     }
@@ -206,13 +252,16 @@ export const DocumentsPage: React.FC = () => {
               { label: '知识图谱', value: 'graph', icon: <DeploymentUnitOutlined /> },
             ]}
             value={viewMode}
-            onChange={(val) => setViewMode(val as 'list' | 'graph')}
+            onChange={handleViewModeChange}
           />
         </div>
       </Card>
 
       {viewMode === 'graph' ? (
-        <KnowledgeGraphView />
+        <KnowledgeGraphView
+          autoFocusQualityQueue={shouldFocusQualityQueue}
+          initialQualityStatus={initialGraphQualityStatus}
+        />
       ) : (
         <>
       {/* 分组标签栏 */}
@@ -362,7 +411,7 @@ export const DocumentsPage: React.FC = () => {
             title={previewDoc ? `预览: ${previewDoc.filename}` : '文档预览'}
             style={{ flex: isMobile ? undefined : 6, minWidth: 0 }}
             extra={previewDoc && (
-              <Button type="text" size="small" onClick={() => { setPreviewDoc(null); setPreviewChunks([]); }}>
+              <Button type="text" size="small" onClick={() => { setPreviewDoc(null); setPreviewChunks([]); setPreviewMediaAssets([]); }}>
                 关闭
               </Button>
             )}
@@ -380,6 +429,43 @@ export const DocumentsPage: React.FC = () => {
                     <Text type="secondary">{formatSize(previewDoc.size)}</Text>
                   </Space>
                 </div>
+                {previewMediaAssets.length > 0 && (
+                  <div style={{ marginBottom: 16, paddingBottom: 12, borderBottom: '1px solid #f0f0f0' }}>
+                    <div style={{ marginBottom: 8, fontSize: 13, fontWeight: 500 }}>可生成视频的图片</div>
+                    <Space wrap align="start">
+                      {previewMediaAssets.map(asset => (
+                        <div key={asset.id} style={{ width: 132 }}>
+                          <img
+                            src={asset.url}
+                            alt={asset.name}
+                            style={{ width: 132, height: 84, objectFit: 'cover', borderRadius: 4, border: '1px solid #f0f0f0' }}
+                          />
+                          <Button
+                            block
+                            size="small"
+                            icon={<VideoCameraOutlined />}
+                            style={{ marginTop: 6 }}
+                            onClick={() => { setI2vSourceUrl(asset.url); setI2vModalOpen(true); }}
+                          >
+                            生成视频
+                          </Button>
+                        </div>
+                      ))}
+                    </Space>
+                  </div>
+                )}
+                {docI2VResults.length > 0 && (
+                  <div style={{ marginBottom: 16, paddingBottom: 12, borderBottom: '1px solid #f0f0f0' }}>
+                    <div style={{ marginBottom: 8, fontSize: 13, fontWeight: 500 }}>文档视频结果</div>
+                    <Space direction="vertical" style={{ width: '100%' }}>
+                      {docI2VResults.map((item, index) => (
+                        <a key={`${item.url}-${index}`} href={item.url} target="_blank" rel="noreferrer">
+                          {item.prompt || '图生视频结果'}
+                        </a>
+                      ))}
+                    </Space>
+                  </div>
+                )}
                 <div style={{ whiteSpace: 'pre-wrap', fontSize: 13, lineHeight: 1.8 }}>
                   {previewChunks.map((chunk: any, i: number) => (
                     <div key={i}>
@@ -566,6 +652,17 @@ export const DocumentsPage: React.FC = () => {
           />
         )}
       </Drawer>
+
+      <I2VModal
+        open={i2vModalOpen}
+        imageUrl={i2vSourceUrl}
+        authToken={localStorage.getItem(TOKEN_KEY) || ''}
+        onClose={() => setI2vModalOpen(false)}
+        onSuccess={(videoUrl, prompt, sourceImageUrl) => {
+          setDocI2VResults(prev => [{ url: videoUrl, prompt, sourceImageUrl }, ...prev]);
+          message.success('视频生成完成');
+        }}
+      />
     </div>
   );
 };

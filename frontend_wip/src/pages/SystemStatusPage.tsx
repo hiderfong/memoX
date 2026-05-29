@@ -7,7 +7,7 @@ import axios from 'axios';
 import dayjs from 'dayjs';
 import { I2VModal } from '../components/I2VModal';
 import { WorkflowsPage } from '../pages/WorkflowsPage';
-import { MOBILE_BREAKPOINT, useIsMobile, API_BASE, KnowledgeGroup, ReadinessStatus, SystemCheck, SystemHealthReport, BackupArchiveSummary, OpsEvent, OpsEventsResponse, LifecycleCleanupResult, ToolAuditEvent, statusTagColor, statusBadge, statusLabel, opsEventLabel, opsEventTypeOptions, opsEventStatusOptions, opsEventActorLabel, toolAuditStatusOptions, toolAuditStatusLabel, toolAuditStatusColor, formatBytes, formatDuration, AuthUser, AuthContextType, AuthContext, TOKEN_KEY, USER_KEY, api } from '../shared';
+import { MOBILE_BREAKPOINT, useIsMobile, API_BASE, KnowledgeGroup, ReadinessStatus, SystemCheck, SystemHealthReport, BackupArchiveSummary, OpsEvent, KnowledgeGraphQualityGate, OpsEventsResponse, LifecycleCleanupResult, ToolAuditEvent, statusTagColor, statusBadge, statusLabel, opsEventLabel, opsEventTypeOptions, opsEventStatusOptions, opsEventActorLabel, toolAuditStatusOptions, toolAuditStatusLabel, toolAuditStatusColor, formatBytes, formatDuration, AuthUser, AuthContextType, AuthContext, TOKEN_KEY, USER_KEY, api } from '../shared';
 
 const { Header, Sider, Content } = Layout;
 const { Title, Text } = Typography;
@@ -584,6 +584,97 @@ export const SystemStatusPage: React.FC = () => {
     : taskJobScheduledRetries > 0 || taskJobManualRetryable > 0
       ? 'warning'
       : 'ok';
+  const graphQualityEvent = report?.ops?.last_knowledge_graph_quality_alert as OpsEvent | undefined;
+  const graphQualitySnapshot = report?.ops?.last_knowledge_graph_quality_snapshot as Record<string, any> | undefined;
+  const graphQualityGate = report?.ops?.knowledge_graph_quality_gate as KnowledgeGraphQualityGate | undefined;
+  const graphQualityStatus = graphQualityGate?.status || graphQualityEvent?.status || 'ok';
+  const graphQualityAlerts = graphQualityEvent?.details?.alerts || [];
+  const graphQualityGateViolations = graphQualityGate?.violations || [];
+  const graphQualityTrigger = (graphQualityEvent?.details?.trigger || graphQualitySnapshot?.trigger) as Record<string, any> | undefined;
+  const graphQualityHealthDrop = typeof graphQualityTrigger?.health_drop === 'number' ? graphQualityTrigger.health_drop : 0;
+  const graphQualityTriggerLine = graphQualityTrigger?.filename
+    ? `最近来源：${graphQualityTrigger.filename}${graphQualityHealthDrop > 0 ? `，健康分下降 ${graphQualityHealthDrop}` : ''}`
+    : '';
+  const graphQualitySummary = graphQualityGate
+    ? graphQualityGate.enabled
+      ? graphQualityGate.passed
+        ? '门禁通过'
+        : `${graphQualityGateViolations.length} 项未达标`
+      : '未启用'
+    : graphQualityEvent
+      ? `${graphQualityAlerts.length || 0} 条告警`
+      : '暂无告警';
+  const graphQualityAlertDescription = graphQualityGate?.passed === false ? (
+    <Space direction="vertical" size={4}>
+      <Text>{graphQualityGate.message}</Text>
+      {graphQualityTriggerLine ? <Text type="secondary">{graphQualityTriggerLine}</Text> : null}
+      {graphQualityGateViolations.slice(0, 3).map(violation => (
+        <Text key={violation.code} type="secondary">
+          {violation.title}: {violation.message}
+        </Text>
+      ))}
+    </Space>
+  ) : graphQualityTriggerLine ? (
+    <Space direction="vertical" size={4}>
+      <Text>{graphQualityEvent?.message || '请进入知识图谱页面查看质量指标和审核队列。'}</Text>
+      <Text type="secondary">{graphQualityTriggerLine}</Text>
+    </Space>
+  ) : (
+    graphQualityEvent?.message || '请进入知识图谱页面查看质量指标和审核队列。'
+  );
+  const graphGovernanceTask = report?.ops?.last_knowledge_graph_governance_task as OpsEvent | undefined;
+  const graphGovernanceDetails = (graphGovernanceTask?.details || {}) as Record<string, any>;
+  const graphGovernanceStatus = graphGovernanceTask?.status || 'ok';
+  const graphGovernanceActions = Array.isArray(graphGovernanceDetails.suggested_actions)
+    ? graphGovernanceDetails.suggested_actions
+    : [];
+  const graphGovernanceCandidateCounts = (
+    graphGovernanceDetails.candidate_counts && typeof graphGovernanceDetails.candidate_counts === 'object'
+      ? graphGovernanceDetails.candidate_counts
+      : {}
+  ) as Record<string, any>;
+  const graphGovernanceCandidateLabels: Record<string, string> = {
+    duplicate_entity: '重复实体',
+    low_confidence_relation: '低置信度',
+    isolated_relation: '孤立关系',
+    conflicting_relation: '冲突关系',
+    ambiguous_entity: '多义实体',
+  };
+  const graphGovernanceCandidateEntries = Object.entries(graphGovernanceCandidateCounts)
+    .map(([key, value]) => ({
+      key,
+      label: graphGovernanceCandidateLabels[key] || key,
+      value: Number(value) || 0,
+    }))
+    .filter(item => item.value > 0);
+  const graphGovernanceCandidateTotal = graphGovernanceCandidateEntries
+    .reduce((sum, item) => sum + item.value, 0);
+  const graphGovernanceTarget = '/documents?view=graph&quality=open#graph-quality-queue';
+  const graphGovernanceSummary = graphGovernanceTask
+    ? graphGovernanceTask.status === 'ok'
+      ? '已恢复'
+      : `${graphGovernanceCandidateTotal || graphGovernanceActions.length || 1} 项待处理`
+    : '暂无任务';
+  const graphGovernanceDescription = (
+    <Space direction="vertical" size={4}>
+      <Text>{graphGovernanceTask?.message || '当前没有待处理的图谱治理任务。'}</Text>
+      {graphGovernanceCandidateEntries.length ? (
+        <Space size={4} wrap>
+          {graphGovernanceCandidateEntries.map(item => (
+            <Tag key={item.key} color="orange">{item.label} {item.value}</Tag>
+          ))}
+        </Space>
+      ) : null}
+      {graphGovernanceDetails.trigger?.filename ? (
+        <Text type="secondary">来源：{graphGovernanceDetails.trigger.filename}</Text>
+      ) : null}
+      {graphGovernanceActions.slice(0, 3).map((action: any) => (
+        <Text key={action.type || action.title} type="secondary">
+          {action.title}: {action.description}
+        </Text>
+      ))}
+    </Space>
+  );
   const taskJobOldestActiveAge = typeof taskJobs.oldest_active_age_seconds === 'number'
     ? taskJobs.oldest_active_age_seconds
     : undefined;
@@ -1041,7 +1132,52 @@ export const SystemStatusPage: React.FC = () => {
           </div>
           <Text type="secondary">活跃 {taskJobActive} / 总计 {taskJobTotal}</Text>
         </Card>
+        <Card size="small" loading={loading}>
+          <Text type="secondary">图谱质量</Text>
+          <div style={{ marginTop: 8 }}>
+            <Badge
+              status={statusBadge(graphQualityStatus)}
+              text={<Text strong>{statusLabel(graphQualityStatus)}</Text>}
+            />
+          </div>
+          <Text type="secondary">{graphQualitySummary}</Text>
+        </Card>
+        <Card size="small" loading={loading}>
+          <Text type="secondary">图谱治理</Text>
+          <div style={{ marginTop: 8 }}>
+            <Badge
+              status={statusBadge(graphGovernanceStatus)}
+              text={<Text strong>{statusLabel(graphGovernanceStatus)}</Text>}
+            />
+          </div>
+          <Text type="secondary">{graphGovernanceSummary}</Text>
+        </Card>
       </div>
+
+      {graphQualityStatus !== 'ok' ? (
+        <Alert
+          type={graphQualityStatus === 'error' ? 'error' : 'warning'}
+          showIcon
+          message={graphQualityGate?.passed === false ? '知识图谱质量门禁未通过' : '知识图谱质量需要处理'}
+          description={graphQualityAlertDescription}
+          style={{ marginBottom: 16 }}
+        />
+      ) : null}
+
+      {graphGovernanceTask && graphGovernanceTask.status !== 'ok' ? (
+        <Alert
+          type={graphGovernanceTask.status === 'error' ? 'error' : 'warning'}
+          showIcon
+          message="知识图谱治理任务待处理"
+          description={graphGovernanceDescription}
+          action={(
+            <Link to={graphGovernanceTarget}>
+              <Button size="small" icon={<DeploymentUnitOutlined />}>处理图谱</Button>
+            </Link>
+          )}
+          style={{ marginBottom: 16 }}
+        />
+      ) : null}
 
       <Card
         title="后台任务运维"

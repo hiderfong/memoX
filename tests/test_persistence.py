@@ -10,6 +10,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 from src.ops.readiness import _sqlite_quick_check
 from storage.persistence import SCHEMA_VERSION, PersistenceStore, SchemaMigrationError
 
+EXPECTED_MIGRATIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9]
+
 
 def test_session_create_and_list(tmp_path):
     store = PersistenceStore(tmp_path / "test.db")
@@ -186,6 +188,80 @@ def test_worker_logs_round_trip_and_filters(tmp_path):
     store.close()
 
 
+def test_knowledge_graph_review_decisions_round_trip(tmp_path):
+    store = PersistenceStore(tmp_path / "test.db")
+
+    first = store.set_knowledge_graph_review_decision(
+        "duplicate_entity:Memo X->MemoX",
+        "ignored",
+        note="not the same concept",
+        details={"type": "duplicate_entity"},
+        username="admin",
+        user_role="admin",
+    )
+    updated = store.set_knowledge_graph_review_decision(
+        "duplicate_entity:Memo X->MemoX",
+        "snoozed",
+        note="review later",
+        username="admin2",
+        user_role="admin",
+    )
+
+    assert first["status"] == "ignored"
+    assert updated["status"] == "snoozed"
+    assert updated["created_at"] == first["created_at"]
+    assert updated["username"] == "admin2"
+    assert store.get_knowledge_graph_review_decision("duplicate_entity:Memo X->MemoX")["note"] == "review later"
+    assert [item["candidate_id"] for item in store.list_knowledge_graph_review_decisions("snoozed")] == [
+        "duplicate_entity:Memo X->MemoX",
+    ]
+    assert store.delete_knowledge_graph_review_decision("duplicate_entity:Memo X->MemoX") is True
+    assert store.get_knowledge_graph_review_decision("duplicate_entity:Memo X->MemoX") is None
+    store.close()
+
+
+def test_knowledge_graph_quality_snapshots_round_trip(tmp_path):
+    store = PersistenceStore(tmp_path / "test.db")
+
+    first = store.save_knowledge_graph_quality_snapshot({
+        "health_score": 82,
+        "risk_level": "low",
+        "relation_count": 10,
+        "entity_count": 8,
+        "source_doc_count": 3,
+        "source_chunk_count": 5,
+        "candidate_count": 2,
+        "open_candidate_count": 2,
+        "decided_candidate_count": 0,
+        "low_confidence_ratio": 0.2,
+        "isolated_relation_ratio": 0.1,
+        "open_review_backlog_ratio": 0.2,
+        "alerts": [{"code": "health_score_warning", "level": "warning"}],
+    }, created_at="2026-05-29T10:00:00")
+    second = store.save_knowledge_graph_quality_snapshot({
+        "health_score": 76,
+        "risk_level": "medium",
+        "relation_count": 12,
+        "entity_count": 9,
+        "source_doc_count": 4,
+        "source_chunk_count": 6,
+        "candidate_count": 4,
+        "open_candidate_count": 3,
+        "decided_candidate_count": 1,
+        "low_confidence_ratio": 0.25,
+        "isolated_relation_ratio": 0.15,
+        "open_review_backlog_ratio": 0.25,
+    }, created_at="2026-05-29T10:05:00")
+
+    snapshots = store.list_knowledge_graph_quality_snapshots(limit=10)
+    assert [item["id"] for item in snapshots] == [first["id"], second["id"]]
+    assert snapshots[0]["health_score"] == 82
+    assert snapshots[1]["risk_level"] == "medium"
+    assert snapshots[0]["metrics"]["alerts"][0]["code"] == "health_score_warning"
+    assert snapshots[1]["metrics"]["open_candidate_count"] == 3
+    store.close()
+
+
 def test_task_job_auto_retry_schedule_round_trip(tmp_path):
     store = PersistenceStore(tmp_path / "test.db")
     store.save_task({"task_id": "retry_1", "description": "retry", "status": "timeout"})
@@ -304,7 +380,7 @@ def test_runtime_schema_matches_memory_and_summary_migrations(tmp_path):
     store = PersistenceStore(tmp_path / "test.db")
 
     assert store.schema_version() == SCHEMA_VERSION
-    assert [item["version"] for item in store.applied_migrations()] == [1, 2, 3, 4, 5, 6, 7]
+    assert [item["version"] for item in store.applied_migrations()] == EXPECTED_MIGRATIONS
 
     session_cols = {
         r["name"] for r in store._conn.execute("PRAGMA table_info(chat_sessions)").fetchall()
@@ -333,6 +409,38 @@ def test_runtime_schema_matches_memory_and_summary_migrations(tmp_path):
         "meta",
         "created_at",
     }.issubset(worker_log_cols)
+    kg_review_cols = {
+        r["name"] for r in store._conn.execute("PRAGMA table_info(knowledge_graph_review_decisions)").fetchall()
+    }
+    assert {
+        "candidate_id",
+        "status",
+        "note",
+        "details",
+        "username",
+        "user_role",
+        "created_at",
+        "updated_at",
+    }.issubset(kg_review_cols)
+    kg_snapshot_cols = {
+        r["name"] for r in store._conn.execute("PRAGMA table_info(knowledge_graph_quality_snapshots)").fetchall()
+    }
+    assert {
+        "health_score",
+        "risk_level",
+        "relation_count",
+        "entity_count",
+        "source_doc_count",
+        "source_chunk_count",
+        "candidate_count",
+        "open_candidate_count",
+        "decided_candidate_count",
+        "low_confidence_ratio",
+        "isolated_relation_ratio",
+        "open_review_backlog_ratio",
+        "metrics",
+        "created_at",
+    }.issubset(kg_snapshot_cols)
 
     tables = {
         r["name"]
@@ -390,11 +498,11 @@ def test_legacy_database_is_migrated_without_losing_sessions(tmp_path):
         "summary": "",
     }
     assert store.schema_version() == SCHEMA_VERSION
-    assert [item["version"] for item in store.applied_migrations()] == [1, 2, 3, 4, 5, 6, 7]
+    assert [item["version"] for item in store.applied_migrations()] == EXPECTED_MIGRATIONS
     store.close()
 
     reopened = PersistenceStore(db_path)
-    assert [item["version"] for item in reopened.applied_migrations()] == [1, 2, 3, 4, 5, 6, 7]
+    assert [item["version"] for item in reopened.applied_migrations()] == EXPECTED_MIGRATIONS
     reopened.close()
 
 
@@ -460,7 +568,7 @@ def test_legacy_task_jobs_table_gains_lease_columns(tmp_path):
         r["name"] for r in store._conn.execute("PRAGMA table_info(worker_logs)").fetchall()
     }
     assert {"worker_id", "task_id", "subtask_id", "meta"}.issubset(worker_log_cols)
-    assert [item["version"] for item in store.applied_migrations()] == [1, 2, 3, 4, 5, 6, 7]
+    assert [item["version"] for item in store.applied_migrations()] == EXPECTED_MIGRATIONS
     store.close()
 
 
@@ -473,7 +581,7 @@ def test_sqlite_health_reports_schema_version_and_migrations(tmp_path):
 
     assert result["status"] == "ok"
     assert result["schema_version"] == SCHEMA_VERSION
-    assert [item["version"] for item in result["migrations"]] == [1, 2, 3, 4, 5, 6, 7]
+    assert [item["version"] for item in result["migrations"]] == EXPECTED_MIGRATIONS
 
 
 def test_future_database_schema_is_rejected(tmp_path):

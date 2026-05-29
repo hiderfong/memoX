@@ -11,7 +11,14 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
 from agents.base_agent import LLMResponse  # noqa: E402
-from agents.worker_pool import ProviderFallbackConfig, SubTask, Task, WorkerAgent, WorkerConfig, WorkerPool  # noqa: E402
+from agents.worker_pool import (  # noqa: E402
+    ProviderFallbackConfig,
+    SubTask,
+    Task,
+    WorkerAgent,
+    WorkerConfig,
+    WorkerPool,
+)
 from coordinator.iterative_orchestrator import IterativeOrchestrator  # noqa: E402
 from coordinator.task_jobs import TaskJobRequest, TaskJobRunner  # noqa: E402
 from storage.persistence import PersistenceStore  # noqa: E402

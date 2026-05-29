@@ -1,5 +1,7 @@
 # Phase 3 — 能力扩展 Design Spec
 
+**Status**: Archived reference; implementation has evolved beyond this original design (2026-05-29)
+
 ## Overview
 
 Phase 3 adds three capabilities to MemoX: document preview with full-text search, image OCR (Qwen VL + pytesseract fallback), and human-in-the-loop task intervention.
