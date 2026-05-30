@@ -540,7 +540,7 @@ def phase_media_job(args: argparse.Namespace) -> PhaseResult:
 def phase_full_sweep(args: argparse.Namespace) -> PhaseResult:
     return run_command(
         "full-sweep",
-        ["uv", "run", "--extra", "dev", "pytest", "tests/e2e", "-m", "e2e", "-q", "-s", "--tb=short"],
+        ["uv", "run", "--extra", "dev", "pytest", "tests/e2e", "-q", "-s", "--tb=short", "-ra"],
         timeout_s=args.real_e2e_timeout,
         dry_run=args.dry_run,
     )

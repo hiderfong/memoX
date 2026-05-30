@@ -87,6 +87,10 @@ Before releasing changes to orchestration, Workers, or persistence:
   lease recovery resumes or requeues the job.
 - Confirm `POST /api/tasks/{task_id}/retry` works for timeout or retryable
   failures and does not retry cancelled user intent.
+- Run `tests/e2e/test_deterministic_collab_orchestrator_flow.py`; it requires no
+  provider secrets and covers the real `IterativeOrchestrator`, `WorkerPool`,
+  `WorkerAgent`, sandbox file tools, mail tools, dependency ordering, and
+  quality evaluation with a deterministic provider.
 - Run `tests/e2e/test_deterministic_multiagent_task_flow.py`; it requires no
   provider secrets and covers successful execution, retryable failure, manual
   retry, trace aggregation, file artifacts, and checkpoint recovery.
@@ -101,6 +105,7 @@ Run these from the repository root before preparing a release branch or tag:
 ```bash
 uv run --extra dev ruff check .
 uv run --extra dev pytest
+uv run --extra dev pytest tests/e2e/test_deterministic_collab_orchestrator_flow.py
 uv run --extra dev pytest tests/e2e/test_deterministic_multiagent_task_flow.py
 uv run --extra dev pytest tests/e2e/test_scheduled_task_queue_flow.py
 cd frontend_wip && npm run build
@@ -124,6 +129,7 @@ task execution, tool policy, audit, and operational API paths:
 ```bash
 uv run --extra dev pytest \
   tests/test_task_jobs.py \
+  tests/e2e/test_deterministic_collab_orchestrator_flow.py \
   tests/e2e/test_deterministic_multiagent_task_flow.py \
   tests/e2e/test_scheduled_task_queue_flow.py \
   tests/test_tool_database.py \

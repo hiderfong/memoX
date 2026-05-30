@@ -156,6 +156,7 @@ def test_backup_artifacts_are_documented_and_ignored() -> None:
 
 def test_release_gate_requires_external_smoke_without_secret_skips() -> None:
     workflow = (ROOT / ".github" / "workflows" / "release-gate.yml").read_text(encoding="utf-8")
+    external_script = (ROOT / "scripts" / "run_external_e2e.py").read_text(encoding="utf-8")
     readiness = (ROOT / "docs" / "RELEASE_READINESS.md").read_text(encoding="utf-8")
     runbook = (ROOT / "docs" / "EXTERNAL_AGENT_E2E_RUNBOOK.md").read_text(encoding="utf-8")
 
@@ -184,6 +185,10 @@ def test_release_gate_requires_external_smoke_without_secret_skips() -> None:
     assert ".github/workflows/release-gate.yml" in runbook
     assert "缺少真实 provider secret 时必须失败" in runbook
     assert "发布前选择 `Release Gate`" in runbook
+    assert '"full-sweep",' in external_script
+    assert '"tests/e2e", "-q", "-s", "--tb=short", "-ra"' in external_script
+    assert '"tests/e2e", "-m", "e2e"' not in external_script
+    assert "pytest tests/e2e -q -s --tb=short -ra" in runbook
 
 
 def test_recovery_runbook_documents_guarded_restore_flow() -> None:

@@ -536,13 +536,15 @@ kill "$MEMOX_E2E_SERVER_PID"
 如果 P0-P4 都通过，并且预算允许，可以跑所有 E2E：
 
 ```bash
-uv run --extra dev pytest tests/e2e -m e2e -q -s --tb=short
+uv run --extra dev pytest tests/e2e -q -s --tb=short -ra
 ```
 
 注意：
 
 - 浏览器 E2E 可能需要 Playwright Chromium 和前端依赖。
 - Admin 浏览器 E2E 不需要真实 provider key，但需要本地浏览器运行能力。
+- 没有真实 provider key 时，真实 MiniMax/DeepSeek/Qwen/DashScope 用例应按条件 skip；
+  deterministic E2E 仍应通过。
 - 如果 CI 环境不支持浏览器，可只报告非浏览器 E2E 结果。
 
 ## 失败处理原则

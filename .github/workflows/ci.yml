@@ -54,7 +54,11 @@ jobs:
         run: uv run --extra dev pytest tests --ignore=tests/e2e
 
       - name: Deterministic multi-agent E2E
-        run: uv run --extra dev pytest tests/e2e/test_deterministic_multiagent_task_flow.py tests/e2e/test_scheduled_task_queue_flow.py
+        run: |
+          uv run --extra dev pytest \
+            tests/e2e/test_deterministic_collab_orchestrator_flow.py \
+            tests/e2e/test_deterministic_multiagent_task_flow.py \
+            tests/e2e/test_scheduled_task_queue_flow.py
 
   frontend:
     name: Frontend
