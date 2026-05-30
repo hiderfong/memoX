@@ -48,6 +48,7 @@ from agents.worker_pool import (  # noqa: E402
 )
 from auth import AuthUser, _get_auth_from_request, init_auth  # noqa: E402
 from config import (  # noqa: E402
+    DEFAULT_CORS_ORIGINS,
     Config,
     FileAccessConfig,
     default_config_path,
@@ -160,16 +161,35 @@ app = FastAPI(
     openapi_url="/api/openapi.json",
 )
 
-# CORS 配置：允许本地开发端口和公网 IP 直接访问
+
+def _normalize_cors_origin(origin: object) -> str:
+    value = str(origin).strip()
+    return value if value == "*" else value.rstrip("/")
+
+
+def _cors_origins_from_config(config: Config | None = None) -> list[str]:
+    source = _config if config is None else config
+    if source is None:
+        return list(DEFAULT_CORS_ORIGINS)
+    return [
+        normalized
+        for origin in getattr(source.server, "cors_origins", [])
+        if (normalized := _normalize_cors_origin(origin))
+    ]
+
+
+class ConfigurableCORSMiddleware(CORSMiddleware):
+    """CORS middleware that reads allowed origins from runtime config."""
+
+    def is_allowed_origin(self, origin: str) -> bool:
+        allowed_origins = _cors_origins_from_config()
+        return "*" in allowed_origins or _normalize_cors_origin(origin) in allowed_origins
+
+
+# CORS 配置：默认仅本地开发端口，生产部署应通过 server.cors_origins 显式配置。
 app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",  "https://localhost:3000",
-        "http://localhost:8080",  "https://localhost:8080",
-        "http://127.0.0.1:3000", "https://127.0.0.1:3000",
-        "http://127.0.0.1:8080", "https://127.0.0.1:8080",
-        "http://23.236.66.33:8080", "https://23.236.66.33:8080",
-    ],
+    ConfigurableCORSMiddleware,
+    allow_origins=[],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "Accept"],

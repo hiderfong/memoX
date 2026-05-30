@@ -65,10 +65,17 @@ def test_streamlit_entry_is_diagnostic_compat_only() -> None:
 
 def test_config_example_is_container_friendly() -> None:
     config = yaml.safe_load((ROOT / "config.example.yaml").read_text(encoding="utf-8"))
+    local_config = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
     env_example = (ROOT / ".env.example").read_text(encoding="utf-8")
+    api_py = (ROOT / "src" / "web" / "api.py").read_text(encoding="utf-8")
 
     assert config["app"]["debug"] is False
     assert config["server"]["host"] == "0.0.0.0"
+    assert "http://localhost:3000" in config["server"]["cors_origins"]
+    assert "https://127.0.0.1:8080" in config["server"]["cors_origins"]
+    assert "23.236.66.33" not in api_py
+    assert "23.236.66.33" not in "\n".join(local_config["server"]["cors_origins"])
+    assert "ConfigurableCORSMiddleware" in api_py
     assert config["ops"]["archive_mirror_dir"] == ""
     assert config["ops"]["ops_event_retention_days"] == 90
     assert config["ops"]["audit_log_retention_days"] == 180

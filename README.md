@@ -81,6 +81,12 @@ coordinator:
   model: "qwen3.6-plus"
   max_workers: 5
 
+server:
+  # 生产部署请按实际域名/IP 显式配置；默认模板只放行本地开发来源。
+  cors_origins:
+    - "http://localhost:3000"
+    - "http://127.0.0.1:3000"
+
 auth:
   users:
     - username: "admin"

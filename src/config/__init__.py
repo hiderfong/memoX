@@ -12,6 +12,18 @@ class ConfigError(ValueError):
     """配置无效。"""
 
 
+DEFAULT_CORS_ORIGINS = [
+    "http://localhost:3000",
+    "https://localhost:3000",
+    "http://localhost:8080",
+    "https://localhost:8080",
+    "http://127.0.0.1:3000",
+    "https://127.0.0.1:3000",
+    "http://127.0.0.1:8080",
+    "https://127.0.0.1:8080",
+]
+
+
 def resolve_env_value(value: Any) -> str:
     """解析 ${VAR_NAME} 或 ${VAR_NAME:-default} 形式的环境变量引用。"""
     if value is None:
@@ -147,7 +159,7 @@ class ServerConfig:
     """服务器配置"""
     host: str = "0.0.0.0"
     port: int = 8080
-    cors_origins: list[str] = field(default_factory=list)
+    cors_origins: list[str] = field(default_factory=lambda: list(DEFAULT_CORS_ORIGINS))
 
 
 @dataclass

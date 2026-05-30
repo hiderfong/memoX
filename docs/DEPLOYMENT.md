@@ -28,6 +28,10 @@ MEMOX_FILE_SIGNING_SECRET=use-another-long-random-secret
 ```
 
 If you change the default provider or Worker templates in `config.yaml`, also fill the matching provider keys.
+Configure browser access through `server.cors_origins` in `config.yaml`. Keep
+the list limited to the deployed React UI origins, for example your production
+domain and any trusted internal admin domain. Do not rely on hard-coded public
+IP addresses in application code.
 
 Start the service:
 

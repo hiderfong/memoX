@@ -14,6 +14,8 @@ Authorization: Bearer <token>
 
 公开路径由 `config.yaml` 的 `auth.public_paths` 控制，默认包含 `/api/auth/login`、`/api/health`、`/api/docs`、`/api/redoc` 和 `/api/openapi.json`。上传文件路径不应加入公开路径；外部服务需要拉取文件时，使用短期签名 URL。
 
+浏览器跨域来源由 `server.cors_origins` 控制。默认模板只包含本地开发来源；生产部署应按实际前端域名或可信 IP 显式配置，避免在代码中固化公网地址。
+
 ## Auth
 
 | 方法 | 路径 | 说明 |

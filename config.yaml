@@ -14,8 +14,6 @@ server:
   cors_origins:
     - "http://localhost:8080"
     - "http://localhost:3000"
-    - "http://23.236.66.33:8080"
-    - "http://23.236.66.33:3000"
 
 # Coordinator 配置
 coordinator:

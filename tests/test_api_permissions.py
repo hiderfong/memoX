@@ -58,6 +58,54 @@ def test_public_and_protected_auth_boundaries(permission_client) -> None:
     assert protected_file.status_code == 401
 
 
+def test_cors_preflight_uses_runtime_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.config import Config
+    from src.web import api as api_module
+
+    cfg = Config._from_dict(
+        {
+            "app": {},
+            "server": {"cors_origins": ["https://console.example.com"]},
+            "coordinator": {},
+            "providers": {},
+            "worker_templates": {},
+            "knowledge_base": {},
+            "auth": {"enabled": True, "users": [{"username": "admin", "password": "pw"}]},
+        }
+    )
+    original_lifespan = api_module.app.router.lifespan_context
+
+    @contextlib.asynccontextmanager
+    async def noop_lifespan(app):
+        yield
+
+    api_module.app.router.lifespan_context = noop_lifespan
+    monkeypatch.setattr(api_module, "_config", cfg)
+    try:
+        with TestClient(api_module.app, raise_server_exceptions=False) as client:
+            allowed = client.options(
+                "/api/health",
+                headers={
+                    "Origin": "https://console.example.com",
+                    "Access-Control-Request-Method": "GET",
+                },
+            )
+            denied = client.options(
+                "/api/health",
+                headers={
+                    "Origin": "https://unexpected.example.com",
+                    "Access-Control-Request-Method": "GET",
+                },
+            )
+    finally:
+        api_module.app.router.lifespan_context = original_lifespan
+
+    assert allowed.status_code == 200
+    assert allowed.headers["access-control-allow-origin"] == "https://console.example.com"
+    assert denied.status_code == 400
+    assert "access-control-allow-origin" not in denied.headers
+
+
 @pytest.mark.asyncio
 async def test_disabled_auth_allows_middleware_boundary(monkeypatch: pytest.MonkeyPatch) -> None:
     from starlette.requests import Request
