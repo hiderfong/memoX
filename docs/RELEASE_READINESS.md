@@ -102,8 +102,10 @@ uv run --extra dev python scripts/docker_smoke_test.py
 ```
 
 Real-key provider checks that require unrestricted external network access are
-tracked separately in `docs/EXTERNAL_AGENT_E2E_RUNBOOK.md`. Use that runbook for
-DeepSeek, MiniMax, Qwen, and DashScope I2V validation.
+tracked separately in `docs/EXTERNAL_AGENT_E2E_RUNBOOK.md`. Use the `External
+E2E` GitHub Actions workflow or run
+`uv run --extra dev python scripts/run_external_e2e.py --phases smoke` for
+DeepSeek, MiniMax, Qwen, DashScope I2V, and media job validation.
 
 For a faster code-review loop, the following targeted tests cover the current
 task execution, tool policy, audit, and operational API paths:

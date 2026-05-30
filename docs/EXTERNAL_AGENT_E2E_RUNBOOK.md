@@ -51,11 +51,67 @@ export QWEN_MODEL="qwen-plus"
 - Python 3.11+。
 - Node.js 18+。
 - `uv` 可用；如果没有 `uv`，可改用项目 `.venv`，但推荐按仓库现有方式执行。
+- 前端依赖已安装或可运行 `npm ci`。
+- 浏览器 E2E 需要 Playwright Chromium；CI 工作流会自动安装，本地可运行 `uv run --extra dev playwright install chromium`。
 - HTTPS 出站访问必须可解析并连接：
   - `api.deepseek.com`
   - `api.minimaxi.com`
   - `dashscope.aliyuncs.com`
   - DashScope 上传策略返回的 OSS upload host
+
+## 推荐：一键验收脚本
+
+优先使用仓库内脚本执行。它会统一跑基线、浏览器 E2E、真实 provider smoke、DashScope I2V、后台媒体任务，并生成脱敏 Markdown 报告：
+
+```bash
+uv run --extra dev python scripts/run_external_e2e.py \
+  --phases smoke \
+  --report-path /tmp/memox-external-e2e-report.md
+```
+
+常用参数：
+
+- `--phases quick`：跳过真实 I2V 和媒体后台任务，只跑基线、浏览器 E2E、三模型编排、MiniMax 最小协作、Qwen smoke。
+- `--phases smoke`：默认发布验收，覆盖 P0-P4。
+- `--phases all,full-sweep`：在默认发布验收后追加完整 E2E sweep。
+- `--full-collab`：把 MiniMax 协作从最小场景扩展为整个 `test_e2e_collab.py`。
+- `--allow-missing-secrets`：本地预演时允许缺 secret 的 phase 被 skip；正式发布验收不建议使用。
+- `--dry-run`：只生成执行计划，不调用模型、不启动服务。
+
+脚本报告会脱敏：
+
+- 已知环境变量中的 secret 值。
+- key 形状字符串。
+- 带 query 的临时签名 URL。
+
+## GitHub Actions 手动验收
+
+仓库提供独立的 `External E2E` 手动工作流：`.github/workflows/external-e2e.yml`。
+
+运行前在 GitHub Secrets 或 Variables 中配置：
+
+- `MINIMAX_API_KEY`
+- `DEEPSEEK_API_KEY`
+- `QWEN_API_KEY`
+- `DASHSCOPE_API_KEY`
+- `MEMOX_FILE_SIGNING_SECRET`
+- `MEMOX_ADMIN_PASSWORD`
+
+可选 Variables：
+
+- `QWEN_MODEL`，默认 `qwen-plus`。
+- `I2V_TEST_MODEL`，默认 `wan2.7-i2v`。
+- `I2V_TEST_EDIT_MODEL`，默认 `wan2.7-videoedit`。
+- `I2V_TEST_RESOLUTION`，默认 `720P`。
+- `I2V_TEST_DURATION`，默认 `5`。
+
+触发方式：
+
+1. 打开 GitHub Actions。
+2. 选择 `External E2E`。
+3. 点击 `Run workflow`。
+4. `phases` 默认 `smoke`；发布前推荐保持默认。
+5. 下载 `external-e2e-report` artifact，确认报告无 secret 泄漏。
 
 ## 预检
 
