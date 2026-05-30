@@ -207,7 +207,7 @@ def test_worker_template_parses_fallback_providers() -> None:
             "worker_templates": {
                 "coder": {
                     "provider": "dashscope",
-                    "model": "qwen3.7",
+                    "model": "qwen-plus",
                     "fallback_providers": [
                         {
                             "provider": "deepseek",

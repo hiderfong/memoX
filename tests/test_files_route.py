@@ -6,6 +6,31 @@ from src.config import Config
 from src.web.api import app
 
 
+def test_configure_uploads_dir_uses_configured_upload_directory(tmp_path):
+    from src.web import api as api_mod
+
+    original_uploads_dir = api_mod.UPLOADS_DIR
+    configured_uploads = tmp_path / "configured-uploads"
+    cfg = Config._from_dict(
+        {
+            "app": {},
+            "server": {},
+            "coordinator": {},
+            "providers": {},
+            "worker_templates": {},
+            "knowledge_base": {"upload_directory": str(configured_uploads)},
+            "auth": {"enabled": False},
+        }
+    )
+
+    try:
+        api_mod._configure_uploads_dir(cfg)
+        assert api_mod.UPLOADS_DIR == configured_uploads
+        assert configured_uploads.is_dir()
+    finally:
+        api_mod.UPLOADS_DIR = original_uploads_dir
+
+
 def _set_file_access_config(monkeypatch, *, signing_secret: str = "test-file-secret", ttl: int = 300) -> None:
     from src.web import api as api_mod
 

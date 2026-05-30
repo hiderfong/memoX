@@ -491,6 +491,7 @@ class WorkerAgent:
                     for tool_call, result in tool_results:
                         messages.append({
                             "role": "tool",
+                            "type": "function",
                             "tool_call_id": tool_call.id,
                             "name": tool_call.name,
                             "content": str(result),

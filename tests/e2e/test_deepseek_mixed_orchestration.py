@@ -29,10 +29,10 @@ DEEPSEEK_API_KEY = _load_key("DEEPSEEK_API_KEY")
 MINIMAX_API_KEY = _load_key("MINIMAX_API_KEY")
 QWEN_API_KEY = _load_key("QWEN_API_KEY")
 DEEPSEEK_MODEL = "deepseek-v4-pro"
-DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1"
 MINIMAX_MODEL = "MiniMax-M2.7-highspeed"
 MINIMAX_BASE_URL = "https://api.minimaxi.com/anthropic/v1"
-QWEN_MODEL = os.environ.get("QWEN_MODEL", "qwen3.7")
+QWEN_MODEL = os.environ.get("QWEN_MODEL", "qwen-plus")
 QWEN_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
 pytestmark = pytest.mark.e2e

@@ -111,7 +111,7 @@ def client(monkeypatch, tmp_path):
         with contextlib.suppress(ImportError):
             importlib.import_module(module_name)._config = None
 
-    from src.main import app as fastapi_app
+    from src.web.api import app as fastapi_app
 
     with TestClient(fastapi_app, raise_server_exceptions=False) as test_client:
         auth_headers = _auth_headers(test_client)

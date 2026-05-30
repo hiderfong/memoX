@@ -194,7 +194,7 @@ async def test_list_providers_exposes_server_side_status(
             "worker_templates": {
                 "coder": {
                     "provider": "dashscope",
-                    "model": "qwen3.7",
+                    "model": "qwen-plus",
                     "temperature": 0.7,
                     "fallback_providers": [
                         {"provider": "deepseek", "model": "deepseek-v4-pro"}
@@ -221,7 +221,7 @@ async def test_list_providers_exposes_server_side_status(
     assert result["dashscope"]["configured"] is False
     assert result["dashscope"]["env_var"] == "QWEN_API_KEY"
     assert "worker:coder" in result["dashscope"]["used_by"]
-    assert "qwen3.7" in result["dashscope"]["models"]
+    assert "qwen-plus" in result["dashscope"]["models"]
     assert result["dashscope"]["capabilities"]["protocol"] == "openai_compatible"
     assert "API Key 未配置" in result["dashscope"]["warnings"][0]
 

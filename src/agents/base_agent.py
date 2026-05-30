@@ -38,6 +38,7 @@ class ToolCall:
     def to_dict(self) -> dict:
         return {
             "id": self.id,
+            "type": "function",
             "function": {
                 "name": self.name,
                 "arguments": json.dumps(self.arguments, ensure_ascii=False),
@@ -790,7 +791,7 @@ PROVIDER_CAPABILITIES: dict[str, ProviderCapabilities] = {
     ),
     "deepseek": ProviderCapabilities(
         protocol="openai_compatible",
-        default_base_url="https://api.deepseek.com",
+        default_base_url="https://api.deepseek.com/v1",
         well_known_models=("deepseek-v4-pro",),
         preserves_reasoning_content=True,
         recommended_for=("reasoning", "agentic_tasks", "multi_agent_collaboration"),
@@ -798,7 +799,7 @@ PROVIDER_CAPABILITIES: dict[str, ProviderCapabilities] = {
     "dashscope": ProviderCapabilities(
         protocol="openai_compatible",
         default_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-        well_known_models=("qwen3.7", "qwen3.6-plus", "qwen-plus", "qwen-turbo"),
+        well_known_models=("qwen-plus", "qwen-turbo", "qwen3.6-plus"),
         recommended_for=("general_reasoning", "multimodal_extensions"),
     ),
 }

@@ -191,6 +191,13 @@ async def rate_limit_handler(request, exc):
 
 UPLOADS_DIR = Path("data/uploads")
 
+
+def _configure_uploads_dir(config: Config) -> None:
+    global UPLOADS_DIR
+    UPLOADS_DIR = Path(config.knowledge_base.upload_directory)
+    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+
+
 _config: Config | None = None
 _rag_engine: RAGEngine | None = None
 _task_planner: TaskPlanner | None = None
@@ -335,6 +342,10 @@ def _is_signed_upload_request(request: Request) -> bool:
 async def auth_middleware(request: Request, call_next):
     path = request.url.path
 
+    # 认证未启用时放行所有请求
+    if _config is not None and not _config.auth.enabled:
+        return await call_next(request)
+
     # 非 API 路径（前端静态文件、HTML 页面）直接放行
     if not path.startswith("/api/") and path != "/ws":
         return await call_next(request)
@@ -436,6 +447,7 @@ async def startup():
     # 加载配置
     _config = load_config()
     validate_config(_config)
+    _configure_uploads_dir(_config)
 
     # 初始化认证
     if _config.auth.enabled:

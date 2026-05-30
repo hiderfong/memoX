@@ -6,9 +6,9 @@
 
 外部 Agent 需要验证以下能力在真实服务下可用：
 
-1. DeepSeek V4 Pro + MiniMax + Qwen3.7 多 Agent 混合编排。
+1. DeepSeek V4 Pro + MiniMax + Qwen 多 Agent 混合编排。
 2. MiniMax 多 Agent 协作 E2E。
-3. Qwen3.7 OpenAI-compatible provider 基础调用。
+3. Qwen OpenAI-compatible provider 基础调用。
 4. DashScope Wan2.7 I2V 真实图生视频。
 5. MemoX 媒体工作台后台任务接口：入队、轮询、成功/失败记录、作品库查询。
 
@@ -34,14 +34,14 @@ export QWEN_API_KEY="<redacted>"
 export DASHSCOPE_API_KEY="<redacted>"
 export MEMOX_FILE_SIGNING_SECRET="<random-long-secret>"
 export MEMOX_ADMIN_PASSWORD="<random-long-password>"
-export QWEN_MODEL="qwen3.7"
+export QWEN_MODEL="qwen-plus"
 ```
 
 说明：
 
 - `MINIMAX_API_KEY` 用于 `https://api.minimaxi.com/anthropic/v1`。
 - `DEEPSEEK_API_KEY` 用于 `https://api.deepseek.com`，模型为 `deepseek-v4-pro`。
-- `QWEN_API_KEY` 用于 `https://dashscope.aliyuncs.com/compatible-mode/v1`，默认模型为 `qwen3.7`。
+- `QWEN_API_KEY` 用于 `https://dashscope.aliyuncs.com/compatible-mode/v1`，默认模型为外部实测可用的 `qwen-plus`。如账号明确开通其他 Qwen 模型，可通过 `QWEN_MODEL` 覆盖。
 - `DASHSCOPE_API_KEY` 用于 DashScope Wan2.7 I2V / video edit。
 - 如果实际部署把 Qwen chat 与 DashScope I2V 共用同一个 key，可在安全环境里把同一个 secret 同时注入为 `QWEN_API_KEY` 和 `DASHSCOPE_API_KEY`，不要写入仓库。
 
@@ -183,7 +183,7 @@ uv run --extra dev pytest \
 
 ## P2: Qwen Provider Smoke
 
-外部 Agent 需要补一次真实 Qwen3.7 provider smoke，确认 DashScope OpenAI-compatible chat endpoint、key、模型名和 MemoX provider adapter 可用。
+外部 Agent 需要补一次真实 Qwen provider smoke，确认 DashScope OpenAI-compatible chat endpoint、key、模型名和 MemoX provider adapter 可用。
 
 ```bash
 uv run --extra dev python - <<'PY'
@@ -203,7 +203,7 @@ async def main() -> None:
             {"role": "system", "content": "Reply with exactly QWEN_OK."},
             {"role": "user", "content": "Provider smoke test."},
         ],
-        model=os.environ.get("QWEN_MODEL", "qwen3.7"),
+        model=os.environ.get("QWEN_MODEL", "qwen-plus"),
         temperature=0,
         max_tokens=32,
     )
@@ -215,7 +215,7 @@ asyncio.run(main())
 PY
 ```
 
-如果 `qwen3.7` 对当前账号不可用，停止并报告 provider 权限问题；不要自动降级到其他非指定 provider。只有操作者明确要求时，才通过 `QWEN_MODEL` 覆盖为账号实际可用的 Qwen 模型。
+如果 `QWEN_MODEL` 指向的模型对当前账号不可用，停止并报告 provider 权限问题；不要自动降级到其他非指定 provider。只有操作者明确要求时，才通过 `QWEN_MODEL` 覆盖为账号实际可用的 Qwen 模型。
 
 ## P3: DashScope I2V Direct Client Smoke
 

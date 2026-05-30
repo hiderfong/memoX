@@ -93,7 +93,7 @@ async def test_deepseek_reasoning_content_is_preserved_for_tool_result_roundtrip
 def test_deepseek_provider_uses_openai_compatible_defaults():
     provider = create_provider("deepseek", "test-key")
 
-    assert provider.base_url == "https://api.deepseek.com"
+    assert provider.base_url == "https://api.deepseek.com/v1"
     assert getattr(provider, "preserve_reasoning_content", False) is True
 
 
@@ -115,11 +115,11 @@ def test_qwen_provider_uses_dashscope_openai_compatible_defaults():
     assert getattr(provider, "preserve_reasoning_content", False) is False
 
 
-def test_qwen_provider_capabilities_include_qwen37():
+def test_qwen_provider_capabilities_include_qwen_plus():
     capabilities = get_provider_capabilities("dashscope")
 
     assert capabilities is not None
     assert capabilities.protocol == "openai_compatible"
     assert capabilities.supports_tool_calls is True
     assert capabilities.supports_streaming is True
-    assert "qwen3.7" in capabilities.well_known_models
+    assert "qwen-plus" in capabilities.well_known_models

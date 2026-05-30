@@ -82,7 +82,7 @@ def test_task_trace_groups_events_by_subtask(tmp_path, monkeypatch):
         "task_trace",
         "provider_fallback",
         "子任务 sub_1 已切换 fallback provider",
-        {"subtask_id": "sub_1", "provider": "dashscope", "model": "qwen3.7"},
+        {"subtask_id": "sub_1", "provider": "dashscope", "model": "qwen-plus"},
     )
     store.add_task_event("task_trace", "completed", "任务完成")
     store.log_audit_event(

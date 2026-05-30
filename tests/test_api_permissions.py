@@ -58,6 +58,50 @@ def test_public_and_protected_auth_boundaries(permission_client) -> None:
     assert protected_file.status_code == 401
 
 
+@pytest.mark.asyncio
+async def test_disabled_auth_allows_middleware_boundary(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.config import Config
+    from src.web import api as api_module
+    from starlette.requests import Request
+    from starlette.responses import JSONResponse
+
+    cfg = Config._from_dict(
+        {
+            "app": {},
+            "server": {},
+            "coordinator": {},
+            "providers": {},
+            "worker_templates": {},
+            "knowledge_base": {},
+            "auth": {"enabled": False, "users": []},
+        }
+    )
+    monkeypatch.setattr(api_module, "_config", cfg)
+    called = False
+
+    async def call_next(request: Request) -> JSONResponse:
+        nonlocal called
+        called = True
+        return JSONResponse({"ok": True}, status_code=204)
+
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/api/protected",
+            "headers": [],
+            "query_string": b"",
+            "server": ("testserver", 80),
+            "scheme": "http",
+            "client": ("testclient", 50000),
+        }
+    )
+    response = await api_module.auth_middleware(request, call_next)
+
+    assert called is True
+    assert response.status_code == 204
+
+
 @pytest.mark.parametrize(
     ("method", "path", "json_body"),
     [
