@@ -1,13 +1,12 @@
-import React, { useState, useEffect, useRef, createContext, useContext } from 'react';
-import { Layout, Menu, Typography, Card, Button, Upload, List, Space, Avatar, Input, message, Spin, Tag, Progress, Badge, Drawer, Timeline, Alert, Empty, Tooltip, Form, Divider, Checkbox, Modal, Tabs, Table, Select, Slider, InputNumber, AutoComplete, Switch, Segmented } from 'antd';
-import { UploadOutlined, FileTextOutlined, RobotOutlined, MessageOutlined, TeamOutlined, SettingOutlined, CloudUploadOutlined, DeleteOutlined, SendOutlined, LoadingOutlined, BulbOutlined, ThunderboltOutlined, ClockCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, InboxOutlined, UserOutlined, LockOutlined, LogoutOutlined, SafetyCertificateOutlined, LinkOutlined, FolderOpenOutlined, MailOutlined, LineChartOutlined, FileSearchOutlined, EyeOutlined, SaveOutlined, DownOutlined, UpOutlined, PlusOutlined, EditOutlined, DownloadOutlined, BgColorsOutlined, ReloadOutlined, RollbackOutlined, ExclamationCircleOutlined, ToolOutlined, DeploymentUnitOutlined, CopyOutlined } from '@ant-design/icons';
-import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip as RTooltip, Legend, ResponsiveContainer } from 'recharts';
-import { useNavigate, useLocation, Routes, Route, Link, Navigate } from 'react-router-dom';
+import React, { useState, useEffect } from 'react';
+import { Layout, Typography, Card, Button, Upload, List, Space, Input, message, Spin, Tag, Progress, Badge, Timeline, Alert, Empty, Tooltip, Divider, Checkbox, Modal, Tabs, Table, Select, Segmented } from 'antd';
+import { FileTextOutlined, RobotOutlined, TeamOutlined, LoadingOutlined, BulbOutlined, ClockCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, FolderOpenOutlined, MailOutlined, LineChartOutlined, FileSearchOutlined, EyeOutlined, DownloadOutlined, ReloadOutlined, RollbackOutlined, ExclamationCircleOutlined, DeploymentUnitOutlined, CopyOutlined } from '@ant-design/icons';
+
+import { useNavigate, useLocation } from 'react-router-dom';
 import axios from 'axios';
 import dayjs from 'dayjs';
-import { I2VModal } from '../components/I2VModal';
-import { WorkflowsPage } from '../pages/WorkflowsPage';
-import { MOBILE_BREAKPOINT, useIsMobile, API_BASE, KnowledgeGroup, ReadinessStatus, SystemCheck, SystemHealthReport, BackupArchiveSummary, OpsEvent, OpsEventsResponse, LifecycleCleanupResult, statusTagColor, statusBadge, statusLabel, opsEventLabel, opsEventTypeOptions, opsEventStatusOptions, opsEventActorLabel, formatBytes, formatDuration, AuthUser, AuthContextType, AuthContext, TOKEN_KEY, USER_KEY, api } from '../shared';
+
+import { useIsMobile, API_BASE, KnowledgeGroup, api } from '../shared';
 
 const { Header, Sider, Content } = Layout;
 const { Title, Text } = Typography;
@@ -213,15 +212,76 @@ const traceEventColor = (severity: string) => {
 const traceStatusTag = (status?: string) => {
   const config: Record<string, { color: string; text: string }> = {
     pending: { color: 'default', text: '等待中' },
+    queued: { color: 'processing', text: '排队中' },
     running: { color: 'processing', text: '执行中' },
+    success: { color: 'success', text: '已完成' },
     completed: { color: 'success', text: '已完成' },
     failed: { color: 'error', text: '失败' },
+    failed_non_retryable: { color: 'error', text: '不可重试失败' },
     cancelled: { color: 'warning', text: '已取消' },
     timeout: { color: 'warning', text: '超时' },
     unknown: { color: 'default', text: '未知' },
   };
   const c = config[status || 'unknown'] || { color: 'default', text: status || '未知' };
   return <Tag color={c.color}>{c.text}</Tag>;
+};
+
+const metricBoxStyle: React.CSSProperties = {
+  border: '1px solid #f0f0f0',
+  borderRadius: 8,
+  padding: 12,
+  minHeight: 96,
+  background: '#fff',
+};
+
+const compactText = (value = '', maxLength = 96) => (
+  value.length > maxLength ? `${value.substring(0, maxLength)}...` : value
+);
+
+const getScorePercent = (score: any) => {
+  if (score === null || score === undefined || score === '') return null;
+  const numericScore = Number(score);
+  if (!Number.isFinite(numericScore)) return null;
+  const percent = numericScore > 1 ? numericScore : numericScore * 100;
+  return Math.max(0, Math.min(100, Math.round(percent)));
+};
+
+const getSubtaskStats = (subtasks: any[] = []) => {
+  const stats = {
+    total: subtasks.length,
+    completed: 0,
+    running: 0,
+    failed: 0,
+    pending: 0,
+  };
+
+  subtasks.forEach((subtask) => {
+    const status = subtask.status || 'pending';
+    if (['completed', 'success'].includes(status)) stats.completed += 1;
+    else if (['running', 'processing'].includes(status)) stats.running += 1;
+    else if (['failed', 'failed_non_retryable', 'timeout', 'cancelled'].includes(status)) stats.failed += 1;
+    else stats.pending += 1;
+  });
+
+  return stats;
+};
+
+const getAgentWorkloads = (subtasks: any[] = []) => {
+  const workloads = new Map<string, { name: string; total: number; completed: number; running: number; failed: number; pending: number }>();
+
+  subtasks.forEach((subtask) => {
+    const name = subtask.assigned_agent || '自动分配';
+    const current = workloads.get(name) || { name, total: 0, completed: 0, running: 0, failed: 0, pending: 0 };
+    const status = subtask.status || 'pending';
+    current.total += 1;
+    if (['completed', 'success'].includes(status)) current.completed += 1;
+    else if (['running', 'processing'].includes(status)) current.running += 1;
+    else if (['failed', 'failed_non_retryable', 'timeout', 'cancelled'].includes(status)) current.failed += 1;
+    else current.pending += 1;
+    workloads.set(name, current);
+  });
+
+  return Array.from(workloads.values()).sort((a, b) => b.running - a.running || b.failed - a.failed || b.total - a.total);
 };
 
 const renderTraceEventItems = (events: TaskTraceEvent[]) => (
@@ -587,6 +647,209 @@ export const TaskTracePanel: React.FC<{
   );
 };
 
+const TaskExecutionOverview: React.FC<{
+  task: any;
+  suggestions: any[];
+  canRetry: boolean;
+  retrying: boolean;
+  retryDisabled: boolean;
+  onRetryTask: (task: any) => void;
+}> = ({ task, suggestions, canRetry, retrying, retryDisabled, onRetryTask }) => {
+  const subtasks = Array.isArray(task?.sub_tasks) ? task.sub_tasks : [];
+  const iterations = Array.isArray(task?.iterations) ? task.iterations : [];
+  const subtaskStats = getSubtaskStats(subtasks);
+  const workloads = getAgentWorkloads(subtasks);
+  const latestIteration = iterations.length ? iterations[iterations.length - 1] : null;
+  const scorePercent = getScorePercent(task?.final_score);
+  const latestScorePercent = getScorePercent(latestIteration?.score);
+  const progressPercent = subtaskStats.total
+    ? Math.round((subtaskStats.completed / subtaskStats.total) * 100)
+    : task?.status === 'completed' ? 100 : 0;
+  const failureMessage = task?.status !== 'completed'
+    ? (task?.last_failure?.message || subtasks.find((subtask: any) => subtask.error)?.error)
+    : '';
+  const hasActiveLease = Boolean(task?.job?.lease_owner);
+  const nextRetryAt = task?.job?.next_retry_at;
+
+  return (
+    <Space direction="vertical" size={16} style={{ width: '100%' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 12 }}>
+        <div style={metricBoxStyle}>
+          <Text type="secondary" style={{ fontSize: 12 }}>当前状态</Text>
+          <div style={{ marginTop: 8 }}>{traceStatusTag(task?.status)}</div>
+          <Text type="secondary" style={{ display: 'block', marginTop: 6, fontSize: 12 }}>
+            {hasActiveLease ? `Worker ${task.job.lease_owner}` : nextRetryAt ? `等待 ${dayjs(nextRetryAt).format('HH:mm:ss')}` : '无活跃租约'}
+          </Text>
+        </div>
+        <div style={metricBoxStyle}>
+          <Text type="secondary" style={{ fontSize: 12 }}>质量评分</Text>
+          <div style={{ marginTop: 6 }}>
+            <Text strong style={{ fontSize: 24 }}>{scorePercent === null ? '-' : `${scorePercent}%`}</Text>
+          </div>
+          <Progress
+            percent={scorePercent || 0}
+            size="small"
+            status={scorePercent !== null && scorePercent < 60 ? 'exception' : 'active'}
+            showInfo={false}
+          />
+        </div>
+        <div style={metricBoxStyle}>
+          <Text type="secondary" style={{ fontSize: 12 }}>子任务进度</Text>
+          <div style={{ marginTop: 6 }}>
+            <Text strong style={{ fontSize: 24 }}>{subtaskStats.completed}/{subtaskStats.total || 0}</Text>
+          </div>
+          <Progress percent={progressPercent} size="small" status={subtaskStats.failed ? 'exception' : 'active'} />
+        </div>
+        <div style={metricBoxStyle}>
+          <Text type="secondary" style={{ fontSize: 12 }}>Agent 分配</Text>
+          <div style={{ marginTop: 6 }}>
+            <Text strong style={{ fontSize: 24 }}>{workloads.length || '-'}</Text>
+          </div>
+          <Space wrap size={4}>
+            <Tag color="processing">执行 {subtaskStats.running}</Tag>
+            <Tag color={subtaskStats.failed ? 'error' : 'success'}>异常 {subtaskStats.failed}</Tag>
+          </Space>
+        </div>
+      </div>
+
+      {nextRetryAt && (
+        <Alert
+          type="warning"
+          showIcon
+          message="等待自动重试"
+          description={`下次重试 ${dayjs(nextRetryAt).format('YYYY-MM-DD HH:mm:ss')}，已自动重试 ${task?.job?.auto_retry_count || 0} 次。`}
+        />
+      )}
+
+      {failureMessage && (
+        <Alert
+          type={canRetry ? 'warning' : 'error'}
+          showIcon
+          message={canRetry ? '任务失败，可重新入队' : '任务需要人工检查'}
+          description={compactText(failureMessage, 180)}
+          action={canRetry ? (
+            <Button
+              size="small"
+              icon={<ReloadOutlined />}
+              loading={retrying}
+              disabled={retryDisabled}
+              onClick={() => onRetryTask(task)}
+            >
+              重试
+            </Button>
+          ) : undefined}
+        />
+      )}
+
+      <div>
+        <Space wrap style={{ marginBottom: 8 }}>
+          <Text strong>子任务编排</Text>
+          <Tag>{subtaskStats.total || 0} 个子任务</Tag>
+          <Tag color="success">完成 {subtaskStats.completed}</Tag>
+          <Tag color="processing">执行 {subtaskStats.running}</Tag>
+          <Tag color={subtaskStats.failed ? 'error' : 'default'}>异常 {subtaskStats.failed}</Tag>
+        </Space>
+        {subtasks.length ? (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 10 }}>
+            {subtasks.map((subtask: any, index: number) => (
+              <div key={subtask.id || index} style={{ ...metricBoxStyle, minHeight: 132 }}>
+                <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                  <Space wrap size={4}>
+                    {traceStatusTag(subtask.status)}
+                    <Tag color="purple">{subtask.assigned_agent || '自动分配'}</Tag>
+                    <Tag>尝试 {subtask.attempts || 0}</Tag>
+                  </Space>
+                  <Text strong style={{ display: 'block', wordBreak: 'break-word' }}>
+                    {compactText(subtask.description || subtask.id || '未命名子任务', 92)}
+                  </Text>
+                  {subtask.dependencies?.length ? (
+                    <Space wrap size={4}>
+                      {subtask.dependencies.slice(0, 4).map((dep: string) => <Tag key={dep} color="cyan">{dep}</Tag>)}
+                      {subtask.dependencies.length > 4 && <Tag>+{subtask.dependencies.length - 4}</Tag>}
+                    </Space>
+                  ) : (
+                    <Text type="secondary" style={{ fontSize: 12 }}>无依赖</Text>
+                  )}
+                  {(subtask.error || subtask.result) && (
+                    <Text type={subtask.error ? 'danger' : 'secondary'} style={{ fontSize: 12 }}>
+                      {compactText(subtask.error || subtask.result, 110)}
+                    </Text>
+                  )}
+                </Space>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <Empty description="暂无子任务状态" />
+        )}
+      </div>
+
+      {workloads.length > 0 && (
+        <div>
+          <Text strong>Agent 负载</Text>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 10, marginTop: 8 }}>
+            {workloads.map((agent) => {
+              const donePercent = agent.total ? Math.round((agent.completed / agent.total) * 100) : 0;
+              return (
+                <div key={agent.name} style={metricBoxStyle}>
+                  <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                    <Space wrap>
+                      <TeamOutlined />
+                      <Text strong>{agent.name}</Text>
+                      <Tag>{agent.total} 项</Tag>
+                    </Space>
+                    <Progress percent={donePercent} size="small" status={agent.failed ? 'exception' : 'active'} />
+                    <Space wrap size={4}>
+                      <Tag color="success">完成 {agent.completed}</Tag>
+                      <Tag color="processing">执行 {agent.running}</Tag>
+                      <Tag color={agent.failed ? 'error' : 'default'}>异常 {agent.failed}</Tag>
+                    </Space>
+                  </Space>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {latestIteration && (
+        <div style={metricBoxStyle}>
+          <Space direction="vertical" size={8} style={{ width: '100%' }}>
+            <Space wrap>
+              <LineChartOutlined />
+              <Text strong>最近迭代</Text>
+              <Tag>第 {(latestIteration.iteration ?? iterations.length - 1) + 1} 轮</Tag>
+              {latestScorePercent !== null && (
+                <Tag color={latestScorePercent >= 80 ? 'success' : latestScorePercent >= 60 ? 'warning' : 'error'}>
+                  {latestScorePercent}%
+                </Tag>
+              )}
+            </Space>
+            {latestIteration.improvements?.length ? (
+              <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                {latestIteration.improvements.slice(0, 3).map((item: string, index: number) => (
+                  <Text key={index} type="secondary" style={{ fontSize: 13 }}>{item}</Text>
+                ))}
+              </Space>
+            ) : (
+              <Text type="secondary">暂无迭代改进项</Text>
+            )}
+          </Space>
+        </div>
+      )}
+
+      {suggestions.length > 0 && (
+        <Alert
+          type="info"
+          showIcon
+          message={`发现 ${suggestions.length} 条优化建议`}
+          description={suggestions.slice(0, 2).map((item: any) => item.title || item.description).filter(Boolean).join('；')}
+        />
+      )}
+    </Space>
+  );
+};
+
 // ==================== 任务执行页面 ====================
 
 export const TasksPage: React.FC = () => {
@@ -883,6 +1146,7 @@ export const TasksPage: React.FC = () => {
     switch (status) {
       case 'completed': return <CheckCircleOutlined style={{ color: '#52c41a' }} />;
       case 'failed': return <CloseCircleOutlined style={{ color: '#ff4d4f' }} />;
+      case 'queued':
       case 'running': return <LoadingOutlined style={{ color: '#1890ff' }} />;
       default: return <ClockCircleOutlined style={{ color: '#999' }} />;
     }
@@ -891,6 +1155,7 @@ export const TasksPage: React.FC = () => {
   const getStatusTag = (status: string) => {
     const config: Record<string, { color: string; text: string }> = {
       pending: { color: 'default', text: '等待中' },
+      queued: { color: 'processing', text: '排队中' },
       running: { color: 'processing', text: '执行中' },
       completed: { color: 'success', text: '已完成' },
       failed: { color: 'error', text: '失败' },
@@ -910,6 +1175,14 @@ export const TasksPage: React.FC = () => {
     };
     return <Tag color={config[complexity] || 'default'}>{complexity}</Tag>;
   };
+
+  const currentTaskScorePercent = getScorePercent(currentTask?.final_score);
+  const historyStatusItems = [
+    { key: 'active', label: '执行中', count: taskHistoryCounts.active, color: '#1677ff', icon: <LoadingOutlined /> },
+    { key: 'retrying', label: '自动重试', count: taskHistoryCounts.retrying, color: '#faad14', icon: <RollbackOutlined /> },
+    { key: 'retryable', label: '可手动重试', count: taskHistoryCounts.retryable, color: '#722ed1', icon: <ReloadOutlined /> },
+    { key: 'attention', label: '需介入', count: taskHistoryCounts.attention, color: '#ff4d4f', icon: <ExclamationCircleOutlined /> },
+  ];
 
   return (
     <div>
@@ -958,8 +1231,8 @@ export const TasksPage: React.FC = () => {
           title={
             <Space>
               执行结果
-              <Tag color={currentTask.final_score >= 0.8 ? 'success' : currentTask.final_score >= 0.6 ? 'warning' : 'error'}>
-                评分 {(currentTask.final_score * 100).toFixed(0)}%
+              <Tag color={(currentTaskScorePercent || 0) >= 80 ? 'success' : (currentTaskScorePercent || 0) >= 60 ? 'warning' : 'error'}>
+                评分 {currentTaskScorePercent === null ? '-' : `${currentTaskScorePercent}%`}
               </Tag>
               {getStatusTag(currentTask.status)}
               {currentTask.job?.recovery_count > 0 && (
@@ -992,7 +1265,21 @@ export const TasksPage: React.FC = () => {
           ) : null}
           style={{ marginTop: 16 }}
         >
-          <Tabs defaultActiveKey="result" items={[
+          <Tabs defaultActiveKey="overview" items={[
+            {
+              key: 'overview',
+              label: <span><DeploymentUnitOutlined /> 执行概览</span>,
+              children: (
+                <TaskExecutionOverview
+                  task={currentTask}
+                  suggestions={suggestions}
+                  canRetry={canRetryTask(currentTask)}
+                  retrying={retryingTaskId === currentTask.task_id}
+                  retryDisabled={executing && retryingTaskId !== currentTask.task_id}
+                  onRetryTask={handleRetryTask}
+                />
+              ),
+            },
             {
               key: 'result',
               label: <span><FileTextOutlined /> 任务结果</span>,
@@ -1186,6 +1473,33 @@ export const TasksPage: React.FC = () => {
           <Empty description="暂无执行记录" />
         ) : (
           <>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(138px, 1fr))', gap: 8, marginBottom: 16 }}>
+              {historyStatusItems.map(item => (
+                <button
+                  key={item.key}
+                  type="button"
+                  aria-pressed={taskHistoryFilter === item.key}
+                  onClick={() => setTaskHistoryFilter(item.key)}
+                  style={{
+                    border: taskHistoryFilter === item.key ? `1px solid ${item.color}` : '1px solid #f0f0f0',
+                    borderRadius: 8,
+                    background: taskHistoryFilter === item.key ? `${item.color}10` : '#fff',
+                    padding: '10px 12px',
+                    cursor: 'pointer',
+                    textAlign: 'left',
+                    minHeight: 72,
+                  }}
+                >
+                  <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                    <Space style={{ color: item.color }}>
+                      {item.icon}
+                      <Text style={{ color: item.color }}>{item.label}</Text>
+                    </Space>
+                    <Text strong style={{ fontSize: 22, lineHeight: '24px' }}>{item.count}</Text>
+                  </Space>
+                </button>
+              ))}
+            </div>
             {isMobile ? (
               <Select
                 value={taskHistoryFilter}

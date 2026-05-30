@@ -314,10 +314,9 @@ Current review result:
   and new policy/audit tests.
 - Ignored generated artifacts include local caches, `frontend_wip/dist/`,
   `frontend_wip/node_modules/`, virtual environments, and local data/backups.
-- Existing tracked hygiene debt remains outside this changeset:
-  `frontend_wip/src/App.tsx.bak` and `data/skills_registry.json` are already
-  tracked. They are not modified here, but should be considered for a separate
-  repository-cleanup PR.
+- Remaining tracked hygiene debt outside this changeset:
+  `data/skills_registry.json` is already tracked and should be considered for a
+  separate repository-cleanup PR.
 - Added-line sensitive-pattern scan only found config field names, environment
   placeholders, test fixtures, and documentation placeholders.
 

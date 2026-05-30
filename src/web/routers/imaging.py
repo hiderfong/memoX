@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 from loguru import logger
 from pydantic import BaseModel, Field
 
@@ -105,6 +105,12 @@ def _request_parameters(model: BaseModel, *, exclude: set[str]) -> dict:
         for key, value in data.items()
         if key not in exclude and value not in (None, "", [])
     }
+
+
+def _mark_deprecated_response(response: Response, successor_path: str) -> None:
+    response.headers["Deprecation"] = "true"
+    response.headers["Link"] = f"<{successor_path}>; rel=\"successor-version\""
+    response.headers["Warning"] = f'299 - "Deprecated compatibility endpoint; use {successor_path}"'
 
 
 def _record_media_asset(
@@ -520,9 +526,10 @@ async def generate_video(request: VideoGenRequest) -> dict:
     return {"url": url, "prompt": request.prompt}
 
 
-@router.post("/videos/i2v")
-async def generate_i2v(request: I2VRequest) -> dict:
-    """图生视频（异步任务，等待完成后返回视频 URL）"""
+@router.post("/videos/i2v", deprecated=True)
+async def generate_i2v(request: I2VRequest, response: Response) -> dict:
+    """图生视频兼容接口（同步等待）。主前端应使用 /videos/i2v/jobs。"""
+    _mark_deprecated_response(response, "/api/videos/i2v/jobs")
     from imaging import get_i2v_client
 
     client = get_i2v_client()
@@ -576,9 +583,10 @@ async def enqueue_i2v_job(request: I2VRequest) -> dict:
     return {"asset": asset}
 
 
-@router.post("/videos/i2v/batch")
-async def generate_i2v_batch(request: I2VBatchRequest) -> dict:
-    """批量图生视频。单项失败不会中断整批，返回逐项结果。"""
+@router.post("/videos/i2v/batch", deprecated=True)
+async def generate_i2v_batch(request: I2VBatchRequest, response: Response) -> dict:
+    """批量图生视频兼容接口（同步等待）。主前端应使用 /videos/i2v/batch/jobs。"""
+    _mark_deprecated_response(response, "/api/videos/i2v/batch/jobs")
     from imaging import get_i2v_client
 
     if not request.items:

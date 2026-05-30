@@ -1,30 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import {
-  Alert,
-  Button,
-  Card,
-  Collapse,
-  Form,
-  Input,
-  InputNumber,
-  Modal,
-  Progress,
-  Select,
-  Segmented,
-  Space,
-  Switch,
-  Tag,
-  Typography,
-  message,
-} from 'antd';
-import {
-  CheckCircleOutlined,
-  CopyOutlined,
-  DownloadOutlined,
-  LinkOutlined,
-  ReloadOutlined,
-  VideoCameraOutlined,
-} from '@ant-design/icons';
+import { Alert, Button, Card, Collapse, Form, Input, InputNumber, Modal, Progress, Select, Segmented, Space, Switch, Tag, Typography, message } from 'antd';
+import { CheckCircleOutlined, CopyOutlined, DownloadOutlined, LinkOutlined, ReloadOutlined, VideoCameraOutlined } from '@ant-design/icons';
+import { api } from '../shared';
 
 const { Text, Paragraph } = Typography;
 const { TextArea } = Input;
@@ -32,7 +9,6 @@ const { TextArea } = Input;
 interface I2VModalProps {
   open: boolean;
   imageUrl: string;
-  authToken: string;
   onClose: () => void;
   onSuccess: (videoUrl: string, prompt: string, sourceImageUrl: string) => void;
 }
@@ -42,6 +18,16 @@ type I2VResult = {
   prompt: string;
   sourceImageUrl: string;
   inputMode?: string;
+};
+
+type MediaAsset = {
+  id: string;
+  status: 'queued' | 'running' | 'success' | 'failed' | string;
+  url?: string;
+  prompt?: string;
+  source_url?: string;
+  input_mode?: string;
+  error?: string;
 };
 
 const promptPresets = [
@@ -74,6 +60,22 @@ function formatElapsed(seconds: number) {
   return `${minutes}m ${rest.toString().padStart(2, '0')}s`;
 }
 
+function mediaStatusLabel(status?: string) {
+  if (status === 'queued') return '排队中';
+  if (status === 'running') return '生成中';
+  if (status === 'success') return '已完成';
+  if (status === 'failed') return '失败';
+  return status || '提交中';
+}
+
+function mediaStatusColor(status?: string) {
+  if (status === 'queued') return 'blue';
+  if (status === 'running') return 'processing';
+  if (status === 'success') return 'success';
+  if (status === 'failed') return 'error';
+  return 'default';
+}
+
 async function copyText(value: string) {
   if (navigator.clipboard?.writeText) {
     await navigator.clipboard.writeText(value);
@@ -89,7 +91,7 @@ async function copyText(value: string) {
   document.body.removeChild(textarea);
 }
 
-export const I2VModal: React.FC<I2VModalProps> = ({ open, imageUrl, authToken, onClose, onSuccess }) => {
+export const I2VModal: React.FC<I2VModalProps> = ({ open, imageUrl, onClose, onSuccess }) => {
   const [prompt, setPrompt] = useState('');
   const [duration, setDuration] = useState(5);
   const [resolution, setResolution] = useState('720P');
@@ -104,6 +106,7 @@ export const I2VModal: React.FC<I2VModalProps> = ({ open, imageUrl, authToken, o
   const [elapsed, setElapsed] = useState(0);
   const [error, setError] = useState('');
   const [result, setResult] = useState<I2VResult | null>(null);
+  const [queuedAsset, setQueuedAsset] = useState<MediaAsset | null>(null);
 
   const progressPercent = useMemo(() => {
     if (!loading) return result ? 100 : 0;
@@ -116,6 +119,7 @@ export const I2VModal: React.FC<I2VModalProps> = ({ open, imageUrl, authToken, o
     if (!open) return;
     setError('');
     setResult(null);
+    setQueuedAsset(null);
     setElapsed(0);
   }, [imageUrl, open]);
 
@@ -126,8 +130,25 @@ export const I2VModal: React.FC<I2VModalProps> = ({ open, imageUrl, authToken, o
   }, [loading]);
 
   const handleClose = () => {
-    if (loading) return;
     onClose();
+  };
+
+  const pollVideoAsset = async (assetId: string) => {
+    for (let attempt = 0; attempt < 160; attempt += 1) {
+      await new Promise(resolve => window.setTimeout(resolve, 3000));
+      const res = await api.getVideoAsset(assetId);
+      const asset = res.data as MediaAsset;
+      setQueuedAsset(asset);
+
+      if (asset.status === 'success') {
+        if (!asset.url) throw new Error('后台任务已完成，但没有返回视频链接');
+        return asset;
+      }
+      if (asset.status === 'failed') {
+        throw new Error(asset.error || '后台视频生成失败');
+      }
+    }
+    throw new Error('后台生成仍在排队或执行中，请稍后在媒体创作作品库查看');
   };
 
   const applyPreset = (value: string | number) => {
@@ -153,43 +174,41 @@ export const I2VModal: React.FC<I2VModalProps> = ({ open, imageUrl, authToken, o
     setLoading(true);
     setError('');
     setResult(null);
+    setQueuedAsset(null);
     setElapsed(0);
     try {
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (authToken) headers.Authorization = `Bearer ${authToken}`;
-      const resp = await fetch('/api/videos/i2v', {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          image_url: imageUrl,
-          prompt: cleanPrompt,
-          duration,
-          resolution,
-          negative_prompt: negativePrompt.trim() || undefined,
-          last_frame_url: lastFrameUrl.trim() || undefined,
-          first_clip_url: firstClipUrl.trim() || undefined,
-          driving_audio_url: drivingAudioUrl.trim() || undefined,
-          prompt_extend: promptExtend,
-          watermark,
-          seed: seed ?? undefined,
-        }),
-      });
-      if (!resp.ok) {
-        const err = await resp.json().catch(() => ({}));
-        throw new Error((err as any).detail || `HTTP ${resp.status}`);
-      }
-      const data = await resp.json();
-      const nextResult = {
-        videoUrl: data.url,
+      const resp = await api.enqueueI2VJob({
+        image_url: imageUrl,
         prompt: cleanPrompt,
-        sourceImageUrl: imageUrl,
-        inputMode: data.input_mode,
+        duration,
+        resolution,
+        negative_prompt: negativePrompt.trim() || undefined,
+        last_frame_url: lastFrameUrl.trim() || undefined,
+        first_clip_url: firstClipUrl.trim() || undefined,
+        driving_audio_url: drivingAudioUrl.trim() || undefined,
+        prompt_extend: promptExtend,
+        watermark,
+        seed: seed ?? undefined,
+      });
+      const asset = resp.data?.asset as MediaAsset | undefined;
+      if (!asset?.id) {
+        throw new Error('后台任务提交失败：未返回媒体资产 ID');
+      }
+      setQueuedAsset(asset);
+      message.success('已提交后台生成任务，正在等待结果');
+
+      const completedAsset = await pollVideoAsset(asset.id);
+      const nextResult = {
+        videoUrl: completedAsset.url || '',
+        prompt: completedAsset.prompt || cleanPrompt,
+        sourceImageUrl: completedAsset.source_url || imageUrl,
+        inputMode: completedAsset.input_mode,
       };
       setResult(nextResult);
       onSuccess(nextResult.videoUrl, nextResult.prompt, nextResult.sourceImageUrl);
       message.success('视频生成完成');
     } catch (err: any) {
-      setError(err?.message || '生成失败');
+      setError(err?.response?.data?.detail || err?.message || '生成失败');
     } finally {
       setLoading(false);
     }
@@ -207,8 +226,8 @@ export const I2VModal: React.FC<I2VModalProps> = ({ open, imageUrl, authToken, o
       open={open}
       onCancel={handleClose}
       footer={[
-        <Button key="cancel" onClick={handleClose} disabled={loading}>
-          {result ? '完成' : '取消'}
+        <Button key="cancel" onClick={handleClose}>
+          {loading ? '关闭' : result ? '完成' : '取消'}
         </Button>,
         <Button
           key="ok"
@@ -218,7 +237,7 @@ export const I2VModal: React.FC<I2VModalProps> = ({ open, imageUrl, authToken, o
           disabled={!canSubmit}
           onClick={handleSubmit}
         >
-          {result ? '重新生成' : '生成视频'}
+          {result ? '重新生成' : '提交后台任务'}
         </Button>,
       ]}
       width={760}
@@ -373,10 +392,21 @@ export const I2VModal: React.FC<I2VModalProps> = ({ open, imageUrl, authToken, o
           <Card size="small" styles={{ body: { padding: '12px 16px' } }}>
             <Space direction="vertical" size={8} style={{ width: '100%' }}>
               <Space style={{ width: '100%', justifyContent: 'space-between' }}>
-                <Text strong>生成中</Text>
-                <Text type="secondary">{formatElapsed(elapsed)}</Text>
+                <Space>
+                  <Text strong>{queuedAsset ? '后台任务' : '提交中'}</Text>
+                  <Tag color={mediaStatusColor(queuedAsset?.status)}>
+                    {mediaStatusLabel(queuedAsset?.status)}
+                  </Tag>
+                </Space>
+                <Space size={8}>
+                  {queuedAsset?.id ? <Text type="secondary">{queuedAsset.id.slice(0, 8)}</Text> : null}
+                  <Text type="secondary">{formatElapsed(elapsed)}</Text>
+                </Space>
               </Space>
               <Progress percent={progressPercent} status="active" />
+              <Text type="secondary" style={{ fontSize: 12 }}>
+                任务已进入媒体后台队列，耗时较长时也可以稍后在媒体创作作品库查看。
+              </Text>
             </Space>
           </Card>
         ) : null}

@@ -1,33 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import {
-  Alert,
-  Button,
-  Card,
-  Empty,
-  Form,
-  Input,
-  InputNumber,
-  List,
-  Progress,
-  Select,
-  Space,
-  Statistic,
-  Switch,
-  Tabs,
-  Tag,
-  Typography,
-  message,
-} from 'antd';
-import {
-  CheckCircleOutlined,
-  CopyOutlined,
-  DeleteOutlined,
-  DownloadOutlined,
-  LinkOutlined,
-  PlusOutlined,
-  ReloadOutlined,
-  VideoCameraOutlined,
-} from '@ant-design/icons';
+import { Alert, Button, Card, Empty, Form, Input, InputNumber, List, Progress, Select, Space, Statistic, Switch, Tabs, Tag, Typography, message } from 'antd';
+import { CopyOutlined, DeleteOutlined, DownloadOutlined, LinkOutlined, PlusOutlined, ReloadOutlined, VideoCameraOutlined } from '@ant-design/icons';
 
 import { api, useIsMobile } from '../shared';
 

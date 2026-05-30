@@ -1,14 +1,11 @@
 """Web API - FastAPI 服务"""
 
-import asyncio
 import contextlib
 import hashlib
 import hmac
 import json
-import re as _re
 import sys
 import time
-import uuid
 from pathlib import Path
 from urllib.parse import quote, unquote
 
@@ -25,8 +22,6 @@ if str(_src_dir) not in sys.path:
 _this_module = sys.modules[__name__]
 sys.modules["web.api"] = _this_module
 sys.modules["src.web.api"] = _this_module
-
-from typing import Literal  # noqa: E402, I001
 
 from fastapi import (  # noqa: E402
     FastAPI,
@@ -52,10 +47,16 @@ from agents.worker_pool import (  # noqa: E402
     init_worker_pool,
 )
 from auth import AuthUser, _get_auth_from_request, init_auth  # noqa: E402
-from config import Config, FileAccessConfig, default_config_path, load_config, resolve_env_value, validate_config  # noqa: E402
+from config import (  # noqa: E402
+    Config,
+    FileAccessConfig,
+    default_config_path,
+    load_config,
+    resolve_env_value,
+    validate_config,
+)
 from coordinator.iterative_orchestrator import IterativeOrchestrator  # noqa: E402
 from coordinator.task_planner import TaskPlanner, init_task_planner  # noqa: E402
-from memory import MemoryManager, MemoryRecall, PreferenceLearner  # noqa: E402
 from knowledge import (  # noqa: E402
     RAGEngine,
     init_rag_engine,
@@ -68,6 +69,7 @@ from knowledge.vector_store import (  # noqa: E402
     OpenAIEmbedding,
     SentenceTransformerEmbedding,
 )
+from memory import MemoryManager, MemoryRecall, PreferenceLearner  # noqa: E402
 from storage import get_store, init_store  # noqa: E402
 from workflow import (  # noqa: E402
     WorkflowEngine,
@@ -210,27 +212,6 @@ _workflow_engine: WorkflowEngine | None = None
 _workflow_persistence: WorkflowPersistence | None = None
 _task_results: dict[str, dict] = {}  # task_id -> full result dict (for later retrieval)
 _ws_connections: set[WebSocket] = set()
-
-# ==================== I2V 标记解析 ====================
-
-_I2V_RE = _re.compile(r"\[\[I2V:\s*(.+?)\s*\|\s*(.+?)\]\]", flags=_re.DOTALL)
-
-
-def parse_i2v_markers(text: str) -> list[tuple[str, str]]:
-    """从 LLM 输出中抽取 [[I2V: <image_url> | <prompt>]] 对。
-
-    过滤非 http(s) URL 和空 prompt。
-    """
-    out: list[tuple[str, str]] = []
-    for url, prompt in _I2V_RE.findall(text):
-        url = url.strip()
-        prompt = prompt.strip()
-        if not (url.startswith("http://") or url.startswith("https://")):
-            continue
-        if not prompt:
-            continue
-        out.append((url, prompt))
-    return out
 
 
 async def _ws_broadcast(data: dict) -> None:
@@ -380,58 +361,6 @@ async def auth_middleware(request: Request, call_next):
     return await call_next(request)
 
 
-# ==================== 模型 ====================
-
-class ChatRequest(BaseModel):
-    """聊天请求"""
-    message: str
-    session_id: str | None = None
-    use_rag: bool = True
-    stream: bool = True
-    active_group_ids: list[str] | None = None
-    worker_id: str | None = None  # 使用指定 Worker 的模型配置（不占用 Worker）
-
-
-class URLRequest(BaseModel):
-    """网页 URL 导入请求"""
-    url: str
-
-
-class TaskRequest(BaseModel):
-    """任务请求"""
-    description: str
-    context: dict | None = None
-    generate_suggestions: bool = True
-    active_group_ids: list[str] | None = None
-    timeout_seconds: int | None = None  # 任务超时（秒）
-
-
-class DocumentResponse(BaseModel):
-    """文档响应"""
-    id: str
-    filename: str
-    type: str
-    chunk_count: int
-    created_at: str
-    size: int
-    group_id: str = "ungrouped"
-    action: Literal["indexed", "skipped", "updated"] = "indexed"
-
-
-class GroupCreate(BaseModel):
-    name: str
-    color: str = "#1890ff"
-
-
-class GroupUpdate(BaseModel):
-    name: str | None = None
-    color: str | None = None
-
-
-class MoveDocumentGroup(BaseModel):
-    group_id: str
-
-
 class FileSignedUrlRequest(BaseModel):
     """短期文件访问 URL 签名请求"""
     name: str
@@ -443,6 +372,7 @@ class FileSignedUrlRequest(BaseModel):
 async def startup():
     """启动时初始化"""
     global _config, _rag_engine, _task_planner
+    task_job_runner = None
 
     # 加载配置
     _config = load_config()
@@ -625,10 +555,10 @@ async def startup():
     if migrated > 0:
         logger.info(f"   - 迁移 {migrated} 个历史 chunk，补写 group_id=ungrouped")
 
-    # 启动定时任务运行器（与 orchestrator、store 解耦）
-    if _orchestrator:
+    # 启动定时任务运行器（统一提交到持久化后台任务）
+    if task_job_runner:
         from scheduler import init_runner
-        runner = init_runner(get_store(), _orchestrator)
+        runner = init_runner(get_store(), task_job_runner)
         runner.start()
 
     # 启动运维维护任务：自动备份与本地归档裁剪
@@ -812,84 +742,30 @@ async def serve_upload(name: str, request: Request):
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    """WebSocket 实时通信"""
+    """WebSocket 任务事件通道。聊天流式响应统一走 /api/chat/stream。"""
     await websocket.accept()
     _ws_connections.add(websocket)
 
     try:
         while True:
             data = await websocket.receive_text()
-            message = json.loads(data)
-
-            msg_type = message.get("type")
-
-            if msg_type == "chat":
-                # 流式聊天
-                session_id = message.get("session_id", str(uuid.uuid4())[:8])
-                user_message = message.get("message", "")
-
-                # RAG 检索
-                search_results = []
-                if _rag_engine:
-                    search_results = await _rag_engine.search(user_message)
-
-                    await websocket.send_json({
-                        "type": "sources",
-                        "data": [
-                            {"filename": r.metadata.get("filename", "unknown"), "score": r.score}
-                            for r in search_results
-                        ],
-                    })
-
-                # 构建提示
-                if search_results and _rag_engine:
-                    messages = _rag_engine.build_rag_prompt(user_message, search_results)
-                else:
-                    messages = [
-                        {"role": "system", "content": "你是一个智能助手。"},
-                        {"role": "user", "content": user_message},
-                    ]
-
-                # 调用 LLM
-                coordinator_provider_config = _config.providers.get(_config.coordinator.provider)
-                if coordinator_provider_config:
-                    provider = create_provider(
-                        _config.coordinator.provider,
-                        coordinator_provider_config.resolve_api_key(),
-                        base_url=coordinator_provider_config.base_url,
-                        headers=coordinator_provider_config.headers,
-                    )
-
-                    try:
-                        response = await provider.chat_stream(
-                            messages=messages,
-                            model=_config.coordinator.model,
-                        )
-
-                        # 流式发送
-                        for i in range(0, len(response.content or ""), 10):
-                            chunk = response.content[i:i+10]
-                            await websocket.send_json({"type": "chunk", "content": chunk})
-                            await asyncio.sleep(0.02)
-
-                        await websocket.send_json({
-                            "type": "done",
-                            "session_id": session_id,
-                            "content": response.content,
-                        })
-
-                    except Exception as e:
-                        await websocket.send_json({
-                            "type": "error",
-                            "message": str(e),
-                        })
-
-            elif msg_type == "task_progress":
-                # 任务进度
+            try:
+                message = json.loads(data)
+            except json.JSONDecodeError:
                 await websocket.send_json({
-                    "type": "task_progress",
-                    "data": message.get("data"),
+                    "type": "unsupported",
+                    "message": "WebSocket 仅用于任务事件通知；聊天请使用 /api/chat/stream。",
                 })
+                continue
+
+            if message.get("type") == "ping":
+                await websocket.send_json({"type": "pong"})
+                continue
+
+            await websocket.send_json({
+                "type": "unsupported",
+                "message": "WebSocket 仅用于任务事件通知；聊天请使用 /api/chat/stream。",
+            })
 
     except WebSocketDisconnect:
         _ws_connections.discard(websocket)
@@ -901,7 +777,7 @@ async def websocket_endpoint(websocket: WebSocket):
 
 # ==================== 前端静态文件 ====================
 
-_frontend_dist = Path(__file__).parent.parent.parent / "frontend" / "dist"
+_frontend_dist = Path(__file__).parent.parent.parent / "frontend_wip" / "dist"
 
 if _frontend_dist.exists():
     # 挂载静态资源（JS/CSS/图片等）

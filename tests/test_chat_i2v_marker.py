@@ -1,4 +1,4 @@
-from src.web.api import parse_i2v_markers
+from src.web.routers.chat import parse_i2v_markers
 
 
 def test_parses_single_marker():

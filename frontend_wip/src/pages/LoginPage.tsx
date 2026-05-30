@@ -1,13 +1,10 @@
-import React, { useState, useEffect, useRef, createContext, useContext } from 'react';
-import { Layout, Menu, Typography, Card, Button, Upload, List, Space, Avatar, Input, message, Spin, Tag, Progress, Badge, Drawer, Timeline, Alert, Empty, Tooltip, Form, Divider, Checkbox, Modal, Tabs, Table, Select, Slider, InputNumber, AutoComplete, Switch, Segmented } from 'antd';
-import { UploadOutlined, FileTextOutlined, RobotOutlined, MessageOutlined, TeamOutlined, SettingOutlined, CloudUploadOutlined, DeleteOutlined, SendOutlined, LoadingOutlined, BulbOutlined, ThunderboltOutlined, ClockCircleOutlined, CheckCircleOutlined, CloseCircleOutlined, InboxOutlined, UserOutlined, LockOutlined, LogoutOutlined, SafetyCertificateOutlined, LinkOutlined, FolderOpenOutlined, MailOutlined, LineChartOutlined, FileSearchOutlined, EyeOutlined, SaveOutlined, DownOutlined, UpOutlined, PlusOutlined, EditOutlined, DownloadOutlined, BgColorsOutlined, ReloadOutlined, RollbackOutlined, ExclamationCircleOutlined, ToolOutlined, DeploymentUnitOutlined } from '@ant-design/icons';
-import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip as RTooltip, Legend, ResponsiveContainer } from 'recharts';
-import { useNavigate, useLocation, Routes, Route, Link, Navigate } from 'react-router-dom';
-import axios from 'axios';
-import dayjs from 'dayjs';
-import { I2VModal } from '../components/I2VModal';
-import { WorkflowsPage } from '../pages/WorkflowsPage';
-import { MOBILE_BREAKPOINT, useIsMobile, API_BASE, KnowledgeGroup, ReadinessStatus, SystemCheck, SystemHealthReport, BackupArchiveSummary, OpsEvent, OpsEventsResponse, LifecycleCleanupResult, statusTagColor, statusBadge, statusLabel, opsEventLabel, opsEventTypeOptions, opsEventStatusOptions, opsEventActorLabel, formatBytes, formatDuration, AuthUser, AuthContextType, AuthContext, TOKEN_KEY, USER_KEY, api } from '../shared';
+import React, { useState, useContext } from 'react';
+import { Layout, Typography, Card, Button, Upload, Avatar, Input, message, Form, Divider } from 'antd';
+import { UserOutlined, LockOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
+
+import { useNavigate } from 'react-router-dom';
+
+import { AuthContext } from '../shared';
 
 const { Header, Sider, Content } = Layout;
 const { Title, Text } = Typography;

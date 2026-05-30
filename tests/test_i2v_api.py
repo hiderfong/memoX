@@ -5,8 +5,8 @@ import pytest
 from fastapi.testclient import TestClient
 
 from src.web.api import app
-from web.routers import imaging as imaging_router
 from storage.persistence import PersistenceStore
+from web.routers import imaging as imaging_router
 
 
 @pytest.fixture
@@ -60,6 +60,8 @@ def test_i2v_endpoint_success(anon_client):
             "resolution": "720P",
         })
     assert r.status_code == 200
+    assert r.headers["Deprecation"] == "true"
+    assert r.headers["Link"] == '</api/videos/i2v/jobs>; rel="successor-version"'
     data = r.json()
     assert data["url"] == "https://cdn/vid.mp4"
     assert data["image_url"] == "https://x/a.png"
@@ -203,6 +205,8 @@ def test_i2v_batch_returns_partial_failures(anon_client):
         })
 
     assert r.status_code == 200
+    assert r.headers["Deprecation"] == "true"
+    assert r.headers["Link"] == '</api/videos/i2v/batch/jobs>; rel="successor-version"'
     data = r.json()
     assert data["ok"] is False
     assert data["succeeded"] == 1
@@ -256,6 +260,16 @@ def test_enqueue_i2v_batch_jobs_returns_queued_assets(anon_client, media_store, 
     assert data["count"] == 2
     assert [asset["status"] for asset in data["assets"]] == ["queued", "queued"]
     assert len(media_store.list_media_assets(operation="i2v", status="queued")) == 2
+
+
+def test_sync_i2v_compat_endpoints_are_deprecated_in_openapi():
+    app.openapi_schema = None
+    schema = app.openapi()
+
+    assert schema["paths"]["/api/videos/i2v"]["post"]["deprecated"] is True
+    assert schema["paths"]["/api/videos/i2v/batch"]["post"]["deprecated"] is True
+    assert not schema["paths"]["/api/videos/i2v/jobs"]["post"].get("deprecated", False)
+    assert not schema["paths"]["/api/videos/i2v/batch/jobs"]["post"].get("deprecated", False)
 
 
 def test_video_edit_endpoint_success(anon_client):

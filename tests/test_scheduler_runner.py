@@ -3,7 +3,7 @@ import asyncio
 import os
 import sys
 from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -31,13 +31,16 @@ class DummyStore:
         self._next_run[task_id] = when_iso
 
 
-class DummyOrchestrator:
-    def __init__(self):
-        self.calls = []
+class DummyTaskRunner:
+    def __init__(self, side_effect=None):
+        self.submissions = []
+        self.side_effect = side_effect
 
-    async def run(self, description, context, active_group_ids=None):
-        self.calls.append((description, context))
-        return MagicMock(result_summary="ok", final_score=1.0)
+    def submit(self, request):
+        self.submissions.append(request)
+        if self.side_effect:
+            raise self.side_effect
+        return {"task_id": f"job_{len(self.submissions)}", "status": "queued"}
 
 
 def test_compute_next_every_minute():
@@ -65,8 +68,8 @@ def test_compute_next_invalid_returns_none():
 async def test_start_stop():
     """Runner 启动和停止"""
     store = DummyStore()
-    orch = DummyOrchestrator()
-    runner = ScheduledTaskRunner(store, orch)
+    task_runner = DummyTaskRunner()
+    runner = ScheduledTaskRunner(store, task_runner)
 
     runner.start()
     await asyncio.sleep(0.1)
@@ -90,8 +93,8 @@ async def test_tick_fires_matching_task():
         "last_run_at": "",
         "active_group_ids": "[]",
     }])
-    orch = DummyOrchestrator()
-    runner = ScheduledTaskRunner(store, orch)
+    task_runner = DummyTaskRunner()
+    runner = ScheduledTaskRunner(store, task_runner)
 
     datetime.now().replace(second=0, microsecond=0)
     await runner._tick()
@@ -99,11 +102,12 @@ async def test_tick_fires_matching_task():
     # Give fire coroutine time to run
     await asyncio.sleep(0.2)
 
-    assert len(orch.calls) == 1
-    desc, ctx = orch.calls[0]
-    assert desc == "test task"
-    assert ctx["source"] == "scheduled_task"
-    assert "task_1" in ctx["scheduled_task_id"]
+    assert len(task_runner.submissions) == 1
+    request = task_runner.submissions[0]
+    assert request.description == "test task"
+    assert request.context["source"] == "scheduled_task"
+    assert request.context["scheduled_task_id"] == "task_1"
+    assert request.active_group_ids == []
 
 
 @pytest.mark.asyncio
@@ -117,13 +121,13 @@ async def test_tick_skips_disabled_task():
         "last_run_at": "",
         "active_group_ids": "[]",
     }])
-    orch = DummyOrchestrator()
-    runner = ScheduledTaskRunner(store, orch)
+    task_runner = DummyTaskRunner()
+    runner = ScheduledTaskRunner(store, task_runner)
 
     await runner._tick()
     await asyncio.sleep(0.1)
 
-    assert len(orch.calls) == 0
+    assert len(task_runner.submissions) == 0
 
 
 @pytest.mark.asyncio
@@ -138,22 +142,21 @@ async def test_tick_skips_recently_run():
         "last_run_at": now.isoformat(timespec="minutes"),  # already ran this minute
         "active_group_ids": "[]",
     }])
-    orch = DummyOrchestrator()
-    runner = ScheduledTaskRunner(store, orch)
+    task_runner = DummyTaskRunner()
+    runner = ScheduledTaskRunner(store, task_runner)
 
     await runner._tick()
     await asyncio.sleep(0.1)
 
-    assert len(orch.calls) == 0
+    assert len(task_runner.submissions) == 0
 
 
 @pytest.mark.asyncio
-async def test_fire_handles_orchestrator_error():
-    """_fire 捕获 orchestrator.run 异常并记录日志，不崩溃"""
+async def test_fire_handles_task_runner_error():
+    """_fire 捕获后台任务提交异常并记录日志，不崩溃"""
     store = DummyStore()
-    orch = AsyncMock()
-    orch.run = AsyncMock(side_effect=RuntimeError("orch failed"))
-    runner = ScheduledTaskRunner(store, orch)
+    task_runner = DummyTaskRunner(side_effect=RuntimeError("runner failed"))
+    runner = ScheduledTaskRunner(store, task_runner)
 
     t = {
         "id": "task_fail",
@@ -166,8 +169,7 @@ async def test_fire_handles_orchestrator_error():
     await runner._fire(t, datetime.now())
 
     # Should not raise - error is caught internally
-    # orchestrator should have been called once
-    assert orch.run.called
+    assert len(task_runner.submissions) == 1
 
 
 def test_cron_match_validates_basic():
@@ -182,8 +184,8 @@ def test_cron_match_validates_basic():
 async def test_start_idempotent():
     """连续调用 start() 不应创建多个任务"""
     store = DummyStore()
-    orch = DummyOrchestrator()
-    runner = ScheduledTaskRunner(store, orch)
+    task_runner = DummyTaskRunner()
+    runner = ScheduledTaskRunner(store, task_runner)
 
     runner.start()
     await asyncio.sleep(0.05)
@@ -210,21 +212,21 @@ async def test_tick_skips_empty_cron():
         "last_run_at": "",
         "active_group_ids": "[]",
     }])
-    orch = DummyOrchestrator()
-    runner = ScheduledTaskRunner(store, orch)
+    task_runner = DummyTaskRunner()
+    runner = ScheduledTaskRunner(store, task_runner)
 
     await runner._tick()
     await asyncio.sleep(0.1)
 
-    assert len(orch.calls) == 0
+    assert len(task_runner.submissions) == 0
 
 
 @pytest.mark.asyncio
 async def test_fire_with_invalid_active_group_ids():
     """active_group_ids 为损坏 JSON 时不应崩溃"""
     store = DummyStore()
-    orch = DummyOrchestrator()
-    runner = ScheduledTaskRunner(store, orch)
+    task_runner = DummyTaskRunner()
+    runner = ScheduledTaskRunner(store, task_runner)
 
     t = {
         "id": "task_bad_json",
@@ -238,15 +240,16 @@ async def test_fire_with_invalid_active_group_ids():
     await runner._fire(t, datetime.now())
     await asyncio.sleep(0.1)
 
-    assert len(orch.calls) == 1
+    assert len(task_runner.submissions) == 1
+    assert task_runner.submissions[0].active_group_ids is None
 
 
 @pytest.mark.asyncio
 async def test_tick_exception_caught_by_loop():
     """_tick 抛异常时 _loop 应捕获并继续运行"""
     store = DummyStore()
-    orch = DummyOrchestrator()
-    runner = ScheduledTaskRunner(store, orch)
+    task_runner = DummyTaskRunner()
+    runner = ScheduledTaskRunner(store, task_runner)
 
     # 注入异常：list_scheduled_tasks 抛出
     store.list_scheduled_tasks = MagicMock(side_effect=RuntimeError("store error"))
@@ -266,8 +269,8 @@ def test_init_runner_and_get_runner():
     from scheduler.runner import get_runner, init_runner
 
     store = DummyStore()
-    orch = DummyOrchestrator()
-    r = init_runner(store, orch)
+    task_runner = DummyTaskRunner()
+    r = init_runner(store, task_runner)
 
     assert get_runner() is r
     assert get_runner() is not None

@@ -1,56 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ForceGraph2D, { ForceGraphMethods } from 'react-force-graph-2d';
-import {
-  Alert,
-  Button,
-  Card,
-  Checkbox,
-  Col,
-  Collapse,
-  Empty,
-  Form,
-  Input,
-  InputNumber,
-  List,
-  Modal,
-  Popconfirm,
-  Progress,
-  Row,
-  Select,
-  Slider,
-  Space,
-  Spin,
-  Statistic,
-  Table,
-  Tag,
-  Tooltip,
-  Typography,
-  message,
-} from 'antd';
-import {
-  AimOutlined,
-  CheckOutlined,
-  ClockCircleOutlined,
-  DeleteOutlined,
-  EditOutlined,
-  EyeInvisibleOutlined,
-  MergeCellsOutlined,
-  ReloadOutlined,
-  SplitCellsOutlined,
-} from '@ant-design/icons';
+import { Alert, Button, Card, Checkbox, Col, Collapse, Empty, Form, Input, InputNumber, List, Modal, Popconfirm, Progress, Row, Select, Slider, Space, Spin, Statistic, Table, Tag, Tooltip, Typography, message } from 'antd';
+import { AimOutlined, CheckOutlined, ClockCircleOutlined, DeleteOutlined, EditOutlined, EyeInvisibleOutlined, MergeCellsOutlined, ReloadOutlined, SplitCellsOutlined } from '@ant-design/icons';
 
-import {
-  api,
-  KnowledgeGraphEntity,
-  KnowledgeGraphLink,
-  KnowledgeGraphPayload,
-  KnowledgeGraphQualityCandidate,
-  KnowledgeGraphQualityAlert,
-  KnowledgeGraphQualityPayload,
-  KnowledgeGraphQualitySnapshot,
-  KnowledgeGraphReviewStatus,
-  KnowledgeGraphTripleMutation,
-} from '../shared';
+import { api, KnowledgeGraphEntity, KnowledgeGraphLink, KnowledgeGraphPayload, KnowledgeGraphQualityCandidate, KnowledgeGraphQualityAlert, KnowledgeGraphQualityPayload, KnowledgeGraphQualitySnapshot, KnowledgeGraphReviewStatus, KnowledgeGraphTripleMutation } from '../shared';
 
 const { Text } = Typography;
 

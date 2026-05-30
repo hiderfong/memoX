@@ -41,7 +41,6 @@ const lazyRoute = (element: ReactNode) => (
   <Suspense fallback={<PageFallback />}>{element}</Suspense>
 );
 
-
 // ==================== 主应用 ====================
 
 const App: FC = () => {

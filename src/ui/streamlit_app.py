@@ -1,7 +1,8 @@
 """
-MemoX Streamlit 管理界面
-========================
-快速验证用轻量管理界面（开发/测试阶段使用）。
+MemoX Streamlit 诊断/兼容界面
+==============================
+保留给开发诊断、兼容验证和最小后端连通性检查。
+真实用户主 Web UI 是 frontend_wip React 应用。
 
 运行方式：
     streamlit run src/ui/streamlit_app.py
@@ -26,7 +27,7 @@ DEFAULT_USER = "admin"
 DEFAULT_PASSWORD = "admin123"
 
 st.set_page_config(
-    page_title="MemoX Admin",
+    page_title="MemoX Diagnostics",
     page_icon="📚",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -386,7 +387,8 @@ def page_chat():
 def main():
     ensure_auth()
 
-    st.sidebar.title("📚 MemoX")
+    st.sidebar.title("📚 MemoX 诊断")
+    st.sidebar.caption("诊断/兼容入口；主 UI 为 React Web UI。")
     st.sidebar.markdown(f"连接: `{API_BASE}`")
     if st.session_state.get("token"):
         st.sidebar.success("已登录")

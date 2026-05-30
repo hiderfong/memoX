@@ -134,9 +134,9 @@ Worker 创建、更新和删除接口会持久化修改 `config.yaml` 中的 `wo
 |------|------|------|
 | `POST` | `/api/images/generate` | 文生图 |
 | `POST` | `/api/videos/generate` | 文生视频 |
-| `POST` | `/api/videos/i2v` | 图生视频 |
+| `POST` | `/api/videos/i2v` | 图生视频兼容接口；主前端优先使用后台任务接口 |
 | `POST` | `/api/videos/i2v/jobs` | 提交单条图生视频后台任务，立即返回媒体资产记录 |
-| `POST` | `/api/videos/i2v/batch` | 批量图生视频，逐项返回成功或错误 |
+| `POST` | `/api/videos/i2v/batch` | 批量图生视频兼容接口；主前端优先使用后台批量任务 |
 | `POST` | `/api/videos/i2v/batch/jobs` | 批量提交图生视频后台任务，返回每条 queued 媒体资产 |
 | `POST` | `/api/videos/edit` | 视频编辑，支持视频 URL、提示词和参考图片 |
 | `POST` | `/api/videos/edit/jobs` | 提交视频编辑后台任务，立即返回媒体资产记录 |
@@ -161,7 +161,9 @@ Worker 创建、更新和删除接口会持久化修改 `config.yaml` 中的 `wo
 | `POST` | `/api/system/maintenance/lifecycle` | 管理员执行保守生命周期清理；默认 `dry_run=true` 只预检，`dry_run=false` 清理过期运维事件、审计日志和诊断包，不删除聊天、记忆、上传或工作区文件 |
 | `POST` | `/api/files/sign` | 已登录用户为上传目录中的单个文件生成短期签名 URL |
 | `GET` | `/api/files/{name}` | 访问上传目录中的单个文件，需要 Bearer Token 或短期签名参数 |
-| `WS` | `/ws` | WebSocket 实时通信，支持聊天和任务进度消息 |
+| `WS` | `/ws` | WebSocket 任务事件通知；聊天流统一使用 `/api/chat/stream` |
+
+同步 I2V 兼容接口会在 OpenAPI 中标记为 `deprecated`，成功响应会带上 `Deprecation: true` 和指向后台任务接口的 `Link` header；新客户端应直接接入 `/api/videos/i2v/jobs` 或 `/api/videos/i2v/batch/jobs`。
 
 `POST /api/files/sign` 请求体：
 

@@ -20,10 +20,10 @@ import sys
 import tempfile
 import time
 import zlib
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable
 
 import httpx
 import yaml
@@ -500,7 +500,7 @@ async def media_job_smoke() -> str:
                 enqueue.raise_for_status()
                 asset = enqueue.json()["asset"]
                 asset_id = asset["id"]
-                for attempt in range(int(os.environ.get("MEDIA_JOB_POLL_ATTEMPTS", "180"))):
+                for _attempt in range(int(os.environ.get("MEDIA_JOB_POLL_ATTEMPTS", "180"))):
                     item_response = await client.get(f"http://127.0.0.1:{port}/api/videos/assets/{asset_id}")
                     item_response.raise_for_status()
                     item = item_response.json()["asset"]

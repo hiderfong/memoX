@@ -1,5 +1,6 @@
 #!/bin/bash
-# 启动 MemoX Streamlit 管理界面
+# 启动 MemoX Streamlit 诊断/兼容界面（非主 UI）
+# 主 UI 是 frontend_wip React 应用；本入口仅用于轻量诊断和兼容验证。
 # 默认连接 localhost:8080 的主服务
 #
 # 用法:
@@ -9,4 +10,5 @@
 PORT=${1:-8501}
 
 cd "$(dirname "$0")"
+echo "启动 MemoX Streamlit 诊断/兼容界面（非主 UI）；主 UI 请使用 frontend_wip React。"
 uv run --extra ui streamlit run src/ui/streamlit_app.py --server.port "$PORT" --server.headless true

@@ -25,7 +25,7 @@ def test_configure_uploads_dir_uses_configured_upload_directory(tmp_path):
 
     try:
         api_mod._configure_uploads_dir(cfg)
-        assert api_mod.UPLOADS_DIR == configured_uploads
+        assert configured_uploads == api_mod.UPLOADS_DIR
         assert configured_uploads.is_dir()
     finally:
         api_mod.UPLOADS_DIR = original_uploads_dir

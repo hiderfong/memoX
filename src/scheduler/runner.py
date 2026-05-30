@@ -9,15 +9,17 @@ from typing import Any
 
 from loguru import logger
 
+from coordinator.task_jobs import TaskJobRequest
+
 from .cron import cron_match, next_run_after
 
 
 class ScheduledTaskRunner:
-    """基于 asyncio 的后台循环，每 60s 扫描一次。"""
+    """基于 asyncio 的后台循环，每 60s 扫描并提交后台任务。"""
 
-    def __init__(self, store: Any, orchestrator: Any):
+    def __init__(self, store: Any, task_runner: Any):
         self._store = store
-        self._orchestrator = orchestrator
+        self._task_runner = task_runner
         self._task: asyncio.Task | None = None
         self._stop = asyncio.Event()
 
@@ -80,14 +82,19 @@ class ScheduledTaskRunner:
         )
 
         try:
-            await self._orchestrator.run(
-                description=description,
-                context={"source": "scheduled_task", "scheduled_task_id": tid},
-                active_group_ids=active_group_ids,
+            accepted = self._task_runner.submit(
+                TaskJobRequest(
+                    description=description,
+                    context={"source": "scheduled_task", "scheduled_task_id": tid},
+                    active_group_ids=active_group_ids,
+                    generate_suggestions=True,
+                )
             )
-            logger.info(f"[Scheduler] 定时任务 {tid} 执行完成")
+            logger.info(
+                f"[Scheduler] 定时任务 {tid} 已提交后台任务 {accepted.get('task_id', '-')}"
+            )
         except Exception as e:
-            logger.error(f"[Scheduler] 定时任务 {tid} 执行失败: {type(e).__name__}: {e}")
+            logger.error(f"[Scheduler] 定时任务 {tid} 提交失败: {type(e).__name__}: {e}")
 
     @staticmethod
     def _compute_next(cron: str, after: datetime) -> str | None:
@@ -98,9 +105,9 @@ class ScheduledTaskRunner:
 _runner: ScheduledTaskRunner | None = None
 
 
-def init_runner(store: Any, orchestrator: Any) -> ScheduledTaskRunner:
+def init_runner(store: Any, task_runner: Any) -> ScheduledTaskRunner:
     global _runner
-    _runner = ScheduledTaskRunner(store, orchestrator)
+    _runner = ScheduledTaskRunner(store, task_runner)
     return _runner
 
 

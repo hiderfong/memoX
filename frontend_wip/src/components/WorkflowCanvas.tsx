@@ -1,19 +1,8 @@
-import React, { useCallback, useEffect, useState, useRef } from 'react';
-import {
-  ReactFlow,
-  MiniMap,
-  Controls,
-  Background,
-  useNodesState,
-  useEdgesState,
-  addEdge,
-  Handle,
-  Position,
-  Panel,
-} from '@xyflow/react';
+import React, { useCallback, useEffect, useState } from 'react';
+import { ReactFlow, MiniMap, Controls, Background, useNodesState, useEdgesState, addEdge, Handle, Position, Panel } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 import dagre from 'dagre';
-import { Card, Typography, Tag, Space, Button, Dropdown, Menu, MenuProps, Modal, Input, message, Drawer, Form, Empty } from 'antd';
+import { Typography, Tag, Space, Button, Menu, MenuProps, Modal, Input, message, Drawer, Form, Empty } from 'antd';
 import { SyncOutlined, CheckCircleOutlined, CloseCircleOutlined, ClockCircleOutlined } from '@ant-design/icons';
 import axios from 'axios';
 import yaml from 'js-yaml';

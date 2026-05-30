@@ -60,10 +60,11 @@ def test_public_and_protected_auth_boundaries(permission_client) -> None:
 
 @pytest.mark.asyncio
 async def test_disabled_auth_allows_middleware_boundary(monkeypatch: pytest.MonkeyPatch) -> None:
-    from src.config import Config
-    from src.web import api as api_module
     from starlette.requests import Request
     from starlette.responses import JSONResponse
+
+    from src.config import Config
+    from src.web import api as api_module
 
     cfg = Config._from_dict(
         {

@@ -23,12 +23,44 @@ def test_docker_compose_mounts_persistent_paths() -> None:
 
 def test_dockerfile_builds_frontend_and_runs_memox() -> None:
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    api_py = (ROOT / "src" / "web" / "api.py").read_text(encoding="utf-8")
+    frontend_api = (ROOT / "frontend_wip" / "src" / "shared.tsx").read_text(encoding="utf-8")
 
     assert "AS frontend-build" in dockerfile
     assert "npm run build" in dockerfile
     assert "COPY --from=frontend-build /app/frontend_wip/dist ./frontend_wip/dist" in dockerfile
+    assert '"frontend_wip" / "dist"' in api_py
+    assert "enqueueI2VJob" in frontend_api
+    assert "enqueueI2VBatchJobs" in frontend_api
+    assert "generateI2V:" not in frontend_api
+    assert "generateI2VBatch:" not in frontend_api
     assert "mkdir -p /app/data /app/workspace /app/backups" in dockerfile
     assert 'CMD ["memox"]' in dockerfile
+
+
+def test_frontend_source_has_no_backup_files() -> None:
+    assert not list((ROOT / "frontend_wip" / "src").rglob("*.bak"))
+
+
+def test_streamlit_entry_is_diagnostic_compat_only() -> None:
+    run_script = (ROOT / "run_streamlit.sh").read_text(encoding="utf-8")
+    streamlit_app = (ROOT / "src" / "ui" / "streamlit_app.py").read_text(encoding="utf-8")
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    development = (ROOT / "DEVELOPMENT.md").read_text(encoding="utf-8")
+
+    assert "诊断/兼容界面" in run_script
+    assert "非主 UI" in run_script
+    assert "frontend_wip React" in run_script
+    assert 'page_title="MemoX Diagnostics"' in streamlit_app
+    assert "诊断/兼容入口；主 UI 为 React Web UI" in streamlit_app
+    assert "Streamlit 诊断/兼容界面" in readme
+    assert "不作为主 UI" in readme
+    assert "启动 React 主 UI" in readme
+    assert "Streamlit 已降级为诊断/兼容入口" in development
+    assert "React 主 Web UI" in development
+    assert "frontend_wip/src/pages/ChatPage.tsx" in development
+    assert "frontend/src/pages/Chat.tsx" not in development
+    assert "Streamlit 出一个管理界面" not in development
 
 
 def test_config_example_is_container_friendly() -> None:

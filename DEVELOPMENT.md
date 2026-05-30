@@ -62,11 +62,11 @@
       ]
     }
     ```
-- `frontend/src/pages/Chat.tsx`：
+- `frontend_wip/src/pages/ChatPage.tsx`：
   - 流式渲染时，在答案底部或侧边展示引用来源列表
   - 点击引用高亮对应原文（需要 `GET /api/documents/{doc_id}/chunks/{chunk_id}`）
 
-**文件改动**：`src/knowledge/rag_engine.py`（修改）、`src/web/api.py`（修改）、`frontend/src/pages/Chat.tsx`（修改）
+**文件改动**：`src/knowledge/rag_engine.py`（修改）、`src/web/api.py`（修改）、`frontend_wip/src/pages/ChatPage.tsx`（修改）
 
 ### P4-4：知识图谱构建（Knowledge Graph）— 实验性
 
@@ -144,41 +144,41 @@
 
 **目标**：补全前端能力，让非技术用户也能顺畅使用 MemoX。
 
-### P6-1：轻量 UI 原型（Streamlit）
+### P6-1：诊断/兼容入口（Streamlit）
 
-**若前端能力较弱**，先用 Streamlit 出一个管理界面（3天可完成）：
+**当前定位**：Streamlit 已降级为诊断/兼容入口，不作为真实用户主 UI。主 Web UI 是 `frontend_wip/` 下的 React 应用；Streamlit 只保留给开发排障、兼容验证和最小后端连通性检查。
 
 ```
-# 快速验证用，后期替换为 React
+# 诊断/兼容入口，非主 UI
 src/ui/streamlit_app.py
 ```
 
-**功能**：
+**保留功能**：
 - 上传文档（拖拽），显示解析进度和切片数量
 - 知识库搜索测试框（输入 query，看检索结果和来源）
 - Worker 状态面板（在线/离线/任务数/Token 消耗）
 - 记忆管理（查看/添加/删除跨会话记忆）
 
-**文件改动**：`src/ui/streamlit_app.py`（新增）、`pyproject.toml` 新增 `streamlit` 依赖
+**文件**：`src/ui/streamlit_app.py`、`run_streamlit.sh`
 
 **依赖**：`streamlit>=1.30`
 
-### P6-2：现有前端增强（React）
+### P6-2：React 主 Web UI 增强
 
-**基于 `frontend/src/` 现有代码**：
+**基于 `frontend_wip/src/` 现有代码**：
 
-- `frontend/src/pages/Chat.tsx`：
+- `frontend_wip/src/pages/ChatPage.tsx`：
   - 引用来源高亮（来自 P4-3）
   - 对话导出（Markdown / PDF）
   - 消息引用跳转（点击引用滚动到对应上下文）
-- `frontend/src/pages/Documents.tsx`：
+- `frontend_wip/src/pages/DocumentsPage.tsx`：
   - 上传进度条（分片上传 + 解析状态）
   - 文档预览（.pdf / .docx 在线预览，不需要下载）
   - 切片结果预览（每个文档切了多少块、策略是什么）
-- `frontend/src/pages/Workers.tsx`：
+- `frontend_wip/src/pages/WorkersPage.tsx`：
   - Token 消耗可视化（饼图 / 柱状图）
   - Worker 日志查看（实时 tail，但限制最后 100 行）
-- `frontend/src/pages/Settings.tsx`：
+- `frontend_wip/src/pages/SettingsPage.tsx`：
   - API Key 可视化配置（遮蔽显示，可切换显示/隐藏）
   - 记忆开关（开启/关闭跨会话记忆、偏好学习）
 
@@ -281,7 +281,7 @@ src/ui/streamlit_app.py
 |------|------|------|---------|
 | `rank_bm25` | `>=0.2` | 全文检索 | P4-1 |
 | `networkx` | `>=3.0` | 知识图谱 | P4-4 |
-| `streamlit` | `>=1.30` | 轻量 UI 原型 | P6-1 |
+| `streamlit` | `>=1.30` | 诊断/兼容入口 | P6-1 |
 
 其余均复用现有依赖。
 
@@ -319,8 +319,8 @@ src/ui/streamlit_app.py
 | **P4-2** 语义切片 | ★★★ | 3-4d | embedding provider |
 | **P5-1** 记忆压缩 | ★★★★ | 3-4d | persistence.py 改造 |
 | **P5-2** 跨会话记忆 | ★★★ | 3-4d | P5-1 |
-| **P6-2** 前端增强 | ★★★ | 5-7d | P4-3 完成后 |
-| **P6-1** Streamlit 原型 | ★★ | 2-3d | 可选，快速验证 |
+| **P6-2** React 主 UI 增强 | ★★★ | 5-7d | P4-3 完成后 |
+| **P6-1** Streamlit 诊断入口 | ★★ | 1-2d | 可选，仅诊断/兼容 |
 | **P7-1** 并行 Agent | ★★★ | 3-4d | 复用现有 WorkerPool |
 | **P7-2** 通信协议 | ★★ | 2-3d | P7-1 |
 | **P4-4** 知识图谱 | ★★ | 4-5d | networkx，实验性 |
@@ -340,11 +340,11 @@ P5-1 (记忆压缩) ← 与 P4 并行，P5-1 独立
     ↓
 P5-2 (跨会话记忆)
     ↓
-P6-2 (前端增强) ← 依赖 P4-3
+P6-2 (React 主 UI 增强) ← 依赖 P4-3
 P7-1 (并行 Agent) ← 独立于 P4/P5
 P4-4 (知识图谱) ← 实验性，随时可暂停
 P5-3 (偏好学习) ← P5-2 之后
-P6-1 (Streamlit) ← 可在任何阶段插入验证
+P6-1 (Streamlit 诊断入口) ← 可在任何阶段插入验证，不作为主 UI
 P7-2 (通信协议) ← P7-1 之后
 P8 (Workflow DSL) ← P7 完全稳定后
 ```

@@ -1,18 +1,6 @@
 import { useContext, useState, type FC, type ReactNode } from 'react';
 import { Avatar, Badge, Button, Layout, Menu, Space, Tooltip, Typography } from 'antd';
-import {
-  ClockCircleOutlined,
-  DeploymentUnitOutlined,
-  FileTextOutlined,
-  LogoutOutlined,
-  MessageOutlined,
-  RobotOutlined,
-  SafetyCertificateOutlined,
-  SettingOutlined,
-  TeamOutlined,
-  UserOutlined,
-  VideoCameraOutlined,
-} from '@ant-design/icons';
+import { ClockCircleOutlined, DeploymentUnitOutlined, FileTextOutlined, LogoutOutlined, MessageOutlined, RobotOutlined, SafetyCertificateOutlined, SettingOutlined, TeamOutlined, UserOutlined, VideoCameraOutlined } from '@ant-design/icons';
 import { useLocation, useNavigate } from 'react-router-dom';
 
 import { AuthContext, api, useIsMobile } from '../shared';
