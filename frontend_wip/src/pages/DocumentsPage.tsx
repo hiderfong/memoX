@@ -419,7 +419,12 @@ export const DocumentsPage: React.FC = () => {
             {!previewDoc ? (
               <Empty description="点击文件预览按钮查看全文" image={Empty.PRESENTED_IMAGE_SIMPLE} />
             ) : previewLoading ? (
-              <div style={{ textAlign: 'center', padding: 40 }}><Spin tip="加载中..." /></div>
+              <div style={{ textAlign: 'center', padding: 40 }}>
+                <Space direction="vertical" size={8}>
+                  <Spin />
+                  <Text type="secondary">加载中...</Text>
+                </Space>
+              </div>
             ) : (
               <div style={{ maxHeight: 'calc(100vh - 360px)', overflow: 'auto' }}>
                 <div style={{ marginBottom: 12 }}>

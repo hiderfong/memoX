@@ -217,7 +217,7 @@ export const ScheduledTasksPage: React.FC = () => {
         confirmLoading={saving}
         okText="保存"
         cancelText="取消"
-        destroyOnClose
+        destroyOnHidden
         width={640}
       >
         <div style={{ marginBottom: 12 }}>

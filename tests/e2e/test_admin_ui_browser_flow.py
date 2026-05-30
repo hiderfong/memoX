@@ -492,7 +492,7 @@ def test_knowledge_graph_governance_status_deeplink_and_resolution_browser_flow(
 
             candidate_row = page.locator("li").filter(has_text=candidate_title).first
             candidate_row.get_by_label("删除关系").click()
-            page.get_by_role("button", name="删除").click()
+            page.locator(".ant-popconfirm-buttons .ant-btn-primary").filter(visible=True).click()
             expect(page.get_by_text("关系已删除")).to_be_visible()
             expect(quality_queue.get_by_text(candidate_title)).not_to_be_visible(timeout=15_000)
 
@@ -502,7 +502,7 @@ def test_knowledge_graph_governance_status_deeplink_and_resolution_browser_flow(
 
             page.goto(f"{frontend_base_url}/system")
             expect(page.get_by_text("知识图谱治理任务待处理")).not_to_be_visible()
-            expect(page.get_by_text("已恢复")).to_be_visible()
+            expect(page.get_by_text("已恢复", exact=True)).to_be_visible()
 
             assert console_errors == []
         finally:

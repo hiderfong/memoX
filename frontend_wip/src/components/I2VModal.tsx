@@ -222,7 +222,7 @@ export const I2VModal: React.FC<I2VModalProps> = ({ open, imageUrl, authToken, o
         </Button>,
       ]}
       width={760}
-      destroyOnClose={false}
+      destroyOnHidden={false}
       data-testid="i2v-modal"
     >
       <Space direction="vertical" size={16} style={{ width: '100%' }}>

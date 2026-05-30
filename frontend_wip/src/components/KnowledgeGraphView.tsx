@@ -776,7 +776,14 @@ export const KnowledgeGraphView = ({
   }
 
   if (loading && graphData.nodes.length === 0) {
-    return <div style={{ textAlign: 'center', padding: 50 }}><Spin tip="加载知识图谱..." /></div>;
+    return (
+      <div style={{ textAlign: 'center', padding: 50 }}>
+        <Space direction="vertical" size={8}>
+          <Spin />
+          <Text type="secondary">加载知识图谱...</Text>
+        </Space>
+      </div>
+    );
   }
 
   const stats = graphData.stats || {};

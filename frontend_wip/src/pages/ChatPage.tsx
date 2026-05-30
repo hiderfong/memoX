@@ -905,7 +905,7 @@ export const ChatPage: React.FC = () => {
         onCancel={() => { setRenameTarget(null); setRenameInput(''); }}
         okText="保存"
         cancelText="取消"
-        destroyOnClose
+        destroyOnHidden
       >
         <Input
           value={renameInput}
@@ -922,7 +922,7 @@ export const ChatPage: React.FC = () => {
         open={!!clarify}
         onCancel={() => setClarify(null)}
         footer={null}
-        destroyOnClose
+        destroyOnHidden
       >
         {clarify && (
           <>
