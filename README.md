@@ -125,6 +125,9 @@ npm run dev
 旧版 Streamlit 诊断/兼容界面仍保留用于轻量排障，不作为主 UI：
 
 ```bash
+# 可选：显式提供诊断入口登录凭据，避免在 UI 中手动输入
+export MEMOX_STREAMLIT_USERNAME=admin
+export MEMOX_STREAMLIT_PASSWORD="$MEMOX_ADMIN_PASSWORD"
 uv run --extra ui streamlit run src/ui/streamlit_app.py
 ```
 
@@ -201,7 +204,7 @@ uv run --extra dev python scripts/ops_check.py
 
 真实用户长期运行前，建议先按 [docs/RELEASE_READINESS.md](docs/RELEASE_READINESS.md) 完成发布前清单，再按 [docs/RECOVERY_RUNBOOK.md](docs/RECOVERY_RUNBOOK.md) 做一次恢复演练；它把诊断导出、备份选择、预检、API 恢复、离线恢复、索引修复和恢复后验收串成了维护窗口操作顺序。
 
-Docker 镜像默认不安装 `sentence-transformers`/Streamlit 这类重依赖。需要本地 embedding 时使用 `uv sync --extra local-embeddings`，需要旧的 Streamlit 诊断/兼容界面时使用 `uv run --extra ui streamlit run src/ui/streamlit_app.py`。
+Docker 镜像默认不安装 `sentence-transformers`/Streamlit 这类重依赖。需要本地 embedding 时使用 `uv sync --extra local-embeddings`，需要旧的 Streamlit 诊断/兼容界面时使用 `uv run --extra ui streamlit run src/ui/streamlit_app.py`；该诊断入口不会内置默认密码，自动登录需显式设置 `MEMOX_STREAMLIT_USERNAME` 和 `MEMOX_STREAMLIT_PASSWORD`。
 
 ## API 接口
 

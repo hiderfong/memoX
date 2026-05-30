@@ -51,10 +51,17 @@ def test_streamlit_entry_is_diagnostic_compat_only() -> None:
     assert "诊断/兼容界面" in run_script
     assert "非主 UI" in run_script
     assert "frontend_wip React" in run_script
+    assert "MEMOX_STREAMLIT_USERNAME" in run_script
+    assert "MEMOX_STREAMLIT_PASSWORD" in run_script
     assert 'page_title="MemoX Diagnostics"' in streamlit_app
     assert "诊断/兼容入口；主 UI 为 React Web UI" in streamlit_app
+    assert "MEMOX_STREAMLIT_USERNAME" in streamlit_app
+    assert "MEMOX_STREAMLIT_PASSWORD" in streamlit_app
+    assert "admin123" not in streamlit_app
+    assert "DEFAULT_PASSWORD" not in streamlit_app
     assert "Streamlit 诊断/兼容界面" in readme
     assert "不作为主 UI" in readme
+    assert "不会内置默认密码" in readme
     assert "启动 React 主 UI" in readme
     assert "Streamlit 已降级为诊断/兼容入口" in development
     assert "React 主 Web UI" in development

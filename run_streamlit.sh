@@ -1,6 +1,7 @@
 #!/bin/bash
 # 启动 MemoX Streamlit 诊断/兼容界面（非主 UI）
 # 主 UI 是 frontend_wip React 应用；本入口仅用于轻量诊断和兼容验证。
+# 自动登录需显式设置 MEMOX_STREAMLIT_USERNAME / MEMOX_STREAMLIT_PASSWORD。
 # 默认连接 localhost:8080 的主服务
 #
 # 用法:

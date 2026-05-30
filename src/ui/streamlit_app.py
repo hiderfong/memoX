@@ -15,6 +15,7 @@ MemoX Streamlit 诊断/兼容界面
 
 from __future__ import annotations
 
+import os
 import time
 
 import requests
@@ -23,8 +24,8 @@ import streamlit as st
 # ==================== 配置 ====================
 
 API_BASE = "http://localhost:8080/api"
-DEFAULT_USER = "admin"
-DEFAULT_PASSWORD = "admin123"
+DIAGNOSTIC_USERNAME_ENV = "MEMOX_STREAMLIT_USERNAME"
+DIAGNOSTIC_PASSWORD_ENV = "MEMOX_STREAMLIT_PASSWORD"
 
 st.set_page_config(
     page_title="MemoX Diagnostics",
@@ -78,22 +79,44 @@ def format_size(bytes_num: int) -> str:
     return f"{bytes_num / (1024 * 1024):.1f} MB"
 
 
-def ensure_auth():
-    """确保已登录，若无 token 则自动用默认凭据登录。"""
+def login_to_backend(username: str, password: str) -> bool:
+    try:
+        r = requests.post(
+            f"{API_BASE}/auth/login",
+            json={"username": username, "password": password},
+            timeout=5,
+        )
+        r.raise_for_status()
+        st.session_state.token = r.json()["access_token"]
+        return True
+    except requests.RequestException as e:
+        st.warning(f"登录 MemoX 后端失败: {e}")
+        st.session_state.token = None
+        return False
+
+
+def ensure_auth() -> None:
+    """确保已登录；仅使用显式环境变量自动登录。"""
     if "token" not in st.session_state:
         st.session_state.token = None
-    if st.session_state.token is None:
-        try:
-            r = requests.post(
-                f"{API_BASE}/auth/login",
-                json={"username": DEFAULT_USER, "password": DEFAULT_PASSWORD},
-                timeout=5,
-            )
-            r.raise_for_status()
-            st.session_state.token = r.json()["access_token"]
-        except Exception:
-            st.warning("未连接 MemoX 后端服务（8080），部分功能不可用")
-            st.session_state.token = None
+    if st.session_state.token:
+        return
+
+    env_username = os.getenv(DIAGNOSTIC_USERNAME_ENV, "").strip()
+    env_password = os.getenv(DIAGNOSTIC_PASSWORD_ENV, "").strip()
+    if env_username and env_password and login_to_backend(env_username, env_password):
+        return
+
+    st.sidebar.warning("未登录后端")
+    with st.sidebar.form("backend_login_form"):
+        username = st.text_input("后端用户名", value=env_username or "admin")
+        password = st.text_input("后端密码", type="password")
+        submitted = st.form_submit_button("登录")
+    if submitted:
+        if not username.strip() or not password:
+            st.sidebar.error("请输入用户名和密码")
+        elif login_to_backend(username.strip(), password):
+            st.rerun()
 
 
 def api_headers() -> dict:
@@ -385,15 +408,15 @@ def page_chat():
 # ==================== 主程序 ====================
 
 def main():
-    ensure_auth()
-
     st.sidebar.title("📚 MemoX 诊断")
     st.sidebar.caption("诊断/兼容入口；主 UI 为 React Web UI。")
     st.sidebar.markdown(f"连接: `{API_BASE}`")
+    ensure_auth()
     if st.session_state.get("token"):
         st.sidebar.success("已登录")
     else:
-        st.sidebar.warning("未连接后端")
+        st.info("请在侧边栏登录 MemoX 后端后使用诊断功能。")
+        return
 
     page = st.sidebar.radio(
         "功能",
