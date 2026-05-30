@@ -160,7 +160,7 @@ async def test_list_providers_exposes_server_side_status(
 ) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
     monkeypatch.setenv("DEEPSEEK_API_KEY", "deepseek-key")
-    monkeypatch.delenv("KIMI_API_KEY", raising=False)
+    monkeypatch.delenv("QWEN_API_KEY", raising=False)
 
     from config import Config
 
@@ -178,9 +178,9 @@ async def test_list_providers_exposes_server_side_status(
                         "X-API-Key": "provider-header-api-key",
                     },
                 },
-                "kimi": {
-                    "api_key": "${KIMI_API_KEY}",
-                    "base_url": "https://api.kimi.com/coding/v1",
+                "dashscope": {
+                    "api_key": "${QWEN_API_KEY}",
+                    "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
                 },
                 "deepseek": {
                     "api_key": "${DEEPSEEK_API_KEY}",
@@ -193,8 +193,8 @@ async def test_list_providers_exposes_server_side_status(
             },
             "worker_templates": {
                 "coder": {
-                    "provider": "kimi",
-                    "model": "kimi-latest",
+                    "provider": "dashscope",
+                    "model": "qwen3.7",
                     "temperature": 0.7,
                     "fallback_providers": [
                         {"provider": "deepseek", "model": "deepseek-v4-pro"}
@@ -218,10 +218,12 @@ async def test_list_providers_exposes_server_side_status(
     assert "provider-header-secret" not in serialized
     assert "provider-header-api-key" not in serialized
 
-    assert result["kimi"]["configured"] is False
-    assert result["kimi"]["env_var"] == "KIMI_API_KEY"
-    assert "worker:coder" in result["kimi"]["used_by"]
-    assert "API Key 未配置" in result["kimi"]["warnings"][0]
+    assert result["dashscope"]["configured"] is False
+    assert result["dashscope"]["env_var"] == "QWEN_API_KEY"
+    assert "worker:coder" in result["dashscope"]["used_by"]
+    assert "qwen3.7" in result["dashscope"]["models"]
+    assert result["dashscope"]["capabilities"]["protocol"] == "openai_compatible"
+    assert "API Key 未配置" in result["dashscope"]["warnings"][0]
 
     assert result["deepseek"]["configured"] is True
     assert result["deepseek"]["supported"] is True

@@ -798,7 +798,7 @@ PROVIDER_CAPABILITIES: dict[str, ProviderCapabilities] = {
     "dashscope": ProviderCapabilities(
         protocol="openai_compatible",
         default_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
-        well_known_models=("qwen3.6-plus", "qwen-plus", "qwen-turbo"),
+        well_known_models=("qwen3.7", "qwen3.6-plus", "qwen-plus", "qwen-turbo"),
         recommended_for=("general_reasoning", "multimodal_extensions"),
     ),
 }

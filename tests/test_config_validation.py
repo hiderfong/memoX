@@ -206,8 +206,8 @@ def test_worker_template_parses_fallback_providers() -> None:
             "providers": {},
             "worker_templates": {
                 "coder": {
-                    "provider": "kimi",
-                    "model": "kimi-latest",
+                    "provider": "dashscope",
+                    "model": "qwen3.7",
                     "fallback_providers": [
                         {
                             "provider": "deepseek",

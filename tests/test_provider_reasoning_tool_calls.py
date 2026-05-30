@@ -6,7 +6,14 @@ import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-from agents.base_agent import BaseTool, LLMResponse, ToolCall, ToolRegistry, create_provider, get_provider_capabilities
+from agents.base_agent import (
+    BaseTool,
+    LLMResponse,
+    ToolCall,
+    ToolRegistry,
+    create_provider,
+    get_provider_capabilities,
+)
 from agents.worker_pool import WorkerAgent, WorkerConfig
 
 
@@ -59,12 +66,17 @@ class _ReasoningToolProvider:
 
 
 @pytest.mark.asyncio
-async def test_kimi_reasoning_content_is_preserved_for_tool_result_roundtrip():
+async def test_deepseek_reasoning_content_is_preserved_for_tool_result_roundtrip():
     registry = ToolRegistry()
     registry.register(_EchoTool())
     provider = _ReasoningToolProvider()
     worker = WorkerAgent(
-        WorkerConfig(name="kimi_worker", provider_type="kimi", api_key="", model="kimi-k2.6"),
+        WorkerConfig(
+            name="deepseek_worker",
+            provider_type="deepseek",
+            api_key="",
+            model="deepseek-v4-pro",
+        ),
         tools=registry,
         provider=provider,
     )
@@ -76,17 +88,6 @@ async def test_kimi_reasoning_content_is_preserved_for_tool_result_roundtrip():
     assistant_message = next(message for message in second_messages if message["role"] == "assistant")
     assert assistant_message["reasoning_content"] == "tool call reasoning"
     assert assistant_message["tool_calls"][0]["function"]["name"] == "echo_tool"
-
-
-def test_kimi_provider_requests_reasoning_preservation():
-    provider = create_provider(
-        "kimi",
-        "test-key",
-        base_url="https://api.kimi.com/coding/v1",
-        headers={"User-Agent": "claude-code/0.1.0"},
-    )
-
-    assert getattr(provider, "preserve_reasoning_content", False) is True
 
 
 def test_deepseek_provider_uses_openai_compatible_defaults():
@@ -105,3 +106,20 @@ def test_deepseek_provider_capabilities_are_registered():
     assert capabilities.supports_streaming is True
     assert capabilities.preserves_reasoning_content is True
     assert "deepseek-v4-pro" in capabilities.well_known_models
+
+
+def test_qwen_provider_uses_dashscope_openai_compatible_defaults():
+    provider = create_provider("dashscope", "test-key")
+
+    assert provider.base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    assert getattr(provider, "preserve_reasoning_content", False) is False
+
+
+def test_qwen_provider_capabilities_include_qwen37():
+    capabilities = get_provider_capabilities("dashscope")
+
+    assert capabilities is not None
+    assert capabilities.protocol == "openai_compatible"
+    assert capabilities.supports_tool_calls is True
+    assert capabilities.supports_streaming is True
+    assert "qwen3.7" in capabilities.well_known_models

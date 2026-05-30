@@ -1,14 +1,14 @@
 # External Agent E2E Runbook
 
-本文档交给具备外网访问能力和安全 secret 注入能力的外部 Agent 执行。当前 Codex 本地环境可以完成代码修复、单元测试、前端构建、提交和推送，但真实 DeepSeek / MiniMax / Kimi / DashScope 调用在本地沙箱中被 DNS/外网限制拦截，因此需要外部 Agent 完成真实模型 E2E 验收。
+本文档交给具备外网访问能力和安全 secret 注入能力的外部 Agent 执行。当前 Codex 本地环境可以完成代码修复、单元测试、前端构建、提交和推送，但真实 DeepSeek / MiniMax / Qwen / DashScope 调用在本地沙箱中被 DNS/外网限制拦截，因此需要外部 Agent 完成真实模型 E2E 验收。
 
 ## 目标
 
 外部 Agent 需要验证以下能力在真实服务下可用：
 
-1. DeepSeek V4 Pro + MiniMax 多 Agent 混合编排。
+1. DeepSeek V4 Pro + MiniMax + Qwen3.7 多 Agent 混合编排。
 2. MiniMax 多 Agent 协作 E2E。
-3. Kimi OpenAI-compatible provider 基础调用。
+3. Qwen3.7 OpenAI-compatible provider 基础调用。
 4. DashScope Wan2.7 I2V 真实图生视频。
 5. MemoX 媒体工作台后台任务接口：入队、轮询、成功/失败记录、作品库查询。
 
@@ -21,7 +21,7 @@
 - 不要编辑 `.env`、`config.yaml` 或任何会被提交的文件来保存 secret。
 - 使用 shell 环境变量、CI secret、临时 secret manager 或一次性 runtime injection。
 - 测试素材必须是非敏感图片/视频。不要使用真实用户数据。
-- 所有真实模型调用都会消耗额度。先跑 P0/P1/P3 的最小 smoke，再决定是否跑完整套。
+- 所有真实模型调用都会消耗额度。先跑 P0/P1/P2/P3 的最小 smoke，再决定是否跑完整套。
 
 ## 必需 Secret
 
@@ -30,19 +30,20 @@
 ```bash
 export MINIMAX_API_KEY="<redacted>"
 export DEEPSEEK_API_KEY="<redacted>"
-export KIMI_API_KEY="<redacted>"
+export QWEN_API_KEY="<redacted>"
 export DASHSCOPE_API_KEY="<redacted>"
 export MEMOX_FILE_SIGNING_SECRET="<random-long-secret>"
 export MEMOX_ADMIN_PASSWORD="<random-long-password>"
+export QWEN_MODEL="qwen3.7"
 ```
 
 说明：
 
 - `MINIMAX_API_KEY` 用于 `https://api.minimaxi.com/anthropic/v1`。
 - `DEEPSEEK_API_KEY` 用于 `https://api.deepseek.com`，模型为 `deepseek-v4-pro`。
-- `KIMI_API_KEY` 用于 `https://api.kimi.com/coding/v1`。
+- `QWEN_API_KEY` 用于 `https://dashscope.aliyuncs.com/compatible-mode/v1`，默认模型为 `qwen3.7`。
 - `DASHSCOPE_API_KEY` 用于 DashScope Wan2.7 I2V / video edit。
-- 如果实际部署把 DashScope 与其他 provider 共用同一个 key，也仍然通过 `DASHSCOPE_API_KEY` 注入，保持 MemoX 配置一致。
+- 如果实际部署把 Qwen chat 与 DashScope I2V 共用同一个 key，可在安全环境里把同一个 secret 同时注入为 `QWEN_API_KEY` 和 `DASHSCOPE_API_KEY`，不要写入仓库。
 
 ## 环境要求
 
@@ -53,7 +54,6 @@ export MEMOX_ADMIN_PASSWORD="<random-long-password>"
 - HTTPS 出站访问必须可解析并连接：
   - `api.deepseek.com`
   - `api.minimaxi.com`
-  - `api.kimi.com`
   - `dashscope.aliyuncs.com`
   - DashScope 上传策略返回的 OSS upload host
 
@@ -86,7 +86,7 @@ import os
 required = [
     "MINIMAX_API_KEY",
     "DEEPSEEK_API_KEY",
-    "KIMI_API_KEY",
+    "QWEN_API_KEY",
     "DASHSCOPE_API_KEY",
     "MEMOX_FILE_SIGNING_SECRET",
     "MEMOX_ADMIN_PASSWORD",
@@ -105,7 +105,6 @@ import socket
 hosts = [
     "api.deepseek.com",
     "api.minimaxi.com",
-    "api.kimi.com",
     "dashscope.aliyuncs.com",
 ]
 for host in hosts:
@@ -132,9 +131,9 @@ git diff --check
 - 前端 build 通过。
 - `git diff --check` 无输出。
 
-## P0: DeepSeek + MiniMax 混合编排 E2E
+## P0: DeepSeek + MiniMax + Qwen 混合编排 E2E
 
-这是最高优先级。它验证 DeepSeek worker、MiniMax worker、依赖上下文传递、工具写文件和最终产物检查。
+这是最高优先级。它验证 DeepSeek worker、MiniMax worker、Qwen worker、依赖上下文传递、工具写文件和最终产物检查。
 
 ```bash
 uv run --extra dev pytest \
@@ -145,9 +144,10 @@ uv run --extra dev pytest \
 预期：
 
 - 测试通过。
-- shared output 中有 `deepseek_notes.txt` 和 `mixed_report.txt`。
+- shared output 中有 `deepseek_notes.txt`、`mixed_report.txt` 和 `qwen_review.txt`。
 - `deepseek_notes.txt` 包含 `DEEPSEEK_OK=alpha`。
 - `mixed_report.txt` 同时包含 `DEEPSEEK_OK=alpha` 和 `MINIMAX_OK=beta`。
+- `qwen_review.txt` 同时包含 `DEEPSEEK_OK=alpha`、`MINIMAX_OK=beta` 和 `QWEN_OK=gamma`。
 
 失败判读：
 
@@ -181,9 +181,9 @@ uv run --extra dev pytest \
 - 如果有 `test_result.txt`，内容包含 `ok` 或 `passed`。
 - 邮件通信日志 `mail_log.txt` 存在。
 
-## P2: Kimi Provider Smoke
+## P2: Qwen Provider Smoke
 
-当前仓库对 Kimi reasoning/tool-call 轮转有 mock 测试；外部 Agent 需要补一次真实 provider smoke。
+外部 Agent 需要补一次真实 Qwen3.7 provider smoke，确认 DashScope OpenAI-compatible chat endpoint、key、模型名和 MemoX provider adapter 可用。
 
 ```bash
 uv run --extra dev python - <<'PY'
@@ -194,29 +194,28 @@ from src.agents.base_agent import create_provider
 
 async def main() -> None:
     provider = create_provider(
-        "kimi",
-        os.environ["KIMI_API_KEY"],
-        base_url="https://api.kimi.com/coding/v1",
-        headers={"User-Agent": "claude-code/0.1.0"},
+        "dashscope",
+        os.environ["QWEN_API_KEY"],
+        base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
     )
     response = await provider.chat(
         messages=[
-            {"role": "system", "content": "Reply with exactly KIMI_OK."},
+            {"role": "system", "content": "Reply with exactly QWEN_OK."},
             {"role": "user", "content": "Provider smoke test."},
         ],
-        model=os.environ.get("KIMI_TEST_MODEL", "kimi-k2.6"),
+        model=os.environ.get("QWEN_MODEL", "qwen3.7"),
         temperature=0,
         max_tokens=32,
     )
     content = (response.content or "").strip()
-    print("Kimi response:", content)
-    assert "KIMI_OK" in content
+    print("Qwen response:", content)
+    assert "QWEN_OK" in content
 
 asyncio.run(main())
 PY
 ```
 
-如果 `kimi-k2.6` 对当前账号不可用，改用部署账号实际可用模型，并在报告里记录 `KIMI_TEST_MODEL`。
+如果 `qwen3.7` 对当前账号不可用，停止并报告 provider 权限问题；不要自动降级到其他非指定 provider。只有操作者明确要求时，才通过 `QWEN_MODEL` 覆盖为账号实际可用的 Qwen 模型。
 
 ## P3: DashScope I2V Direct Client Smoke
 
@@ -329,13 +328,8 @@ providers:
   deepseek:
     api_key: "${DEEPSEEK_API_KEY}"
     base_url: "https://api.deepseek.com"
-  kimi:
-    api_key: "${KIMI_API_KEY}"
-    base_url: "https://api.kimi.com/coding/v1"
-    headers:
-      User-Agent: "claude-code/0.1.0"
   dashscope:
-    api_key: "${DASHSCOPE_API_KEY}"
+    api_key: "${QWEN_API_KEY}"
     base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
 
 worker_templates: {}
@@ -528,7 +522,6 @@ Secret handling:
 Network preflight:
 - api.deepseek.com:
 - api.minimaxi.com:
-- api.kimi.com:
 - dashscope.aliyuncs.com:
 
 Baseline:
@@ -536,7 +529,7 @@ Baseline:
 - frontend build:
 - git diff --check:
 
-P0 DeepSeek + MiniMax mixed orchestration:
+P0 DeepSeek + MiniMax + Qwen mixed orchestration:
 - result:
 - duration:
 - notes:
@@ -546,7 +539,7 @@ P1 MiniMax collaboration:
 - scenario(s):
 - notes:
 
-P2 Kimi smoke:
+P2 Qwen smoke:
 - result:
 - model:
 - notes:

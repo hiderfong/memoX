@@ -111,10 +111,10 @@ async def test_worker_falls_back_after_retryable_provider_errors(monkeypatch: py
             model="deepseek-v4-pro",
             fallback_providers=[
                 ProviderFallbackConfig(
-                    provider_type="kimi",
+                    provider_type="dashscope",
                     api_key="fallback-key",
-                    model="kimi-latest",
-                    base_url="https://api.kimi.com/coding/v1",
+                    model="qwen3.7",
+                    base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
                 )
             ],
             provider_retry_attempts=1,
@@ -129,7 +129,7 @@ async def test_worker_falls_back_after_retryable_provider_errors(monkeypatch: py
     assert result == "fallback ok"
     assert primary_provider.calls == 2
     assert fallback_provider.calls == 1
-    assert fallback_provider.models == ["kimi-latest"]
+    assert fallback_provider.models == ["qwen3.7"]
     assert any(message.startswith("provider_retry:") for message in progress)
     assert any(message.startswith("provider_fallback:") for message in progress)
     assert any(log["message"] == "LLM provider 调用恢复" for log in worker.get_logs())
@@ -150,9 +150,9 @@ async def test_worker_does_not_fall_back_for_non_retryable_provider_errors(
             model="deepseek-v4-pro",
             fallback_providers=[
                 ProviderFallbackConfig(
-                    provider_type="kimi",
+                    provider_type="dashscope",
                     api_key="fallback-key",
-                    model="kimi-latest",
+                    model="qwen3.7",
                 )
             ],
             provider_retry_attempts=1,
@@ -184,9 +184,9 @@ async def test_background_task_job_completes_after_worker_provider_fallback(
             model="deepseek-v4-pro",
             fallback_providers=[
                 ProviderFallbackConfig(
-                    provider_type="kimi",
+                    provider_type="dashscope",
                     api_key="fallback-key",
-                    model="kimi-latest",
+                    model="qwen3.7",
                 )
             ],
             provider_retry_attempts=1,
@@ -236,8 +236,8 @@ async def test_background_task_job_completes_after_worker_provider_fallback(
     assert retry_event["details"]["error"] == "HTTP 500"
     assert fallback_event["message"] == "子任务 sub_1 已切换 fallback provider"
     assert fallback_event["details"]["from_provider"] == "deepseek"
-    assert fallback_event["details"]["to_provider"] == "kimi"
-    assert fallback_event["details"]["to_model"] == "kimi-latest"
+    assert fallback_event["details"]["to_provider"] == "dashscope"
+    assert fallback_event["details"]["to_model"] == "qwen3.7"
     assert primary_provider.calls == 2
     assert fallback_provider.calls == 1
     assert any(log["message"] == "LLM provider transient failure" for log in worker.get_logs())
