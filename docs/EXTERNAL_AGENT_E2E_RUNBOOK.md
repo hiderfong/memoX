@@ -61,7 +61,11 @@ export QWEN_MODEL="qwen-plus"
 
 ## 推荐：一键验收脚本
 
-优先使用仓库内脚本执行。它会统一跑基线、浏览器 E2E、真实 provider smoke、DashScope I2V、后台媒体任务，并生成脱敏 Markdown 报告：
+发布前优先使用 GitHub Actions 的 `Release Gate` workflow。该门禁在 `v*`
+tag 推送时自动运行，也可以手动触发；它固定执行 `--phases smoke`，不允许
+`--allow-missing-secrets`，缺少真实 provider secret 时必须失败。
+
+本地或外部 Agent 排障时使用仓库内脚本执行。它会统一跑基线、浏览器 E2E、真实 provider smoke、DashScope I2V、后台媒体任务，并生成脱敏 Markdown 报告：
 
 ```bash
 uv run --extra dev python scripts/run_external_e2e.py \
@@ -75,7 +79,7 @@ uv run --extra dev python scripts/run_external_e2e.py \
 - `--phases smoke`：默认发布验收，覆盖 P0-P4。
 - `--phases all,full-sweep`：在默认发布验收后追加完整 E2E sweep。
 - `--full-collab`：把 MiniMax 协作从最小场景扩展为整个 `test_e2e_collab.py`。
-- `--allow-missing-secrets`：本地预演时允许缺 secret 的 phase 被 skip；正式发布验收不建议使用。
+- `--allow-missing-secrets`：本地预演时允许缺 secret 的 phase 被 skip；正式发布验收和 `Release Gate` 禁止使用。
 - `--dry-run`：只生成执行计划，不调用模型、不启动服务。
 
 脚本报告会脱敏：
@@ -86,7 +90,10 @@ uv run --extra dev python scripts/run_external_e2e.py \
 
 ## GitHub Actions 手动验收
 
-仓库提供独立的 `External E2E` 手动工作流：`.github/workflows/external-e2e.yml`。
+仓库提供两个外部 E2E workflow：
+
+- `Release Gate`：`.github/workflows/release-gate.yml`，发布前必跑，固定 smoke，缺 secret 失败。
+- `External E2E`：`.github/workflows/external-e2e.yml`，手动排障/扩展验收用，可选择 phases。
 
 运行前在 GitHub Secrets 或 Variables 中配置：
 
@@ -108,10 +115,10 @@ uv run --extra dev python scripts/run_external_e2e.py \
 触发方式：
 
 1. 打开 GitHub Actions。
-2. 选择 `External E2E`。
-3. 点击 `Run workflow`。
-4. `phases` 默认 `smoke`；发布前推荐保持默认。
-5. 下载 `external-e2e-report` artifact，确认报告无 secret 泄漏。
+2. 发布前选择 `Release Gate`，点击 `Run workflow`；该 workflow 固定 `smoke`，缺 secret 会失败。
+3. 排障或扩展验收时选择 `External E2E`，点击 `Run workflow`。
+4. `External E2E` 的 `phases` 默认 `smoke`；排障时可改为 `quick` 或 `all,full-sweep`。
+5. 下载 `release-gate-e2e-report` 或 `external-e2e-report` artifact，确认报告无 secret 泄漏。
 
 ## 预检
 

@@ -1,0 +1,131 @@
+name: Release Gate
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      full_collab:
+        description: "Run all MiniMax collaboration E2E scenarios"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-gate-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  external-e2e-smoke:
+    name: Required External E2E Smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: frontend_wip/package-lock.json
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Install backend dependencies
+        run: uv sync --extra dev --frozen
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend_wip
+
+      - name: Install Playwright Chromium
+        run: uv run --extra dev playwright install --with-deps chromium
+
+      - name: Mask injected secrets
+        shell: bash
+        env:
+          MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY || vars.MINIMAX_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY || vars.DEEPSEEK_API_KEY }}
+          QWEN_API_KEY: ${{ secrets.QWEN_API_KEY || vars.QWEN_API_KEY }}
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY || vars.DASHSCOPE_API_KEY }}
+          MEMOX_FILE_SIGNING_SECRET: ${{ secrets.MEMOX_FILE_SIGNING_SECRET || vars.MEMOX_FILE_SIGNING_SECRET }}
+          MEMOX_ADMIN_PASSWORD: ${{ secrets.MEMOX_ADMIN_PASSWORD || vars.MEMOX_ADMIN_PASSWORD }}
+        run: |
+          for value in \
+            "$MINIMAX_API_KEY" \
+            "$DEEPSEEK_API_KEY" \
+            "$QWEN_API_KEY" \
+            "$DASHSCOPE_API_KEY" \
+            "$MEMOX_FILE_SIGNING_SECRET" \
+            "$MEMOX_ADMIN_PASSWORD"; do
+            if [ -n "$value" ]; then
+              echo "::add-mask::$value"
+            fi
+          done
+
+      - name: Validate required release gate secrets
+        shell: bash
+        env:
+          MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY || vars.MINIMAX_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY || vars.DEEPSEEK_API_KEY }}
+          QWEN_API_KEY: ${{ secrets.QWEN_API_KEY || vars.QWEN_API_KEY }}
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY || vars.DASHSCOPE_API_KEY }}
+          MEMOX_FILE_SIGNING_SECRET: ${{ secrets.MEMOX_FILE_SIGNING_SECRET || vars.MEMOX_FILE_SIGNING_SECRET }}
+        run: |
+          missing=()
+          for name in \
+            MINIMAX_API_KEY \
+            DEEPSEEK_API_KEY \
+            QWEN_API_KEY \
+            DASHSCOPE_API_KEY \
+            MEMOX_FILE_SIGNING_SECRET; do
+            if [ -z "${!name:-}" ]; then
+              missing+=("$name")
+            fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            printf 'Missing required release gate secret(s): %s\n' "${missing[*]}"
+            exit 1
+          fi
+
+      - name: Run release external E2E smoke
+        env:
+          MINIMAX_API_KEY: ${{ secrets.MINIMAX_API_KEY || vars.MINIMAX_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY || vars.DEEPSEEK_API_KEY }}
+          QWEN_API_KEY: ${{ secrets.QWEN_API_KEY || vars.QWEN_API_KEY }}
+          DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY || vars.DASHSCOPE_API_KEY }}
+          MEMOX_FILE_SIGNING_SECRET: ${{ secrets.MEMOX_FILE_SIGNING_SECRET || vars.MEMOX_FILE_SIGNING_SECRET }}
+          MEMOX_ADMIN_PASSWORD: ${{ secrets.MEMOX_ADMIN_PASSWORD || vars.MEMOX_ADMIN_PASSWORD }}
+          QWEN_MODEL: ${{ vars.QWEN_MODEL || 'qwen-plus' }}
+          I2V_TEST_MODEL: ${{ vars.I2V_TEST_MODEL || 'wan2.7-i2v' }}
+          I2V_TEST_EDIT_MODEL: ${{ vars.I2V_TEST_EDIT_MODEL || 'wan2.7-videoedit' }}
+          I2V_TEST_RESOLUTION: ${{ vars.I2V_TEST_RESOLUTION || '720P' }}
+          I2V_TEST_DURATION: ${{ vars.I2V_TEST_DURATION || '5' }}
+        run: |
+          args=(--phases smoke --report-path release-gate-e2e-report.md)
+          if [ "${{ inputs.full_collab || false }}" = "true" ]; then
+            args+=(--full-collab)
+          fi
+          uv run --extra dev python scripts/run_external_e2e.py "${args[@]}"
+
+      - name: Upload release gate report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-gate-e2e-report
+          path: release-gate-e2e-report.md
+          if-no-files-found: warn

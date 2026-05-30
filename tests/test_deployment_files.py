@@ -154,6 +154,38 @@ def test_backup_artifacts_are_documented_and_ignored() -> None:
     assert "Retry-After" in deployment
 
 
+def test_release_gate_requires_external_smoke_without_secret_skips() -> None:
+    workflow = (ROOT / ".github" / "workflows" / "release-gate.yml").read_text(encoding="utf-8")
+    readiness = (ROOT / "docs" / "RELEASE_READINESS.md").read_text(encoding="utf-8")
+    runbook = (ROOT / "docs" / "EXTERNAL_AGENT_E2E_RUNBOOK.md").read_text(encoding="utf-8")
+
+    assert "name: Release Gate" in workflow
+    assert 'tags:\n      - "v*"' in workflow
+    assert "scripts/run_external_e2e.py" in workflow
+    assert "--phases smoke" in workflow
+    assert "--allow-missing-secrets" not in workflow
+    assert "Missing required release gate secret" in workflow
+    assert "release-gate-e2e-report.md" in workflow
+    assert "release-gate-e2e-report" in workflow
+    for env_name in (
+        "MINIMAX_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "QWEN_API_KEY",
+        "DASHSCOPE_API_KEY",
+        "MEMOX_FILE_SIGNING_SECRET",
+    ):
+        assert env_name in workflow
+
+    assert "Release Gate" in readiness
+    assert "--phases smoke" in readiness
+    assert "--allow-missing-secrets" in readiness
+    assert "must fail the gate" in readiness
+    assert "release-gate-e2e-report" in readiness
+    assert ".github/workflows/release-gate.yml" in runbook
+    assert "缺少真实 provider secret 时必须失败" in runbook
+    assert "发布前选择 `Release Gate`" in runbook
+
+
 def test_recovery_runbook_documents_guarded_restore_flow() -> None:
     runbook = (ROOT / "docs" / "RECOVERY_RUNBOOK.md").read_text(encoding="utf-8")
 

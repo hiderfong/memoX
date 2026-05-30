@@ -102,10 +102,13 @@ uv run --extra dev python scripts/docker_smoke_test.py
 ```
 
 Real-key provider checks that require unrestricted external network access are
-tracked separately in `docs/EXTERNAL_AGENT_E2E_RUNBOOK.md`. Use the `External
-E2E` GitHub Actions workflow or run
-`uv run --extra dev python scripts/run_external_e2e.py --phases smoke` for
-DeepSeek, MiniMax, Qwen, DashScope I2V, and media job validation.
+the release gate. Before publishing a `v*` tag, run the `Release Gate` GitHub
+Actions workflow or push the tag and wait for it to complete. It runs
+`uv run --extra dev python scripts/run_external_e2e.py --phases smoke` without
+`--allow-missing-secrets`; missing DeepSeek, MiniMax, Qwen, DashScope, or file
+signing secrets must fail the gate rather than skipping phases. Attach the
+`release-gate-e2e-report` artifact to the release notes. Use
+`docs/EXTERNAL_AGENT_E2E_RUNBOOK.md` for manual troubleshooting.
 
 For a faster code-review loop, the following targeted tests cover the current
 task execution, tool policy, audit, and operational API paths:
