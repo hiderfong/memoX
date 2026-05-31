@@ -41,6 +41,7 @@ class AuthManager:
     def __init__(self, now_fn: Callable[[], float] | None = None):
         self._users: dict[str, User] = {}
         self._tokens: dict[str, dict] = {}  # token -> {username, role, display_name, exp}
+        self._static_tokens: dict[str, dict] = {}
         self._login_failures: dict[str, dict[str, float | int]] = {}
         self._now_fn = now_fn or time.time
 
@@ -133,13 +134,36 @@ class AuthManager:
             "role": user.role,
             "display_name": user.display_name,
             "exp": self._now() + self.TOKEN_TTL,
+            "token_type": "session",
         }
         return token
+
+    def add_static_token(
+        self,
+        token: str,
+        *,
+        username: str,
+        role: str,
+        display_name: str,
+        token_type: str = "static",
+    ) -> None:
+        token = (token or "").strip()
+        if not token:
+            return
+        self._static_tokens[token] = {
+            "username": username,
+            "role": role,
+            "display_name": display_name,
+            "token_type": token_type,
+        }
 
     def validate_token(self, token: str | None) -> dict | None:
         """验证 token 有效性，过期自动清除"""
         if not token or not isinstance(token, str):
             return None
+        static_info = self._static_tokens.get(token)
+        if static_info:
+            return static_info
         info = self._tokens.get(token)
         if not info:
             return None
@@ -194,7 +218,7 @@ def _get_auth_from_request(request: Request) -> AuthManager:
     return get_auth_manager()
 
 
-def init_auth(users: list[dict], app_state=None) -> AuthManager:
+def init_auth(users: list[dict], app_state=None, monitor_token: str | None = None) -> AuthManager:
     """初始化认证，users: [{"username":..,"password":..,"role":..,"display_name":..}]
     同时可接受 FastAPI app.state 用于后续 DI 覆盖。
     """
@@ -207,6 +231,13 @@ def init_auth(users: list[dict], app_state=None) -> AuthManager:
             role=u.get("role", "user"),
             display_name=u.get("display_name", u["username"]),
         )
+    _auth_manager.add_static_token(
+        monitor_token or "",
+        username="monitor",
+        role="monitor",
+        display_name="Production Monitor",
+        token_type="monitor",
+    )
     # 同时存到 app_state（如果传入了 FastAPI app实例）
     if app_state is not None:
         app_state._auth_manager = _auth_manager

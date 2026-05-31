@@ -13,6 +13,9 @@ Use this runbook when the `Production Monitor` workflow or
    `/api/system/diagnostics/export`.
 5. Check whether the alert is new or repeating by comparing recent workflow
    runs and operational events.
+6. If authentication fails, confirm the workflow uses
+   `MEMOX_PRODUCTION_MONITOR_TOKEN` and the deployment host uses the same value
+   as `MEMOX_MONITOR_TOKEN`.
 
 ## `public_health` Error
 

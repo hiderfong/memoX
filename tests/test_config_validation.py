@@ -58,6 +58,44 @@ def test_validate_config_accepts_auth_password_from_env(monkeypatch: pytest.Monk
     validate_config(cfg)
 
 
+def test_validate_config_rejects_short_monitor_token() -> None:
+    cfg = _base_config(
+        {
+            "enabled": True,
+            "monitor_token": "short",
+            "users": [
+                {
+                    "username": "admin",
+                    "password": "dev-password",
+                    "role": "admin",
+                }
+            ],
+        }
+    )
+
+    with pytest.raises(ConfigError, match="auth.monitor_token"):
+        validate_config(cfg)
+
+
+def test_validate_config_accepts_monitor_token_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MEMOX_MONITOR_TOKEN", "m" * 48)
+    cfg = _base_config(
+        {
+            "enabled": True,
+            "monitor_token": "${MEMOX_MONITOR_TOKEN}",
+            "users": [
+                {
+                    "username": "admin",
+                    "password": "dev-password",
+                    "role": "admin",
+                }
+            ],
+        }
+    )
+
+    validate_config(cfg)
+
+
 def test_validate_config_allows_disabled_auth_without_users() -> None:
     cfg = _base_config({"enabled": False, "users": []})
 

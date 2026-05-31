@@ -27,6 +27,7 @@ def permission_client(monkeypatch: pytest.MonkeyPatch):
             {"username": "admin", "password": "pw", "role": "admin", "display_name": "Admin"},
             {"username": "user", "password": "pw", "role": "user", "display_name": "User"},
         ],
+        monitor_token="monitor-token-" + ("x" * 32),
     )
     monkeypatch.setattr(api_module.app.state, "_auth_manager", auth, raising=False)
 
@@ -34,6 +35,7 @@ def permission_client(monkeypatch: pytest.MonkeyPatch):
         yield client, {
             "admin": {"Authorization": f"Bearer {auth.login('admin', 'pw')}"},
             "user": {"Authorization": f"Bearer {auth.login('user', 'pw')}"},
+            "monitor": {"Authorization": "Bearer monitor-token-" + ("x" * 32)},
         }
 
     api_module.app.router.lifespan_context = original_lifespan
@@ -222,3 +224,23 @@ def test_regular_user_cannot_access_admin_operations(
     response = client.request(method, path, headers=headers["user"], json=json_body)
 
     assert response.status_code == 403
+
+
+def test_monitor_token_can_only_read_monitor_endpoints(permission_client) -> None:
+    client, headers = permission_client
+    monitor_headers = headers["monitor"]
+
+    public_health = client.get("/api/health", headers=monitor_headers)
+    media_status = client.get("/api/videos/jobs/status", headers=monitor_headers)
+    events = client.get("/api/system/events?status=warning&limit=5", headers=monitor_headers)
+    tool_audit = client.get("/api/system/tool-audit?status=rejected&limit=5", headers=monitor_headers)
+
+    assert public_health.status_code == 200
+    assert media_status.status_code == 200
+    assert events.status_code == 200
+    assert tool_audit.status_code == 200
+
+    assert client.get("/api/documents", headers=monitor_headers).status_code == 403
+    assert client.get("/api/system/backups", headers=monitor_headers).status_code == 403
+    assert client.get("/api/system/diagnostics/export", headers=monitor_headers).status_code == 403
+    assert client.post("/api/system/maintenance/backup?force=true", headers=monitor_headers).status_code == 403

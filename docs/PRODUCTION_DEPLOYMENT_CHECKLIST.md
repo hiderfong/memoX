@@ -15,6 +15,7 @@ deployment to real users.
 Required production variables:
 
 - `MEMOX_ADMIN_PASSWORD`
+- `MEMOX_MONITOR_TOKEN`
 - `MEMOX_FILE_SIGNING_SECRET`
 - `DASHSCOPE_API_KEY`
 - `QWEN_API_KEY`
@@ -74,7 +75,7 @@ reachable:
 
 ```bash
 MEMOX_URL=https://memox.example.com \
-MEMOX_TOKEN=<admin-token> \
+MEMOX_TOKEN=<monitor-token> \
 uv run --extra dev python scripts/production_monitor_check.py
 ```
 
@@ -96,13 +97,14 @@ monitor.
 To run the probe from GitHub Actions, configure repository secrets or variables:
 
 - `MEMOX_PRODUCTION_URL`
-- `MEMOX_PRODUCTION_TOKEN` or `MEMOX_PRODUCTION_ADMIN_PASSWORD`
+- `MEMOX_PRODUCTION_MONITOR_TOKEN`
 
 Then run the `Production Monitor` workflow manually or leave its hourly schedule
-enabled. Prefer a scoped, revocable monitor token over the admin password for
-long-running automation. Each run writes a Step Summary and uploads the
-`production-monitor-report` artifact. Use
-`docs/PRODUCTION_MONITOR_RUNBOOK.md` for warning/error response steps.
+enabled. The workflow can still fall back to `MEMOX_PRODUCTION_TOKEN` or
+`MEMOX_PRODUCTION_ADMIN_PASSWORD`, but long-running automation should use the
+scoped, revocable monitor token. Each run writes a Step Summary and uploads the
+`production-monitor-report` artifact. Use `docs/PRODUCTION_MONITOR_RUNBOOK.md`
+for warning/error response steps.
 
 ## First 24 Hours
 

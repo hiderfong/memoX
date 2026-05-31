@@ -3,6 +3,7 @@
 # To create a local config:
 #   cp config.example.yaml config.yaml
 #   export MEMOX_ADMIN_PASSWORD=...
+#   export MEMOX_MONITOR_TOKEN=...
 #   export DASHSCOPE_API_KEY=...
 #   export MEMOX_FILE_SIGNING_SECRET=...
 
@@ -202,6 +203,9 @@ ops:
 
 auth:
   enabled: true
+  # Optional read-only token for production monitoring automation. It can only
+  # access the fixed GET endpoints used by scripts/production_monitor_check.py.
+  monitor_token: "${MEMOX_MONITOR_TOKEN:-}"
   public_paths:
     - "/api/auth/login"
     - "/api/health"

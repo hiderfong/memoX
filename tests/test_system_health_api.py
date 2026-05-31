@@ -123,9 +123,11 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
             {"username": "user", "password": "pw", "role": "user", "display_name": "User"},
         ],
         app_state=api_module.app.state,
+        monitor_token="monitor-token-" + ("x" * 32),
     )
     admin_token = auth.login("admin", "pw")
     user_token = auth.login("user", "pw")
+    monitor_headers = {"Authorization": "Bearer monitor-token-" + ("x" * 32)}
 
     try:
         with TestClient(api_module.app, raise_server_exceptions=False) as client:
@@ -165,6 +167,16 @@ def test_system_health_requires_admin_and_reports_readiness(monkeypatch, tmp_pat
                 headers={"Authorization": f"Bearer {user_token}"},
             )
             assert tool_audit_forbidden.status_code == 403
+            monitor_health = client.get("/api/system/health", headers=monitor_headers)
+            assert monitor_health.status_code == 200
+            monitor_events = client.get("/api/system/events?limit=5", headers=monitor_headers)
+            assert monitor_events.status_code == 200
+            monitor_tool_audit = client.get("/api/system/tool-audit?limit=5", headers=monitor_headers)
+            assert monitor_tool_audit.status_code == 200
+            monitor_backups = client.get("/api/system/backups", headers=monitor_headers)
+            assert monitor_backups.status_code == 403
+            monitor_backup_write = client.post("/api/system/maintenance/backup?force=true", headers=monitor_headers)
+            assert monitor_backup_write.status_code == 403
             repair_forbidden = client.post("/api/system/indexes/repair", headers={"Authorization": f"Bearer {user_token}"})
             assert repair_forbidden.status_code == 403
             diagnostics_forbidden = client.get(

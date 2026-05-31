@@ -45,6 +45,10 @@ def validate_config(config: "Config") -> None:
         if not config.auth.users:
             errors.append("auth.enabled=true 时至少需要配置一个 auth.users 用户")
 
+        monitor_token = config.auth.resolve_monitor_token()
+        if monitor_token and len(monitor_token) < 32:
+            errors.append("auth.monitor_token 长度至少应为 32 个字符")
+
         seen_usernames: set[str] = set()
         for user in config.auth.users:
             if user.username in seen_usernames:
@@ -349,6 +353,10 @@ class AuthConfig:
         "/api/auth/login", "/api/health", "/api/docs", "/api/redoc", "/api/openapi.json"
     ])
     users: list[AuthUserConfig] = field(default_factory=list)
+    monitor_token: str = ""
+
+    def resolve_monitor_token(self) -> str:
+        return resolve_env_value(self.monitor_token).strip()
 
 
 @dataclass
@@ -497,6 +505,7 @@ class Config:
                 "/api/auth/login", "/api/health", "/api/docs", "/api/redoc", "/api/openapi.json"
             ]),
             users=auth_users,
+            monitor_token=auth_data.get("monitor_token", ""),
         )
 
         memory = MemoryConfig(**data.get("memory", {}))

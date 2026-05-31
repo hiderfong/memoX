@@ -97,6 +97,7 @@ auth:
   users:
     - username: "admin"
       password: "${MEMOX_ADMIN_PASSWORD}"
+  monitor_token: "${MEMOX_MONITOR_TOKEN:-}"
 
 file_access:
   signing_secret: "${MEMOX_FILE_SIGNING_SECRET:-}"
@@ -211,7 +212,7 @@ JSON，便于接入 cron、GitHub Actions 或外部 uptime 监控：
 
 ```bash
 MEMOX_URL=https://memox.example.com \
-MEMOX_TOKEN=<admin-token> \
+MEMOX_TOKEN=<monitor-token> \
 uv run --extra dev python scripts/production_monitor_check.py
 ```
 

@@ -258,6 +258,14 @@ _PUBLIC_PATHS: set[str] = {
 }
 
 
+_MONITOR_READONLY_PATHS: set[str] = {
+    "/api/system/health",
+    "/api/videos/jobs/status",
+    "/api/system/events",
+    "/api/system/tool-audit",
+}
+
+
 _DEFAULT_FILE_ACCESS = FileAccessConfig()
 
 
@@ -372,11 +380,18 @@ async def auth_middleware(request: Request, call_next):
         token = auth_header.removeprefix("Bearer ").strip()
 
     auth = _get_auth_from_request(request)
-    if not auth.validate_token(token):
+    token_info = auth.validate_token(token)
+    if not token_info:
         return JSONResponse(
             {"detail": "未登录或 Token 已过期，请重新登录"},
             status_code=401,
         )
+    if token_info.get("token_type") == "monitor":
+        if request.method != "GET" or path not in _MONITOR_READONLY_PATHS:
+            return JSONResponse(
+                {"detail": "Monitor token is read-only and limited to production monitoring endpoints"},
+                status_code=403,
+            )
 
     return await call_next(request)
 
@@ -412,6 +427,7 @@ async def startup():
                 for u in _config.auth.users
             ],
             app_state=app.state,
+            monitor_token=_config.auth.resolve_monitor_token(),
         )
         _PUBLIC_PATHS.update(_config.auth.public_paths)
         logger.info(f"   - 认证已启用，{len(_config.auth.users)} 个用户")

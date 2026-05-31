@@ -100,11 +100,14 @@ def test_config_example_is_container_friendly() -> None:
     assert "/api/redoc" in config["auth"]["public_paths"]
     assert "/api/openapi.json" in config["auth"]["public_paths"]
     assert "/api/files/" not in config["auth"]["public_paths"]
+    assert config["auth"]["monitor_token"] == "${MEMOX_MONITOR_TOKEN:-}"
     assert config["file_access"]["signing_secret"] == "${MEMOX_FILE_SIGNING_SECRET:-}"
     assert config["file_access"]["signed_url_ttl_seconds"] == 300
+    assert "MEMOX_MONITOR_TOKEN=" in env_example
     assert "MEMOX_FILE_SIGNING_SECRET=" in env_example
     for env_name in (
         "MEMOX_ADMIN_PASSWORD",
+        "MEMOX_MONITOR_TOKEN",
         "MEMOX_FILE_SIGNING_SECRET",
         "DASHSCOPE_API_KEY",
         "QWEN_API_KEY",
@@ -135,6 +138,7 @@ def test_backup_artifacts_are_documented_and_ignored() -> None:
     assert "RECOVERY_RUNBOOK.md" in deployment
     assert "PRODUCTION_DEPLOYMENT_CHECKLIST.md" in deployment
     assert "MEMOX_ADMIN_PASSWORD" in production_checklist
+    assert "MEMOX_MONITOR_TOKEN" in production_checklist
     assert "ops.archive_mirror_dir" in production_checklist
     assert "server.cors_origins" in production_checklist
     assert "ops_check.py --create-backup --restore-drill" in production_checklist
@@ -155,11 +159,13 @@ def test_backup_artifacts_are_documented_and_ignored() -> None:
     assert ".github/workflows/production-monitor.yml" in deployment
     assert "Production Monitor" in production_checklist
     assert "MEMOX_PRODUCTION_URL" in production_checklist
+    assert "MEMOX_PRODUCTION_MONITOR_TOKEN" in production_checklist
     assert "MEMOX_PRODUCTION_TOKEN" in production_checklist
     assert "production-monitor-report" in production_checklist
     assert "PRODUCTION_MONITOR_RUNBOOK.md" in deployment
     assert "production-monitor-report" in deployment
     assert "public_health" in monitor_runbook
+    assert "MEMOX_PRODUCTION_MONITOR_TOKEN" in monitor_runbook
     assert "media_jobs" in monitor_runbook
     assert "tool-audit" in monitor_runbook
     assert "/api/system/health" in deployment
@@ -252,6 +258,7 @@ def test_production_monitor_workflow_uses_only_configured_secrets() -> None:
     assert "production-monitor-summary.md" in workflow_text
     assert "Missing required production monitor secret" in workflow_text
     assert "MEMOX_PRODUCTION_URL" in workflow_text
+    assert "MEMOX_PRODUCTION_MONITOR_TOKEN" in workflow_text
     assert "MEMOX_PRODUCTION_TOKEN" in workflow_text
     assert "MEMOX_PRODUCTION_ADMIN_PASSWORD" in workflow_text
     assert "https://memox.example.com" not in workflow_text

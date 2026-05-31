@@ -589,7 +589,7 @@ def _index_audit_report() -> dict:
 @router.get("/health")
 async def system_health(
     request: Request,
-    _: Annotated[AuthUser, require_role("admin")],
+    _: Annotated[AuthUser, require_role("admin", "monitor")],
 ) -> dict:
     """Return an authenticated operational readiness report."""
     return _system_health_report(request)
@@ -730,7 +730,7 @@ async def export_system_diagnostics(
 
 @router.get("/events")
 async def list_system_events(
-    _: Annotated[AuthUser, require_role("admin")],
+    _: Annotated[AuthUser, require_role("admin", "monitor")],
     event_type: str | None = Query(default=None),
     status: str | None = Query(default=None),
     limit: int = Query(default=20, ge=1, le=100),
@@ -763,7 +763,7 @@ async def list_system_events(
 
 @router.get("/tool-audit")
 async def list_system_tool_audit(
-    _: Annotated[AuthUser, require_role("admin")],
+    _: Annotated[AuthUser, require_role("admin", "monitor")],
     tool_name: str | None = Query(default=None),
     status: str | None = Query(default=None, pattern="^(success|error|rejected)$"),
     worker_id: str | None = Query(default=None),

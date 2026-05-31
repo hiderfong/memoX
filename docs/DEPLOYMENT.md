@@ -23,6 +23,7 @@ Edit `.env` and set at least:
 
 ```bash
 MEMOX_ADMIN_PASSWORD=use-a-long-random-password
+MEMOX_MONITOR_TOKEN=use-a-long-random-monitor-token
 DASHSCOPE_API_KEY=your-dashscope-key
 QWEN_API_KEY=your-qwen-key
 DEEPSEEK_API_KEY=your-deepseek-key
@@ -186,7 +187,7 @@ host:
 
 ```bash
 MEMOX_URL=https://memox.example.com \
-MEMOX_TOKEN=<admin-token> \
+MEMOX_TOKEN=<monitor-token> \
 uv run --extra dev python scripts/production_monitor_check.py
 ```
 
@@ -209,10 +210,13 @@ traffic level of the deployment.
 
 The repository also includes `.github/workflows/production-monitor.yml` for
 scheduled or manual GitHub Actions monitoring. Configure
-`MEMOX_PRODUCTION_URL` plus either `MEMOX_PRODUCTION_TOKEN` or
-`MEMOX_PRODUCTION_ADMIN_PASSWORD` as repository secrets or variables. The
-workflow defaults to `--strict`, so warnings fail the run and can trigger normal
-GitHub notification channels. Each run writes a Step Summary and uploads a
+`MEMOX_PRODUCTION_URL` plus `MEMOX_PRODUCTION_MONITOR_TOKEN` as repository
+secrets or variables. The monitor token should match `MEMOX_MONITOR_TOKEN` on
+the deployment host. The workflow can still fall back to
+`MEMOX_PRODUCTION_TOKEN` or `MEMOX_PRODUCTION_ADMIN_PASSWORD`, but the scoped
+monitor token is safer for long-running automation. The workflow defaults to
+`--strict`, so warnings fail the run and can trigger normal GitHub notification
+channels. Each run writes a Step Summary and uploads a
 `production-monitor-report` artifact. Use
 [PRODUCTION_MONITOR_RUNBOOK.md](PRODUCTION_MONITOR_RUNBOOK.md) when the probe
 reports `warning` or `error`.

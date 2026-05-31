@@ -56,6 +56,25 @@ def test_tokens_expire_and_logout_revokes_token() -> None:
     assert auth.active_token_count() == 0
 
 
+def test_static_monitor_token_validates_without_session_expiry() -> None:
+    auth = AuthManager(now_fn=lambda: 100.0)
+    auth.add_static_token(
+        "monitor-token",
+        username="monitor",
+        role="monitor",
+        display_name="Production Monitor",
+        token_type="monitor",
+    )
+
+    assert auth.validate_token("monitor-token") == {
+        "username": "monitor",
+        "role": "monitor",
+        "display_name": "Production Monitor",
+        "token_type": "monitor",
+    }
+    assert auth.active_token_count() == 0
+
+
 def test_login_endpoint_returns_retry_after_when_locked(monkeypatch: pytest.MonkeyPatch) -> None:
     from src.web import api as api_module
 
