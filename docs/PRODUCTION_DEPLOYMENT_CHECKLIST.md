@@ -93,6 +93,15 @@ JSON snapshot. `error` exits non-zero; `--strict` also exits non-zero on
 `warning`, which is useful for cron, GitHub Actions, or an external uptime
 monitor.
 
+To run the probe from GitHub Actions, configure repository secrets or variables:
+
+- `MEMOX_PRODUCTION_URL`
+- `MEMOX_PRODUCTION_TOKEN` or `MEMOX_PRODUCTION_ADMIN_PASSWORD`
+
+Then run the `Production Monitor` workflow manually or leave its hourly schedule
+enabled. Prefer a scoped, revocable monitor token over the admin password for
+long-running automation.
+
 ## First 24 Hours
 
 Watch these signals closely:

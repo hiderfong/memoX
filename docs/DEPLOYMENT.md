@@ -207,6 +207,13 @@ Tune the queue and audit thresholds with `--max-media-pending`,
 `--max-recent-tool-errors`, and `--max-recent-tool-rejections` for the expected
 traffic level of the deployment.
 
+The repository also includes `.github/workflows/production-monitor.yml` for
+scheduled or manual GitHub Actions monitoring. Configure
+`MEMOX_PRODUCTION_URL` plus either `MEMOX_PRODUCTION_TOKEN` or
+`MEMOX_PRODUCTION_ADMIN_PASSWORD` as repository secrets or variables. The
+workflow defaults to `--strict`, so warnings fail the run and can trigger normal
+GitHub notification channels.
+
 ## Upgrade
 
 ```bash

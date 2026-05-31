@@ -150,6 +150,10 @@ def test_backup_artifacts_are_documented_and_ignored() -> None:
     assert "scripts/production_monitor_check.py" in deployment
     assert "production_monitor_check.py" in production_checklist
     assert "MEMOX_TOKEN" in production_checklist
+    assert ".github/workflows/production-monitor.yml" in deployment
+    assert "Production Monitor" in production_checklist
+    assert "MEMOX_PRODUCTION_URL" in production_checklist
+    assert "MEMOX_PRODUCTION_TOKEN" in production_checklist
     assert "/api/system/health" in deployment
     assert "/api/system/backups" in deployment
     assert "/api/system/events" in deployment
@@ -217,9 +221,28 @@ def test_release_gate_requires_external_smoke_without_secret_skips() -> None:
 
 
 def test_workflows_opt_into_node24_action_runtime() -> None:
-    for workflow_name in ("ci.yml", "external-e2e.yml", "release-gate.yml"):
+    for workflow_name in ("ci.yml", "external-e2e.yml", "release-gate.yml", "production-monitor.yml"):
         workflow = yaml.safe_load((ROOT / ".github" / "workflows" / workflow_name).read_text(encoding="utf-8"))
         assert workflow["env"]["FORCE_JAVASCRIPT_ACTIONS_TO_NODE24"] == "true"
+
+
+def test_production_monitor_workflow_uses_only_configured_secrets() -> None:
+    workflow_path = ROOT / ".github" / "workflows" / "production-monitor.yml"
+    workflow_text = workflow_path.read_text(encoding="utf-8")
+    workflow = yaml.safe_load(workflow_text)
+
+    assert workflow["name"] == "Production Monitor"
+    assert "workflow_dispatch" in workflow[True]
+    assert "schedule" in workflow[True]
+    assert workflow["permissions"]["contents"] == "read"
+    assert "scripts/production_monitor_check.py" in workflow_text
+    assert "MEMOX_PRODUCTION_URL" in workflow_text
+    assert "MEMOX_PRODUCTION_TOKEN" in workflow_text
+    assert "MEMOX_PRODUCTION_ADMIN_PASSWORD" in workflow_text
+    assert "https://memox.example.com" not in workflow_text
+    assert "<admin-token>" not in workflow_text
+    assert "sk-" not in workflow_text
+    assert "--strict" in workflow_text
 
 
 def test_external_media_job_smoke_accepts_direct_asset_poll_response() -> None:
