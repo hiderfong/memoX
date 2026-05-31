@@ -194,6 +194,12 @@ def test_release_gate_requires_external_smoke_without_secret_skips() -> None:
     assert "pytest tests/e2e -q -s --tb=short -ra" in runbook
 
 
+def test_workflows_opt_into_node24_action_runtime() -> None:
+    for workflow_name in ("ci.yml", "external-e2e.yml", "release-gate.yml"):
+        workflow = yaml.safe_load((ROOT / ".github" / "workflows" / workflow_name).read_text(encoding="utf-8"))
+        assert workflow["env"]["FORCE_JAVASCRIPT_ACTIONS_TO_NODE24"] == "true"
+
+
 def test_external_media_job_smoke_accepts_direct_asset_poll_response() -> None:
     wrapped = {"asset": {"id": "asset_1", "status": "queued"}}
     direct = {"id": "asset_1", "status": "success", "url": "https://cdn/video.mp4"}
