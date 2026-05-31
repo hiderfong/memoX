@@ -147,6 +147,9 @@ def test_backup_artifacts_are_documented_and_ignored() -> None:
     assert "scripts/restore_drill.py" in deployment
     assert "scripts/index_consistency.py" in deployment
     assert "scripts/ops_check.py" in deployment
+    assert "scripts/production_monitor_check.py" in deployment
+    assert "production_monitor_check.py" in production_checklist
+    assert "MEMOX_TOKEN" in production_checklist
     assert "/api/system/health" in deployment
     assert "/api/system/backups" in deployment
     assert "/api/system/events" in deployment

@@ -67,6 +67,32 @@ After logging in as admin, confirm:
 - I2V job queue reports zero unexpected persisted running jobs.
 - A diagnostics export can be generated and stored securely.
 
+## Monitoring Probe
+
+Run the read-only monitoring probe from a trusted admin host after the service is
+reachable:
+
+```bash
+MEMOX_URL=https://memox.example.com \
+MEMOX_TOKEN=<admin-token> \
+uv run --extra dev python scripts/production_monitor_check.py
+```
+
+If a long-lived token is not available, let the probe log in with the admin
+password supplied by the host secret store:
+
+```bash
+MEMOX_URL=https://memox.example.com \
+MEMOX_ADMIN_PASSWORD=<admin-password> \
+uv run --extra dev python scripts/production_monitor_check.py --strict
+```
+
+The probe checks `/api/health`, `/api/system/health`, media job pressure,
+recent warning/error events, and tool audit error/rejection volume. It prints a
+JSON snapshot. `error` exits non-zero; `--strict` also exits non-zero on
+`warning`, which is useful for cron, GitHub Actions, or an external uptime
+monitor.
+
 ## First 24 Hours
 
 Watch these signals closely:

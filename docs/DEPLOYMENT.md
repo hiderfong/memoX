@@ -179,6 +179,34 @@ uv run --extra dev python scripts/ops_check.py --smoke
 uv run --extra dev python scripts/ops_check.py --restore-drill
 ```
 
+## External Monitoring Probe
+
+For production uptime monitoring, run the read-only probe from a trusted admin
+host:
+
+```bash
+MEMOX_URL=https://memox.example.com \
+MEMOX_TOKEN=<admin-token> \
+uv run --extra dev python scripts/production_monitor_check.py
+```
+
+The probe collects `/api/health`, `/api/system/health`,
+`/api/videos/jobs/status`, recent operational warnings/errors, and recent tool
+audit errors/rejections. It prints a JSON report with `status` set to `ok`,
+`warning`, or `error`. Use `--strict` when the scheduler should treat warnings
+as a failed check:
+
+```bash
+MEMOX_URL=https://memox.example.com \
+MEMOX_ADMIN_PASSWORD=<admin-password> \
+uv run --extra dev python scripts/production_monitor_check.py --strict
+```
+
+Tune the queue and audit thresholds with `--max-media-pending`,
+`--max-media-persisted-queued`, `--max-media-persisted-running`,
+`--max-recent-tool-errors`, and `--max-recent-tool-rejections` for the expected
+traffic level of the deployment.
+
 ## Upgrade
 
 ```bash
