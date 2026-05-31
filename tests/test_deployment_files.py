@@ -76,6 +76,7 @@ def test_config_example_is_container_friendly() -> None:
     config = yaml.safe_load((ROOT / "config.example.yaml").read_text(encoding="utf-8"))
     local_config = yaml.safe_load((ROOT / "config.yaml").read_text(encoding="utf-8"))
     env_example = (ROOT / ".env.example").read_text(encoding="utf-8")
+    production_env_example = (ROOT / ".env.production.example").read_text(encoding="utf-8")
     api_py = (ROOT / "src" / "web" / "api.py").read_text(encoding="utf-8")
 
     assert config["app"]["debug"] is False
@@ -102,21 +103,39 @@ def test_config_example_is_container_friendly() -> None:
     assert config["file_access"]["signing_secret"] == "${MEMOX_FILE_SIGNING_SECRET:-}"
     assert config["file_access"]["signed_url_ttl_seconds"] == 300
     assert "MEMOX_FILE_SIGNING_SECRET=" in env_example
+    for env_name in (
+        "MEMOX_ADMIN_PASSWORD",
+        "MEMOX_FILE_SIGNING_SECRET",
+        "DASHSCOPE_API_KEY",
+        "QWEN_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "MINIMAX_API_KEY",
+    ):
+        assert f"{env_name}=" in production_env_example
+    assert "replace-with-long-random-admin-password" in production_env_example
 
 
 def test_backup_artifacts_are_documented_and_ignored() -> None:
     gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
     dockerignore = (ROOT / ".dockerignore").read_text(encoding="utf-8")
     deployment = (ROOT / "docs" / "DEPLOYMENT.md").read_text(encoding="utf-8")
+    production_checklist = (ROOT / "docs" / "PRODUCTION_DEPLOYMENT_CHECKLIST.md").read_text(encoding="utf-8")
     readiness = (ROOT / "docs" / "RELEASE_READINESS.md").read_text(encoding="utf-8")
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
     assert "backups/" in gitignore
     assert "backups" in dockerignore
+    assert "!.env.production.example" in gitignore
     assert "docs/RELEASE_READINESS.md" in readme
     assert "docs/RECOVERY_RUNBOOK.md" in readme
+    assert "docs/PRODUCTION_DEPLOYMENT_CHECKLIST.md" in readme
     assert "RELEASE_READINESS.md" in deployment
     assert "RECOVERY_RUNBOOK.md" in deployment
+    assert "PRODUCTION_DEPLOYMENT_CHECKLIST.md" in deployment
+    assert "MEMOX_ADMIN_PASSWORD" in production_checklist
+    assert "ops.archive_mirror_dir" in production_checklist
+    assert "server.cors_origins" in production_checklist
+    assert "ops_check.py --create-backup --restore-drill" in production_checklist
     assert "Release Gate" in readiness
     assert "Tool Permission Review" in readiness
     assert "Background Task Checks" in readiness

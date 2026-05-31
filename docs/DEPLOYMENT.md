@@ -15,7 +15,7 @@ incidents.
 ## First Start
 
 ```bash
-cp .env.example .env
+cp .env.production.example .env
 cp config.example.yaml config.yaml
 ```
 
@@ -24,10 +24,15 @@ Edit `.env` and set at least:
 ```bash
 MEMOX_ADMIN_PASSWORD=use-a-long-random-password
 DASHSCOPE_API_KEY=your-dashscope-key
+QWEN_API_KEY=your-qwen-key
+DEEPSEEK_API_KEY=your-deepseek-key
+MINIMAX_API_KEY=your-minimax-key
 MEMOX_FILE_SIGNING_SECRET=use-another-long-random-secret
 ```
 
 If you change the default provider or Worker templates in `config.yaml`, also fill the matching provider keys.
+For the production host-by-host checklist, use
+[PRODUCTION_DEPLOYMENT_CHECKLIST.md](PRODUCTION_DEPLOYMENT_CHECKLIST.md).
 Configure browser access through `server.cors_origins` in `config.yaml`. Keep
 the list limited to the deployed React UI origins, for example your production
 domain and any trusted internal admin domain. Do not rely on hard-coded public

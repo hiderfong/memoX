@@ -38,6 +38,7 @@ memoX/
 ├── config.yaml                # 配置文件
 ├── config.example.yaml        # 可公开的配置模板
 ├── .env.example               # 环境变量模板
+├── .env.production.example    # 生产环境变量模板
 ├── pyproject.toml             # Python 依赖与工具配置
 └── uv.lock                    # Python 锁文件
 ```
@@ -56,7 +57,12 @@ cd frontend_wip && npm ci
 
 ### 2. 配置
 
-仓库提供了 `config.example.yaml` 和 `.env.example` 作为可公开模板。首次启动前至少设置管理员密码；如果使用默认 DashScope 配置，还需要设置 `DASHSCOPE_API_KEY`。如需让外部服务短时拉取本地上传文件，还需要设置 `MEMOX_FILE_SIGNING_SECRET`。
+仓库提供了 `config.example.yaml`、`.env.example` 和 `.env.production.example`
+作为可公开模板。首次启动前至少设置管理员密码；如果使用默认 DashScope
+配置，还需要设置 `DASHSCOPE_API_KEY`。如需让外部服务短时拉取本地上传文件，
+还需要设置 `MEMOX_FILE_SIGNING_SECRET`。生产部署请优先按
+`docs/PRODUCTION_DEPLOYMENT_CHECKLIST.md` 检查完整 secret、持久化路径、备份、
+反代/TLS 和监控。
 
 ```bash
 # 如需从模板重建本地配置
