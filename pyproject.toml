@@ -1,6 +1,6 @@
 [project]
 name = "memox"
-version = "0.1.0"
+version = "1.0.0"
 description = "Multi-agent collaborative knowledge management platform with RAG, scheduling, and document intelligence"
 readme = "README.md"
 license = "MIT"
@@ -18,7 +18,7 @@ keywords = [
     "vector-search",
 ]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Framework :: AsyncIO",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
