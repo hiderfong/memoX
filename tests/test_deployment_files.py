@@ -4,6 +4,8 @@ from pathlib import Path
 
 import yaml
 
+from scripts.run_external_e2e import extract_media_asset
+
 ROOT = Path(__file__).parents[1]
 
 
@@ -189,6 +191,14 @@ def test_release_gate_requires_external_smoke_without_secret_skips() -> None:
     assert '"tests/e2e", "-q", "-s", "--tb=short", "-ra"' in external_script
     assert '"tests/e2e", "-m", "e2e"' not in external_script
     assert "pytest tests/e2e -q -s --tb=short -ra" in runbook
+
+
+def test_external_media_job_smoke_accepts_direct_asset_poll_response() -> None:
+    wrapped = {"asset": {"id": "asset_1", "status": "queued"}}
+    direct = {"id": "asset_1", "status": "success", "url": "https://cdn/video.mp4"}
+
+    assert extract_media_asset(wrapped) == {"id": "asset_1", "status": "queued"}
+    assert extract_media_asset(direct) == direct
 
 
 def test_recovery_runbook_documents_guarded_restore_flow() -> None:

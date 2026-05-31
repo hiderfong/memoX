@@ -20,7 +20,7 @@ import sys
 import tempfile
 import time
 import zlib
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -352,6 +352,16 @@ def write_png(path: Path, width: int = 512, height: int = 512, colors: tuple[int
     )
 
 
+def extract_media_asset(payload: Mapping[str, object]) -> dict[str, object]:
+    """Accept both wrapped and direct media asset API response shapes."""
+    wrapped = payload.get("asset")
+    if isinstance(wrapped, dict):
+        return wrapped
+    if isinstance(payload.get("id"), str) and isinstance(payload.get("status"), str):
+        return dict(payload)
+    raise KeyError("asset")
+
+
 async def i2v_direct() -> str:
     sys.path.insert(0, str(ROOT))
     from src.imaging.i2v_client import DashScopeImageToVideoClient
@@ -498,12 +508,12 @@ async def media_job_smoke() -> str:
                     },
                 )
                 enqueue.raise_for_status()
-                asset = enqueue.json()["asset"]
+                asset = extract_media_asset(enqueue.json())
                 asset_id = asset["id"]
                 for _attempt in range(int(os.environ.get("MEDIA_JOB_POLL_ATTEMPTS", "180"))):
                     item_response = await client.get(f"http://127.0.0.1:{port}/api/videos/assets/{asset_id}")
                     item_response.raise_for_status()
-                    item = item_response.json()["asset"]
+                    item = extract_media_asset(item_response.json())
                     if item["status"] == "success":
                         if not item.get("url", "").startswith(("http://", "https://")):
                             raise AssertionError(f"media job URL is invalid: {item.get('url', '')[:120]}")
