@@ -92,6 +92,12 @@ jobs:
           fi
           if [ "${#missing[@]}" -gt 0 ]; then
             printf 'Missing required production monitor secret(s): %s\n' "${missing[*]}"
+            {
+              echo "## MemoX Production Monitor"
+              echo ""
+              echo "- Status: **ERROR**"
+              echo "- Missing configuration: ${missing[*]}"
+            } | tee production-monitor-summary.md >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
 
@@ -108,6 +114,8 @@ jobs:
           MAX_RECENT_TOOL_REJECTIONS_INPUT: ${{ inputs.max_recent_tool_rejections || '20' }}
         run: |
           args=(
+            --output production-monitor-report.json
+            --summary-output production-monitor-summary.md
             --max-media-pending "$MAX_MEDIA_PENDING_INPUT"
             --max-media-persisted-queued "$MAX_MEDIA_PERSISTED_QUEUED_INPUT"
             --max-media-persisted-running "$MAX_MEDIA_PERSISTED_RUNNING_INPUT"
@@ -117,4 +125,21 @@ jobs:
           if [ "$STRICT_INPUT" = "true" ]; then
             args+=(--strict)
           fi
+          set +e
           uv run --extra dev python scripts/production_monitor_check.py "${args[@]}"
+          monitor_status=$?
+          set -e
+          if [ -f production-monitor-summary.md ]; then
+            cat production-monitor-summary.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+          exit "$monitor_status"
+
+      - name: Upload production monitor report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: production-monitor-report
+          path: |
+            production-monitor-report.json
+            production-monitor-summary.md
+          if-no-files-found: warn

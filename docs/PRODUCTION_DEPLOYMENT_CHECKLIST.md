@@ -100,7 +100,9 @@ To run the probe from GitHub Actions, configure repository secrets or variables:
 
 Then run the `Production Monitor` workflow manually or leave its hourly schedule
 enabled. Prefer a scoped, revocable monitor token over the admin password for
-long-running automation.
+long-running automation. Each run writes a Step Summary and uploads the
+`production-monitor-report` artifact. Use
+`docs/PRODUCTION_MONITOR_RUNBOOK.md` for warning/error response steps.
 
 ## First 24 Hours
 

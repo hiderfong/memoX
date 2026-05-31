@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from scripts.production_monitor_check import Thresholds, evaluate_snapshot, overall_status
+from scripts.production_monitor_check import Thresholds, build_markdown_summary, evaluate_snapshot, overall_status
 
 
 def _healthy_snapshot(**overrides: dict[str, Any]) -> dict[str, Any]:
@@ -105,3 +105,22 @@ def test_evaluate_snapshot_fails_on_service_or_task_errors() -> None:
         for check in result["checks"]
         if check["status"] == "error"
     } >= {"public_health", "system_health", "readiness_checks", "task_jobs", "ops_error_events"}
+
+
+def test_markdown_summary_highlights_metrics_and_attention_items() -> None:
+    snapshot = _healthy_snapshot(
+        media_jobs={"runtime_pending": 2, "persisted_queued": 21, "persisted_running": "not-a-number"},
+        warning_events={"total": 1, "count": 1},
+        tool_rejections={"total": 21, "count": 21},
+    )
+    evaluation = evaluate_snapshot(snapshot, Thresholds())
+    summary = build_markdown_summary({"base_url": "https://memo.example", **evaluation, "snapshot": snapshot})
+
+    assert "## MemoX Production Monitor" in summary
+    assert "Status: **WARNING**" in summary
+    assert "| Persisted queued media jobs | 21 |" in summary
+    assert "| Recent tool rejections | 21 |" in summary
+    assert "### Attention" in summary
+    assert "`media_jobs` is `warning`" in summary
+    assert "Bearer" not in summary
+    assert "sk-" not in summary

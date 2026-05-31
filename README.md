@@ -218,6 +218,7 @@ uv run --extra dev python scripts/production_monitor_check.py
 服务启动后还会按 `ops.auto_backup_*` 配置执行后台备份维护：默认每 24 小时备份 `config.yaml`、`data/`、`workspace/`，并保留最近 14 个本地归档；最近一次自动维护结果会显示在管理员系统状态页，管理员也可以在该页面手动触发一次即时备份。设置 `ops.archive_mirror_dir` 后，自动/手动备份和诊断包会额外镜像到该目录下的 `backups/` 与 `diagnostics/`，适合指向挂载盘或宿主机外部同步目录。后台备份不包含主机上的 `.env`；升级、迁移或外部归档前仍建议使用上面的 CLI 备份命令做一次完整校验。
 
 真实用户长期运行前，建议先按 [docs/RELEASE_READINESS.md](docs/RELEASE_READINESS.md) 完成发布前清单，再按 [docs/RECOVERY_RUNBOOK.md](docs/RECOVERY_RUNBOOK.md) 做一次恢复演练；它把诊断导出、备份选择、预检、API 恢复、离线恢复、索引修复和恢复后验收串成了维护窗口操作顺序。
+生产监控告警后的处理顺序见 [docs/PRODUCTION_MONITOR_RUNBOOK.md](docs/PRODUCTION_MONITOR_RUNBOOK.md)。
 
 Docker 镜像默认不安装 `sentence-transformers`/Streamlit 这类重依赖。需要本地 embedding 时使用 `uv sync --extra local-embeddings`，需要旧的 Streamlit 诊断/兼容界面时使用 `uv run --extra ui streamlit run src/ui/streamlit_app.py`；该诊断入口不会内置默认密码，自动登录需显式设置 `MEMOX_STREAMLIT_USERNAME` 和 `MEMOX_STREAMLIT_PASSWORD`。
 

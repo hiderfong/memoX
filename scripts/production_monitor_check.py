@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin
 
@@ -40,6 +41,13 @@ def _check(name: str, status: str, message: str, details: dict[str, Any] | None 
 def overall_status(checks: list[dict[str, Any]]) -> str:
     rank = max((STATUS_RANK.get(check.get("status", "error"), 2) for check in checks), default=0)
     return next(status for status, value in STATUS_RANK.items() if value == rank)
+
+
+def _safe_int(value: Any) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
 
 
 def evaluate_snapshot(snapshot: dict[str, Any], thresholds: Thresholds) -> dict[str, Any]:
@@ -81,8 +89,8 @@ def evaluate_snapshot(snapshot: dict[str, Any], thresholds: Thresholds) -> dict[
         checks.append(_check("readiness_checks", "ok", "Readiness checks are clean"))
 
     task_jobs = ((system_health.get("ops") or {}).get("task_jobs") or {})
-    needs_intervention = int(task_jobs.get("needs_intervention") or 0)
-    manual_retryable = int(task_jobs.get("manual_retryable") or 0)
+    needs_intervention = _safe_int(task_jobs.get("needs_intervention"))
+    manual_retryable = _safe_int(task_jobs.get("manual_retryable"))
     if needs_intervention > 0:
         checks.append(
             _check(
@@ -105,9 +113,9 @@ def evaluate_snapshot(snapshot: dict[str, Any], thresholds: Thresholds) -> dict[
         checks.append(_check("task_jobs", "ok", "No background task intervention is required", task_jobs))
 
     media_jobs = snapshot.get("media_jobs") or {}
-    runtime_pending = int(media_jobs.get("runtime_pending") or 0)
-    persisted_queued = int(media_jobs.get("persisted_queued") or 0)
-    persisted_running = int(media_jobs.get("persisted_running") or 0)
+    runtime_pending = _safe_int(media_jobs.get("runtime_pending"))
+    persisted_queued = _safe_int(media_jobs.get("persisted_queued"))
+    persisted_running = _safe_int(media_jobs.get("persisted_running"))
     media_warnings = []
     if runtime_pending > thresholds.max_media_pending:
         media_warnings.append(f"runtime_pending>{thresholds.max_media_pending}")
@@ -128,28 +136,28 @@ def evaluate_snapshot(snapshot: dict[str, Any], thresholds: Thresholds) -> dict[
         checks.append(_check("media_jobs", "ok", "Media queue pressure is within threshold", media_jobs))
 
     error_events = snapshot.get("error_events") or {}
-    error_event_total = int(error_events.get("total") or error_events.get("count") or 0)
+    error_event_total = _safe_int(error_events.get("total") or error_events.get("count"))
     if error_event_total > 0:
         checks.append(_check("ops_error_events", "error", "Recent operational error events exist", error_events))
     else:
         checks.append(_check("ops_error_events", "ok", "No recent operational error events"))
 
     warning_events = snapshot.get("warning_events") or {}
-    warning_event_total = int(warning_events.get("total") or warning_events.get("count") or 0)
+    warning_event_total = _safe_int(warning_events.get("total") or warning_events.get("count"))
     if warning_event_total > 0:
         checks.append(_check("ops_warning_events", "warning", "Recent operational warning events exist", warning_events))
     else:
         checks.append(_check("ops_warning_events", "ok", "No recent operational warning events"))
 
     tool_errors = snapshot.get("tool_errors") or {}
-    tool_error_total = int(tool_errors.get("total") or tool_errors.get("count") or 0)
+    tool_error_total = _safe_int(tool_errors.get("total") or tool_errors.get("count"))
     if tool_error_total > thresholds.max_recent_tool_errors:
         checks.append(_check("tool_errors", "warning", "Recent tool errors exceed threshold", tool_errors))
     else:
         checks.append(_check("tool_errors", "ok", "Tool error volume is within threshold", tool_errors))
 
     tool_rejections = snapshot.get("tool_rejections") or {}
-    tool_rejection_total = int(tool_rejections.get("total") or tool_rejections.get("count") or 0)
+    tool_rejection_total = _safe_int(tool_rejections.get("total") or tool_rejections.get("count"))
     if tool_rejection_total > thresholds.max_recent_tool_rejections:
         checks.append(_check("tool_rejections", "warning", "Recent tool rejections exceed threshold", tool_rejections))
     else:
@@ -161,6 +169,78 @@ def evaluate_snapshot(snapshot: dict[str, Any], thresholds: Thresholds) -> dict[
         "status": status,
         "checks": checks,
     }
+
+
+def _markdown_cell(value: Any) -> str:
+    return str(value).replace("|", "\\|").replace("\n", " ")
+
+
+def _counter(payload: dict[str, Any], *names: str) -> int:
+    for name in names:
+        value = payload.get(name)
+        if value is not None:
+            return _safe_int(value)
+    return 0
+
+
+def build_markdown_summary(result: dict[str, Any]) -> str:
+    checks = [check for check in result.get("checks", []) if isinstance(check, dict)]
+    snapshot = result.get("snapshot") if isinstance(result.get("snapshot"), dict) else {}
+    media_jobs = snapshot.get("media_jobs") if isinstance(snapshot.get("media_jobs"), dict) else {}
+    error_events = snapshot.get("error_events") if isinstance(snapshot.get("error_events"), dict) else {}
+    warning_events = snapshot.get("warning_events") if isinstance(snapshot.get("warning_events"), dict) else {}
+    tool_errors = snapshot.get("tool_errors") if isinstance(snapshot.get("tool_errors"), dict) else {}
+    tool_rejections = snapshot.get("tool_rejections") if isinstance(snapshot.get("tool_rejections"), dict) else {}
+
+    lines = [
+        "## MemoX Production Monitor",
+        "",
+        f"- Base URL: `{result.get('base_url', '')}`",
+        f"- Status: **{str(result.get('status', 'error')).upper()}**",
+        f"- OK: `{bool(result.get('ok', False))}`",
+        "",
+        "### Key Metrics",
+        "",
+        "| Metric | Value |",
+        "|---|---:|",
+        f"| Runtime pending media jobs | {_counter(media_jobs, 'runtime_pending')} |",
+        f"| Persisted queued media jobs | {_counter(media_jobs, 'persisted_queued')} |",
+        f"| Persisted running media jobs | {_counter(media_jobs, 'persisted_running')} |",
+        f"| Recent operational error events | {_counter(error_events, 'total', 'count')} |",
+        f"| Recent operational warning events | {_counter(warning_events, 'total', 'count')} |",
+        f"| Recent tool errors | {_counter(tool_errors, 'total', 'count')} |",
+        f"| Recent tool rejections | {_counter(tool_rejections, 'total', 'count')} |",
+        "",
+        "### Checks",
+        "",
+        "| Check | Status | Message |",
+        "|---|---|---|",
+    ]
+
+    for check in checks:
+        lines.append(
+            "| "
+            f"{_markdown_cell(check.get('name', 'unknown'))} | "
+            f"{_markdown_cell(check.get('status', 'error'))} | "
+            f"{_markdown_cell(check.get('message', ''))} |"
+        )
+
+    attention_checks = [check for check in checks if check.get("status") != "ok"]
+    if attention_checks:
+        lines.extend(["", "### Attention", ""])
+        for check in attention_checks:
+            lines.append(
+                f"- `{check.get('name', 'unknown')}` is `{check.get('status', 'error')}`: "
+                f"{check.get('message', '')}"
+            )
+            details = check.get("details")
+            if details:
+                details_text = json.dumps(details, ensure_ascii=False, sort_keys=True)
+                if len(details_text) > 800:
+                    details_text = details_text[:797] + "..."
+                lines.append(f"  - Details: `{details_text}`")
+
+    return "\n".join(lines).rstrip() + "\n"
 
 
 def _request_json(client: httpx.Client, method: str, url: str, *, token: str | None = None, **kwargs: Any) -> dict[str, Any]:
@@ -243,6 +323,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeout", type=float, default=20.0)
     parser.add_argument("--limit", type=int, default=20)
     parser.add_argument("--strict", action="store_true", help="Exit non-zero on warnings as well as errors")
+    parser.add_argument("--output", help="Write the full JSON result to this path")
+    parser.add_argument("--summary-output", help="Write a Markdown summary to this path")
     parser.add_argument("--max-media-pending", type=int, default=10)
     parser.add_argument("--max-media-persisted-queued", type=int, default=20)
     parser.add_argument("--max-media-persisted-running", type=int, default=4)
@@ -286,7 +368,13 @@ def main() -> int:
             ],
         }
 
-    print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+    json_result = json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True)
+    if args.output:
+        Path(args.output).write_text(json_result + "\n", encoding="utf-8")
+    if args.summary_output:
+        Path(args.summary_output).write_text(build_markdown_summary(result), encoding="utf-8")
+
+    print(json_result)
     if result["status"] == "error":
         return 1
     if args.strict and result["status"] == "warning":

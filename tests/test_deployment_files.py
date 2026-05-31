@@ -121,6 +121,7 @@ def test_backup_artifacts_are_documented_and_ignored() -> None:
     deployment = (ROOT / "docs" / "DEPLOYMENT.md").read_text(encoding="utf-8")
     production_checklist = (ROOT / "docs" / "PRODUCTION_DEPLOYMENT_CHECKLIST.md").read_text(encoding="utf-8")
     readiness = (ROOT / "docs" / "RELEASE_READINESS.md").read_text(encoding="utf-8")
+    monitor_runbook = (ROOT / "docs" / "PRODUCTION_MONITOR_RUNBOOK.md").read_text(encoding="utf-8")
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
     assert "backups/" in gitignore
@@ -129,6 +130,7 @@ def test_backup_artifacts_are_documented_and_ignored() -> None:
     assert "docs/RELEASE_READINESS.md" in readme
     assert "docs/RECOVERY_RUNBOOK.md" in readme
     assert "docs/PRODUCTION_DEPLOYMENT_CHECKLIST.md" in readme
+    assert "docs/PRODUCTION_MONITOR_RUNBOOK.md" in readme
     assert "RELEASE_READINESS.md" in deployment
     assert "RECOVERY_RUNBOOK.md" in deployment
     assert "PRODUCTION_DEPLOYMENT_CHECKLIST.md" in deployment
@@ -154,6 +156,12 @@ def test_backup_artifacts_are_documented_and_ignored() -> None:
     assert "Production Monitor" in production_checklist
     assert "MEMOX_PRODUCTION_URL" in production_checklist
     assert "MEMOX_PRODUCTION_TOKEN" in production_checklist
+    assert "production-monitor-report" in production_checklist
+    assert "PRODUCTION_MONITOR_RUNBOOK.md" in deployment
+    assert "production-monitor-report" in deployment
+    assert "public_health" in monitor_runbook
+    assert "media_jobs" in monitor_runbook
+    assert "tool-audit" in monitor_runbook
     assert "/api/system/health" in deployment
     assert "/api/system/backups" in deployment
     assert "/api/system/events" in deployment
@@ -236,6 +244,13 @@ def test_production_monitor_workflow_uses_only_configured_secrets() -> None:
     assert "schedule" in workflow[True]
     assert workflow["permissions"]["contents"] == "read"
     assert "scripts/production_monitor_check.py" in workflow_text
+    assert "--output production-monitor-report.json" in workflow_text
+    assert "--summary-output production-monitor-summary.md" in workflow_text
+    assert "GITHUB_STEP_SUMMARY" in workflow_text
+    assert "actions/upload-artifact@v4" in workflow_text
+    assert "production-monitor-report" in workflow_text
+    assert "production-monitor-summary.md" in workflow_text
+    assert "Missing required production monitor secret" in workflow_text
     assert "MEMOX_PRODUCTION_URL" in workflow_text
     assert "MEMOX_PRODUCTION_TOKEN" in workflow_text
     assert "MEMOX_PRODUCTION_ADMIN_PASSWORD" in workflow_text

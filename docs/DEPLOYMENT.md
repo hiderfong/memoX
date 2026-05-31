@@ -212,7 +212,10 @@ scheduled or manual GitHub Actions monitoring. Configure
 `MEMOX_PRODUCTION_URL` plus either `MEMOX_PRODUCTION_TOKEN` or
 `MEMOX_PRODUCTION_ADMIN_PASSWORD` as repository secrets or variables. The
 workflow defaults to `--strict`, so warnings fail the run and can trigger normal
-GitHub notification channels.
+GitHub notification channels. Each run writes a Step Summary and uploads a
+`production-monitor-report` artifact. Use
+[PRODUCTION_MONITOR_RUNBOOK.md](PRODUCTION_MONITOR_RUNBOOK.md) when the probe
+reports `warning` or `error`.
 
 ## Upgrade
 
