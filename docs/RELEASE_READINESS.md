@@ -118,9 +118,9 @@ Real-key provider checks that require unrestricted external network access are
 the release gate. Before publishing a `v*` tag, run the `Release Gate` GitHub
 Actions workflow or push the tag and wait for it to complete. It runs
 `uv run --extra dev python scripts/run_external_e2e.py --phases smoke` without
-`--allow-missing-secrets`; missing DeepSeek, MiniMax, Qwen, DashScope, or file
-signing secrets must fail the gate rather than skipping phases. Attach the
-`release-gate-e2e-report` artifact to the release notes. Use
+`--allow-missing-secrets`; missing DeepSeek, MiniMax, Qwen, DashScope, file
+signing, or admin password secrets must fail the gate rather than skipping
+phases. Attach the `release-gate-e2e-report` artifact to the release notes. Use
 `docs/EXTERNAL_AGENT_E2E_RUNBOOK.md` for manual troubleshooting.
 
 For a faster code-review loop, the following targeted tests cover the current

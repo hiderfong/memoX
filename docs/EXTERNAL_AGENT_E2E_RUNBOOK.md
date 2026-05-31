@@ -92,7 +92,7 @@ uv run --extra dev python scripts/run_external_e2e.py \
 
 仓库提供两个外部 E2E workflow：
 
-- `Release Gate`：`.github/workflows/release-gate.yml`，发布前必跑，固定 smoke，缺 secret 失败。
+- `Release Gate`：`.github/workflows/release-gate.yml`，发布前必跑，固定 smoke，缺 provider/生产 secret 失败。
 - `External E2E`：`.github/workflows/external-e2e.yml`，手动排障/扩展验收用，可选择 phases。
 
 运行前在 GitHub Secrets 或 Variables 中配置：

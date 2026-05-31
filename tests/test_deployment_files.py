@@ -176,6 +176,7 @@ def test_release_gate_requires_external_smoke_without_secret_skips() -> None:
         "QWEN_API_KEY",
         "DASHSCOPE_API_KEY",
         "MEMOX_FILE_SIGNING_SECRET",
+        "MEMOX_ADMIN_PASSWORD",
     ):
         assert env_name in workflow
 

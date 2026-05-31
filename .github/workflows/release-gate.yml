@@ -85,6 +85,7 @@ jobs:
           QWEN_API_KEY: ${{ secrets.QWEN_API_KEY || vars.QWEN_API_KEY }}
           DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY || vars.DASHSCOPE_API_KEY }}
           MEMOX_FILE_SIGNING_SECRET: ${{ secrets.MEMOX_FILE_SIGNING_SECRET || vars.MEMOX_FILE_SIGNING_SECRET }}
+          MEMOX_ADMIN_PASSWORD: ${{ secrets.MEMOX_ADMIN_PASSWORD || vars.MEMOX_ADMIN_PASSWORD }}
         run: |
           missing=()
           for name in \
@@ -92,7 +93,8 @@ jobs:
             DEEPSEEK_API_KEY \
             QWEN_API_KEY \
             DASHSCOPE_API_KEY \
-            MEMOX_FILE_SIGNING_SECRET; do
+            MEMOX_FILE_SIGNING_SECRET \
+            MEMOX_ADMIN_PASSWORD; do
             if [ -z "${!name:-}" ]; then
               missing+=("$name")
             fi
