@@ -253,10 +253,14 @@ def test_production_monitor_workflow_uses_only_configured_secrets() -> None:
     assert "--output production-monitor-report.json" in workflow_text
     assert "--summary-output production-monitor-summary.md" in workflow_text
     assert "GITHUB_STEP_SUMMARY" in workflow_text
+    assert "GITHUB_OUTPUT" in workflow_text
     assert "actions/upload-artifact@v4" in workflow_text
     assert "production-monitor-report" in workflow_text
     assert "production-monitor-summary.md" in workflow_text
     assert "Missing required production monitor secret" in workflow_text
+    assert "Status: **SKIPPED**" in workflow_text
+    assert 'EVENT_NAME" = "schedule"' in workflow_text
+    assert "steps.monitor-config.outputs.configured == 'true'" in workflow_text
     assert "MEMOX_PRODUCTION_URL" in workflow_text
     assert "MEMOX_PRODUCTION_MONITOR_TOKEN" in workflow_text
     assert "MEMOX_PRODUCTION_TOKEN" in workflow_text

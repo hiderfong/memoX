@@ -216,8 +216,10 @@ the deployment host. The workflow can still fall back to
 `MEMOX_PRODUCTION_TOKEN` or `MEMOX_PRODUCTION_ADMIN_PASSWORD`, but the scoped
 monitor token is safer for long-running automation. The workflow defaults to
 `--strict`, so warnings fail the run and can trigger normal GitHub notification
-channels. Each run writes a Step Summary and uploads a
-`production-monitor-report` artifact. Use
+channels. Scheduled runs are neutral `SKIPPED` runs until
+`MEMOX_PRODUCTION_URL` and one monitor credential are configured, while manual
+dispatches still fail fast on missing configuration. Each run writes a Step
+Summary and uploads a `production-monitor-report` artifact. Use
 [PRODUCTION_MONITOR_RUNBOOK.md](PRODUCTION_MONITOR_RUNBOOK.md) when the probe
 reports `warning` or `error`.
 

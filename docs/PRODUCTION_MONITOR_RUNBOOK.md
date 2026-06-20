@@ -3,6 +3,12 @@
 Use this runbook when the `Production Monitor` workflow or
 `scripts/production_monitor_check.py` reports `warning` or `error`.
 
+Scheduled workflow runs can report `SKIPPED` when production monitor secrets or
+variables are not configured yet. That is expected before the first production
+deployment; configure `MEMOX_PRODUCTION_URL` plus
+`MEMOX_PRODUCTION_MONITOR_TOKEN` to enable hourly probing. Manual workflow runs
+still fail on missing configuration so release validation remains explicit.
+
 ## First Response
 
 1. Open the failed GitHub Actions run and read the Step Summary.

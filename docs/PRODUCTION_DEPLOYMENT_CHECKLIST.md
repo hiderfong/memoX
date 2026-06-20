@@ -103,7 +103,10 @@ Then run the `Production Monitor` workflow manually or leave its hourly schedule
 enabled. The workflow can still fall back to `MEMOX_PRODUCTION_TOKEN` or
 `MEMOX_PRODUCTION_ADMIN_PASSWORD`, but long-running automation should use the
 scoped, revocable monitor token. Each run writes a Step Summary and uploads the
-`production-monitor-report` artifact. Use `docs/PRODUCTION_MONITOR_RUNBOOK.md`
+`production-monitor-report` artifact. Hourly scheduled runs report `SKIPPED`
+instead of failing until `MEMOX_PRODUCTION_URL` and one monitor credential are
+configured; manual `workflow_dispatch` runs still fail on missing configuration
+so release checks do not silently pass. Use `docs/PRODUCTION_MONITOR_RUNBOOK.md`
 for warning/error response steps.
 
 ## First 24 Hours

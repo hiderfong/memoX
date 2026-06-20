@@ -77,8 +77,10 @@ jobs:
           done
 
       - name: Validate monitor configuration
+        id: monitor-config
         shell: bash
         env:
+          EVENT_NAME: ${{ github.event_name }}
           MEMOX_URL: ${{ secrets.MEMOX_PRODUCTION_URL || vars.MEMOX_PRODUCTION_URL }}
           MEMOX_TOKEN: ${{ secrets.MEMOX_PRODUCTION_MONITOR_TOKEN || vars.MEMOX_PRODUCTION_MONITOR_TOKEN || secrets.MEMOX_PRODUCTION_TOKEN || vars.MEMOX_PRODUCTION_TOKEN }}
           MEMOX_ADMIN_PASSWORD: ${{ secrets.MEMOX_PRODUCTION_ADMIN_PASSWORD || vars.MEMOX_PRODUCTION_ADMIN_PASSWORD }}
@@ -91,17 +93,28 @@ jobs:
             missing+=("MEMOX_PRODUCTION_MONITOR_TOKEN or MEMOX_PRODUCTION_TOKEN or MEMOX_PRODUCTION_ADMIN_PASSWORD")
           fi
           if [ "${#missing[@]}" -gt 0 ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
             printf 'Missing required production monitor secret(s): %s\n' "${missing[*]}"
             {
               echo "## MemoX Production Monitor"
               echo ""
-              echo "- Status: **ERROR**"
+              if [ "$EVENT_NAME" = "schedule" ]; then
+                echo "- Status: **SKIPPED**"
+                echo "- Reason: production monitor configuration is not present yet."
+              else
+                echo "- Status: **ERROR**"
+              fi
               echo "- Missing configuration: ${missing[*]}"
             } | tee production-monitor-summary.md >> "$GITHUB_STEP_SUMMARY"
+            if [ "$EVENT_NAME" = "schedule" ]; then
+              exit 0
+            fi
             exit 1
           fi
+          echo "configured=true" >> "$GITHUB_OUTPUT"
 
       - name: Run production monitor
+        if: steps.monitor-config.outputs.configured == 'true'
         env:
           MEMOX_URL: ${{ secrets.MEMOX_PRODUCTION_URL || vars.MEMOX_PRODUCTION_URL }}
           MEMOX_TOKEN: ${{ secrets.MEMOX_PRODUCTION_MONITOR_TOKEN || vars.MEMOX_PRODUCTION_MONITOR_TOKEN || secrets.MEMOX_PRODUCTION_TOKEN || vars.MEMOX_PRODUCTION_TOKEN }}
