@@ -1,9 +1,10 @@
 import { useContext, useState, type FC, type ReactNode } from 'react';
-import { Avatar, Badge, Button, Layout, Menu, Space, Tooltip, Typography } from 'antd';
-import { ClockCircleOutlined, DeploymentUnitOutlined, FileTextOutlined, LogoutOutlined, MessageOutlined, RobotOutlined, SafetyCertificateOutlined, SettingOutlined, TeamOutlined, UserOutlined, VideoCameraOutlined } from '@ant-design/icons';
+import { Avatar, Badge, Button, Layout, Menu, Select, Space, Tooltip, Typography } from 'antd';
+import { ClockCircleOutlined, DeploymentUnitOutlined, FileTextOutlined, LogoutOutlined, MessageOutlined, ProjectOutlined, RobotOutlined, SafetyCertificateOutlined, SettingOutlined, TeamOutlined, UserOutlined, VideoCameraOutlined } from '@ant-design/icons';
 import { useLocation, useNavigate } from 'react-router-dom';
 
 import { AuthContext, api, useIsMobile } from '../shared';
+import { useProjectContext } from './ProjectContext';
 
 const { Header, Sider, Content } = Layout;
 const { Title, Text } = Typography;
@@ -15,6 +16,7 @@ export const AppLayout: FC<{ children: ReactNode }> = ({ children }) => {
   const navigate = useNavigate();
   const location = useLocation();
   const { user, logout } = useContext(AuthContext);
+  const { projects, selectedProjectId, selectedProject, setSelectedProjectId, loading: projectsLoading } = useProjectContext();
   const isMobile = useIsMobile();
   const selectedKey = location.pathname.split('/')[1] || 'documents';
 
@@ -32,6 +34,26 @@ export const AppLayout: FC<{ children: ReactNode }> = ({ children }) => {
         </Title>
         <div style={{ flex: 1 }} />
         <Space size={isMobile ? 4 : 8}>
+          {projects.length > 0 && (
+            <Tooltip title={selectedProject ? `当前项目：${selectedProject.name}` : '当前范围：全部项目'}>
+              <Select
+                size="small"
+                data-testid="project-context-select"
+                value={selectedProjectId}
+                loading={projectsLoading}
+                onChange={setSelectedProjectId}
+                style={{ width: isMobile ? 132 : 190 }}
+                suffixIcon={<ProjectOutlined />}
+                options={[
+                  { value: '', label: '全部项目' },
+                  ...projects.map(project => ({
+                    value: project.id,
+                    label: project.name,
+                  })),
+                ]}
+              />
+            </Tooltip>
+          )}
           {!isMobile && <Badge status="success" text={<Text style={{ color: 'white' }}>在线</Text>} />}
           {user && (
             <>
@@ -64,6 +86,7 @@ export const AppLayout: FC<{ children: ReactNode }> = ({ children }) => {
             onClick={({ key }) => { navigate(`/${key}`); if (isMobile) setCollapsed(true); }}
             style={{ height: '100%', borderRight: 0, fontSize: 16 }}
             items={[
+              { key: 'projects', icon: <ProjectOutlined style={{ fontSize: 18 }} />, label: <span style={{ fontSize: 16, fontWeight: 500 }}>项目</span> },
               { key: 'documents', icon: <FileTextOutlined style={{ fontSize: 18 }} />, label: <span style={{ fontSize: 16, fontWeight: 500 }}>知识库</span> },
               { key: 'chat', icon: <MessageOutlined style={{ fontSize: 18 }} />, label: <span style={{ fontSize: 16, fontWeight: 500 }}>智能问答</span> },
               { key: 'tasks', icon: <RobotOutlined style={{ fontSize: 18 }} />, label: <span style={{ fontSize: 16, fontWeight: 500 }}>任务执行</span> },

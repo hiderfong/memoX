@@ -180,6 +180,13 @@ class Citation:
     chunk_index: int     # 在文档中的块索引
     content_preview: str # 内容预览（前100字）
     score: float         # 检索得分
+    evidence_reason: str = ""
+    evidence_quality: str = "basic"
+    graph_boosted: bool = False
+    matched_entities: list[str] = field(default_factory=list)
+    graph_entity: str = ""
+    graph_degree: int = 0
+    graph_relations: list[dict] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -189,6 +196,13 @@ class Citation:
             "chunk_index": self.chunk_index,
             "content_preview": self.content_preview,
             "score": self.score,
+            "evidence_reason": self.evidence_reason,
+            "evidence_quality": self.evidence_quality,
+            "graph_boosted": self.graph_boosted,
+            "matched_entities": self.matched_entities,
+            "graph_entity": self.graph_entity,
+            "graph_degree": self.graph_degree,
+            "graph_relations": self.graph_relations,
         }
 
 
@@ -740,6 +754,150 @@ class RAGEngine:
 
         result["graph_boosted_ids"] = boosted_ids
         return result
+
+    @staticmethod
+    def _dedupe_text(items: list[str]) -> list[str]:
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for item in items:
+            text = str(item or "").strip()
+            key = text.lower()
+            if not text or key in seen:
+                continue
+            seen.add(key)
+            deduped.append(text)
+        return deduped
+
+    @staticmethod
+    def _graph_triple_to_dict(triple: Any) -> dict:
+        return {
+            "subject": str(getattr(triple, "subject", "") or ""),
+            "predicate": str(getattr(triple, "predicate", "") or ""),
+            "object": str(getattr(triple, "object", "") or ""),
+            "source_chunk_id": str(getattr(triple, "source_chunk_id", "") or ""),
+            "confidence": float(getattr(triple, "confidence", 0.0) or 0.0),
+        }
+
+    def build_evidence_payload(
+        self,
+        search_results: list[SearchResult],
+        graph_result: Any | None = None,
+        graph_boosted_ids: list[str] | None = None,
+    ) -> list[dict]:
+        """Build user-facing retrieval evidence for answer/source inspection."""
+        boosted_ids = set(graph_boosted_ids or [])
+        graph_entity = str(getattr(graph_result, "entity", "") or "") if graph_result else ""
+        graph_degree = int(getattr(graph_result, "degree", 0) or 0) if graph_result else 0
+        connected_entities = list(getattr(graph_result, "connected_entities", []) or []) if graph_result else []
+        graph_entities = self._dedupe_text([graph_entity, *connected_entities])
+        graph_triples = list(getattr(graph_result, "triples", []) or []) if graph_result else []
+
+        payload: list[dict] = []
+        for idx, result in enumerate(search_results, 1):
+            citation = result.citation
+            content = result.content or ""
+            content_lower = content.lower()
+            matched_entities = [
+                entity for entity in graph_entities
+                if entity.lower() in content_lower
+            ]
+
+            direct_relations = [
+                self._graph_triple_to_dict(triple)
+                for triple in graph_triples
+                if str(getattr(triple, "source_chunk_id", "") or "") == result.id
+            ]
+            related_relations: list[dict] = []
+            if matched_entities:
+                matched_lower = {entity.lower() for entity in matched_entities}
+                for triple in graph_triples:
+                    subject = str(getattr(triple, "subject", "") or "")
+                    obj = str(getattr(triple, "object", "") or "")
+                    if subject.lower() in matched_lower or obj.lower() in matched_lower:
+                        related_relations.append(self._graph_triple_to_dict(triple))
+
+            relation_key_seen: set[tuple[str, str, str, str]] = set()
+            graph_relations: list[dict] = []
+            for relation in [*direct_relations, *related_relations]:
+                key = (
+                    relation["subject"].lower(),
+                    relation["predicate"].lower(),
+                    relation["object"].lower(),
+                    relation["source_chunk_id"],
+                )
+                if key in relation_key_seen:
+                    continue
+                relation_key_seen.add(key)
+                graph_relations.append(relation)
+                if len(graph_relations) >= 5:
+                    break
+
+            graph_boosted = result.id in boosted_ids
+            if graph_boosted and graph_relations:
+                evidence_quality = "strong"
+                evidence_reason = f"检索命中，并被图谱实体「{graph_entity or matched_entities[0]}」及关系证据增强"
+            elif graph_boosted or matched_entities:
+                evidence_quality = "medium"
+                entity_label = "、".join(matched_entities[:3]) if matched_entities else graph_entity
+                evidence_reason = f"检索命中，并匹配图谱实体「{entity_label}」"
+            else:
+                evidence_quality = "basic"
+                evidence_reason = "向量/关键词检索命中"
+
+            preview = content[:160] + ("..." if len(content) > 160 else "")
+            item = {
+                "ref_id": f"ref-{idx}",
+                "doc_id": citation.doc_id if citation else result.metadata.get("doc_id", ""),
+                "filename": citation.filename if citation else result.metadata.get("filename", "unknown"),
+                "chunk_index": citation.chunk_index if citation else result.metadata.get("chunk_index", 0),
+                "content": content,
+                "content_preview": preview,
+                "score": result.score,
+                "retrieval_score": result.score,
+                "evidence_reason": evidence_reason,
+                "evidence_quality": evidence_quality,
+                "graph_boosted": graph_boosted,
+                "matched_entities": matched_entities,
+                "graph_entity": graph_entity,
+                "graph_degree": graph_degree,
+                "graph_relations": graph_relations,
+            }
+            payload.append(item)
+        return payload
+
+    @staticmethod
+    def build_citation_payload(
+        cited_ref_ids: list[str],
+        search_results: list[SearchResult],
+        evidence_payload: list[dict] | None = None,
+    ) -> list[dict]:
+        """Return citations for refs that the answer actually used."""
+        evidence_by_ref = {
+            str(item.get("ref_id")): item
+            for item in (evidence_payload or [])
+            if item.get("ref_id")
+        }
+        citations: list[dict] = []
+        for ref_id in cited_ref_ids:
+            try:
+                idx = int(ref_id.split("-")[1]) - 1
+            except (ValueError, IndexError):
+                continue
+            if idx < 0 or idx >= len(search_results):
+                continue
+
+            if ref_id in evidence_by_ref:
+                item = dict(evidence_by_ref[ref_id])
+                item.pop("content", None)
+                citations.append(item)
+                continue
+
+            citation = search_results[idx].citation
+            if citation:
+                item = citation.to_dict()
+                item["ref_id"] = ref_id
+                citations.append(item)
+        return citations
 
     def build_rag_prompt(
         self,

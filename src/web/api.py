@@ -697,6 +697,7 @@ from web.routers import (  # noqa: E402
     documents_router,
     imaging_router,
     memories_router,
+    projects_router,
     scheduled_router,
     skills_router,
     system_router,
@@ -710,6 +711,7 @@ app.include_router(chat_router)
 app.include_router(documents_router)
 app.include_router(imaging_router)
 app.include_router(memories_router)
+app.include_router(projects_router)
 app.include_router(scheduled_router)
 app.include_router(skills_router)
 app.include_router(system_router)

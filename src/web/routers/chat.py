@@ -27,6 +27,7 @@ class ChatRequest(BaseModel):
     use_rag: bool = True
     stream: bool = True
     active_group_ids: list[str] | None = None
+    project_id: str | None = None
     worker_id: str | None = None
 
 
@@ -86,6 +87,13 @@ def _get_globals():
         _api_module._config,
         _api_module._task_results,
     )
+
+
+def _resolve_active_group_ids(project_id: str | None, active_group_ids: list[str] | None) -> list[str] | None:
+    project_id = (project_id or "").strip()
+    if project_id:
+        return [project_id]
+    return active_group_ids
 
 
 def _load_chat_history(session_id: str) -> list[dict]:
@@ -217,8 +225,16 @@ async def chat(request: Request, chat_req: ChatRequest) -> dict:
     _rag_engine.add_message(session_id, "user", chat_req.message)
 
     search_results: list[SearchResult] = []
+    evidence_payload: list[dict] = []
+    active_group_ids = _resolve_active_group_ids(chat_req.project_id, chat_req.active_group_ids)
     if chat_req.use_rag:
-        search_results = await _rag_engine.search(chat_req.message, group_ids=chat_req.active_group_ids)
+        rag_search = await _rag_engine.search_with_graph(chat_req.message, group_ids=active_group_ids)
+        search_results = rag_search["search_results"]
+        evidence_payload = _rag_engine.build_evidence_payload(
+            search_results,
+            rag_search.get("graph_result"),
+            rag_search.get("graph_boosted_ids", []),
+        )
 
     from imaging import get_image_client, get_video_client
     image_client = get_image_client()
@@ -340,17 +356,7 @@ async def chat(request: Request, chat_req: ChatRequest) -> dict:
             await _memory_manager.compress_if_needed_async(session_id, _orchestrator._provider)
 
     cited_ref_ids = _rag_engine.extract_citations_from_text(answer)
-    citations: list[dict] = []
-    for ref_id in cited_ref_ids:
-        try:
-            idx = int(ref_id.split("-")[1]) - 1
-            if 0 <= idx < len(search_results):
-                r = search_results[idx]
-                citation = r.citation
-                if citation:
-                    citations.append(citation.to_dict())
-        except (ValueError, IndexError):
-            pass
+    citations = _rag_engine.build_citation_payload(cited_ref_ids, search_results, evidence_payload)
 
     return {
         "session_id": session_id,
@@ -360,16 +366,7 @@ async def chat(request: Request, chat_req: ChatRequest) -> dict:
         "videos": video_results,
         "i2v": i2v_results,
         "citations": citations,
-        "sources": [
-            {
-                "content": r.content[:200] + "..." if len(r.content) > 200 else r.content,
-                "score": r.score,
-                "filename": r.metadata.get("filename", "unknown"),
-                "doc_id": r.metadata.get("doc_id", ""),
-                "chunk_index": r.metadata.get("chunk_index", 0),
-            }
-            for r in search_results
-        ],
+        "sources": evidence_payload,
     }
 
 
@@ -708,7 +705,7 @@ async def chat_stream(request: Request, chat_req: ChatRequest):
     _session_id = chat_req.session_id or str(uuid.uuid4())[:8]
     _message = chat_req.message
     _use_rag = chat_req.use_rag
-    _active_group_ids = chat_req.active_group_ids
+    _active_group_ids = _resolve_active_group_ids(chat_req.project_id, chat_req.active_group_ids)
     _worker_id = chat_req.worker_id
 
     async def generate():
@@ -718,14 +715,16 @@ async def chat_stream(request: Request, chat_req: ChatRequest):
         _rag_engine.add_message(_session_id, "user", _message)
 
         search_results: list[SearchResult] = []
+        evidence_payload: list[dict] = []
         if _use_rag:
-            search_results = await _rag_engine.search(_message, group_ids=_active_group_ids)
-            sources_data = [
-                {"filename": r.metadata.get("filename", "unknown"), "score": r.score,
-                 "doc_id": r.metadata.get("doc_id", ""), "chunk_index": r.metadata.get("chunk_index", 0)}
-                for r in search_results
-            ]
-            yield f"data: {_json.dumps({'type': 'sources', 'data': sources_data})}\n\n"
+            rag_search = await _rag_engine.search_with_graph(_message, group_ids=_active_group_ids)
+            search_results = rag_search["search_results"]
+            evidence_payload = _rag_engine.build_evidence_payload(
+                search_results,
+                rag_search.get("graph_result"),
+                rag_search.get("graph_boosted_ids", []),
+            )
+            yield f"data: {_json.dumps({'type': 'sources', 'data': evidence_payload})}\n\n"
 
         image_client = get_image_client()
         video_client = get_video_client()
@@ -897,17 +896,7 @@ async def chat_stream(request: Request, chat_req: ChatRequest):
                     await _memory_manager.compress_if_needed_async(_session_id, _orchestrator._provider)
 
             cited_ref_ids = _rag_engine.extract_citations_from_text(answer)
-            citations: list[dict] = []
-            for ref_id in cited_ref_ids:
-                try:
-                    idx = int(ref_id.split("-")[1]) - 1
-                    if 0 <= idx < len(search_results):
-                        r = search_results[idx]
-                        citation = r.citation
-                        if citation:
-                            citations.append(citation.to_dict())
-                except (ValueError, IndexError):
-                    pass
+            citations = _rag_engine.build_citation_payload(cited_ref_ids, search_results, evidence_payload)
 
             yield f"data: {_json.dumps({'type': 'done', 'session_id': _session_id, 'worker_id': resolved_worker_id, 'citations': citations})}\n\n"
 

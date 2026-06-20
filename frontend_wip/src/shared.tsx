@@ -547,29 +547,34 @@ axios.interceptors.response.use(
 );
 
 export const api = {
+  // 项目
+  listProjects: () => axios.get(`${API_BASE}/projects`),
+  getProject: (id: string) => axios.get(`${API_BASE}/projects/${id}`),
+
   // 文档
   listDocuments: () => axios.get(`${API_BASE}/documents`),
-  uploadDocument: (file: File) => {
+  uploadDocument: (file: File, groupId?: string | null) => {
     const formData = new FormData();
     formData.append('file', file);
+    if (groupId) formData.append('group_id', groupId);
     return axios.post(`${API_BASE}/documents`, formData);
   },
   deleteDocument: (id: string) => axios.delete(`${API_BASE}/documents/${id}`),
 
   // 聊天
-  chat: (message: string, sessionId?: string, useRag: boolean = true, activeGroupIds?: string[] | null, workerId?: string | null) =>
-    axios.post(`${API_BASE}/chat`, { message, session_id: sessionId, use_rag: useRag, stream: false, active_group_ids: activeGroupIds, worker_id: workerId || undefined }),
+  chat: (message: string, sessionId?: string, useRag: boolean = true, activeGroupIds?: string[] | null, workerId?: string | null, projectId?: string | null) =>
+    axios.post(`${API_BASE}/chat`, { message, session_id: sessionId, use_rag: useRag, stream: false, active_group_ids: activeGroupIds, worker_id: workerId || undefined, project_id: projectId || undefined }),
   chatStream: (message: string, sessionId?: string, useRag: boolean = true) =>
     axios.post(`${API_BASE}/chat/stream`, { message, session_id: sessionId, use_rag: useRag, stream: true }),
 
   // 任务
-  createTask: (description: string, context?: object, activeGroupIds?: string[] | null) =>
-    axios.post(`${API_BASE}/tasks`, { description, context, generate_suggestions: true, active_group_ids: activeGroupIds }),
+  createTask: (description: string, context?: object, activeGroupIds?: string[] | null, projectId?: string | null) =>
+    axios.post(`${API_BASE}/tasks`, { description, context, generate_suggestions: true, active_group_ids: activeGroupIds, project_id: projectId || undefined }),
   listTasks: () => axios.get(`${API_BASE}/tasks`),
   getTask: (id: string) => axios.get(`${API_BASE}/tasks/${id}`),
 
   // 文档 URL 导入
-  importUrl: (url: string) => axios.post(`${API_BASE}/documents/url`, { url }),
+  importUrl: (url: string, groupId?: string | null) => axios.post(`${API_BASE}/documents/url`, { url, group_id: groupId || undefined }),
 
   // 任务文件
   getTaskFiles: (taskId: string) => axios.get(`${API_BASE}/tasks/${taskId}/files`),

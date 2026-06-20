@@ -158,6 +158,23 @@ def test_task_trace_groups_events_by_subtask(tmp_path, monkeypatch):
     assert payload["subtasks"][0]["events"][1]["actor"]["provider"] == "deepseek"
     tool_events = [event for event in payload["subtasks"][0]["events"] if event["stage"] == "tool"]
     assert {event["details"]["tool"] for event in tool_events} == {"web_fetch", "database_query"}
+    debugger = payload["debugger"]
+    assert debugger["stage_counts"]["tool"] == 2
+    assert debugger["severity_counts"]["warning"] >= 3
+    assert debugger["health"]["status"] == "warning"
+    assert debugger["subtask_flow"][0]["id"] == "sub_1"
+    assert debugger["subtask_flow"][0]["tool_call_count"] == 2
+    assert debugger["subtask_flow"][0]["retry_count"] == 1
+    assert debugger["subtask_flow"][0]["llm_tokens"] == 165
+    assert debugger["agent_summaries"][0]["agent"] == "researcher"
+    assert debugger["agent_summaries"][0]["llm_tokens"] == 165
+    assert debugger["tool_summaries"][0]["tool"] == "database_query"
+    assert debugger["tool_summaries"][0]["rejected_count"] == 1
+    assert {item["provider"] for item in debugger["provider_summaries"]} == {"deepseek", "dashscope"}
+    assert {item["event_type"] for item in debugger["decision_points"]} >= {
+        "provider_retry",
+        "provider_fallback",
+    }
 
     tool_response = client.get("/api/tasks/task_trace/trace", params={"stage": "tool"})
     assert tool_response.status_code == 200

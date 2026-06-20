@@ -4,6 +4,7 @@ from .chat import router as chat_router
 from .documents import router as documents_router
 from .imaging import router as imaging_router
 from .memories import router as memories_router
+from .projects import router as projects_router
 from .scheduled import router as scheduled_router
 from .skills import router as skills_router
 from .system import router as system_router
@@ -17,6 +18,7 @@ __all__ = [
     "documents_router",
     "imaging_router",
     "memories_router",
+    "projects_router",
     "scheduled_router",
     "skills_router",
     "system_router",

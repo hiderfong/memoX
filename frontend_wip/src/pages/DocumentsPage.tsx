@@ -6,6 +6,8 @@ import { useNavigate, useLocation } from 'react-router-dom';
 
 import dayjs from 'dayjs';
 import { I2VModal } from '../components/I2VModal';
+import { useProjectContext } from '../components/ProjectContext';
+import { RagEvidenceMeta } from '../components/RagEvidenceMeta';
 
 import { useIsMobile, KnowledgeGroup, api } from '../shared';
 
@@ -62,6 +64,7 @@ export const DocumentsPage: React.FC = () => {
   const [i2vModalOpen, setI2vModalOpen] = useState(false);
   const [i2vSourceUrl, setI2vSourceUrl] = useState('');
   const [docI2VResults, setDocI2VResults] = useState<any[]>([]);
+  const { selectedProjectId, selectedProject } = useProjectContext();
 
   const fetchDocuments = async () => {
     setLoading(true);
@@ -93,6 +96,11 @@ export const DocumentsPage: React.FC = () => {
     if (shouldOpenGraph) setViewMode('graph');
   }, [shouldOpenGraph]);
 
+  useEffect(() => {
+    setActiveGroupFilter(selectedProjectId || 'all');
+    setSearchResults(null);
+  }, [selectedProjectId]);
+
   const handleViewModeChange = (val: string | number) => {
     const nextViewMode = val as 'list' | 'graph';
     setViewMode(nextViewMode);
@@ -120,7 +128,7 @@ export const DocumentsPage: React.FC = () => {
       setUploadProgress(p => Math.min(p + Math.random() * 15, 90));
     }, 300);
     try {
-      await api.uploadDocument(file);
+      await api.uploadDocument(file, selectedProjectId || undefined);
       setUploadProgress(100);
       message.success(
         <span>文档 <b>{file.name}</b> 上传成功</span>
@@ -154,7 +162,7 @@ export const DocumentsPage: React.FC = () => {
     if (!urlInput.trim()) return;
     setImportingUrl(true);
     try {
-      await api.importUrl(urlInput.trim());
+      await api.importUrl(urlInput.trim(), selectedProjectId || undefined);
       message.success('网页导入成功');
       setUrlModalOpen(false);
       setUrlInput('');
@@ -224,7 +232,8 @@ export const DocumentsPage: React.FC = () => {
     if (!value.trim()) { setSearchResults(null); return; }
     setSearching(true);
     try {
-      const res = await api.searchDocuments(value.trim());
+      const groupFilter = selectedProjectId || (activeGroupFilter !== 'all' ? activeGroupFilter : undefined);
+      const res = await api.searchDocuments(value.trim(), groupFilter);
       setSearchResults(res.data.results || []);
     } catch (err) {
       message.error('搜索失败');
@@ -232,6 +241,10 @@ export const DocumentsPage: React.FC = () => {
       setSearching(false);
     }
   };
+
+  const visibleDocuments = activeGroupFilter === 'all'
+    ? documents
+    : documents.filter(d => (d.group_id || 'ungrouped') === activeGroupFilter);
 
   return (
     <div>
@@ -267,23 +280,34 @@ export const DocumentsPage: React.FC = () => {
       {/* 分组标签栏 */}
       <Card style={{ marginBottom: 16 }} styles={{ body: { padding: '12px 16px' } }}>
         <Space wrap>
-          <Tag
-            color={activeGroupFilter === 'all' ? '#1890ff' : 'default'}
-            style={{ cursor: 'pointer', fontSize: 13 }}
-            onClick={() => setActiveGroupFilter('all')}
-          >
-            全部 ({documents.length})
-          </Tag>
-          {groups.map(g => (
-            <Tag
-              key={g.id}
-              color={activeGroupFilter === g.id ? g.color : 'default'}
-              style={{ cursor: 'pointer', fontSize: 13 }}
-              onClick={() => setActiveGroupFilter(g.id)}
-            >
-              {g.name} ({g.doc_count})
-            </Tag>
-          ))}
+          {selectedProject ? (
+            <>
+              <Tag color={selectedProject.color} style={{ fontSize: 13 }}>
+                当前项目：{selectedProject.name} ({visibleDocuments.length})
+              </Tag>
+              <Text type="secondary" style={{ fontSize: 12 }}>上传、导入和搜索默认进入该项目</Text>
+            </>
+          ) : (
+            <>
+              <Tag
+                color={activeGroupFilter === 'all' ? '#1890ff' : 'default'}
+                style={{ cursor: 'pointer', fontSize: 13 }}
+                onClick={() => setActiveGroupFilter('all')}
+              >
+                全部 ({documents.length})
+              </Tag>
+              {groups.map(g => (
+                <Tag
+                  key={g.id}
+                  color={activeGroupFilter === g.id ? g.color : 'default'}
+                  style={{ cursor: 'pointer', fontSize: 13 }}
+                  onClick={() => setActiveGroupFilter(g.id)}
+                >
+                  {g.name} ({g.doc_count})
+                </Tag>
+              ))}
+            </>
+          )}
           <Button
             size="small"
             icon={<SettingOutlined />}
@@ -348,8 +372,21 @@ export const DocumentsPage: React.FC = () => {
               <List.Item>
                 <List.Item.Meta
                   avatar={<Avatar icon={<FileSearchOutlined />} style={{ background: '#1890ff' }} />}
-                  title={<Space><Text>{r.filename}</Text><Tag color="green">{Math.round(r.score * 100)}%</Tag></Space>}
-                  description={<Text type="secondary" style={{ fontSize: 12 }}>{r.content.slice(0, 200)}...</Text>}
+                  title={
+                    <Space wrap>
+                      <Text>{r.filename}</Text>
+                      <Tag color="green">{Math.round(r.score * 100)}%</Tag>
+                      {r.ref_id && <Tag color="blue">{r.ref_id}</Tag>}
+                    </Space>
+                  }
+                  description={
+                    <div>
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        {r.content.slice(0, 200)}{r.content.length > 200 ? '...' : ''}
+                      </Text>
+                      <RagEvidenceMeta item={r} />
+                    </div>
+                  }
                 />
               </List.Item>
             )}
@@ -366,7 +403,7 @@ export const DocumentsPage: React.FC = () => {
               <Empty description="暂无文档，请先上传" />
             ) : (
               <List
-                dataSource={activeGroupFilter === 'all' ? documents : documents.filter(d => (d.group_id || 'ungrouped') === activeGroupFilter)}
+                dataSource={visibleDocuments}
                 renderItem={(doc: any) => {
                   const g = groups.find(x => x.id === (doc.group_id || 'ungrouped'));
                   return (

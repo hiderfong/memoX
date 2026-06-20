@@ -22,7 +22,7 @@ export const LoginPage: React.FC = () => {
     setLoading(true);
     try {
       await login(values.username, values.password);
-      navigate('/documents', { replace: true });
+      navigate('/projects', { replace: true });
     } catch (err: any) {
       message.error(err.response?.data?.detail || '登录失败，请检查用户名和密码');
     } finally {

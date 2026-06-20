@@ -6,7 +6,8 @@ import { useNavigate, useLocation } from 'react-router-dom';
 
 import dayjs from 'dayjs';
 
-import { api } from '../shared';
+import { useProjectContext } from '../components/ProjectContext';
+import { api, KnowledgeGroup } from '../shared';
 
 const { Header, Sider, Content } = Layout;
 const { Title, Text } = Typography;
@@ -32,10 +33,13 @@ export const ScheduledTasksPage: React.FC = () => {
   const [items, setItems] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
   const [editing, setEditing] = useState<any | null>(null);
-  const [editForm, setEditForm] = useState<{ description: string; cron: string; enabled: boolean }>({
+  const [groups, setGroups] = useState<KnowledgeGroup[]>([]);
+  const { selectedProjectId, selectedProject, projectGroupIds } = useProjectContext();
+  const [editForm, setEditForm] = useState<{ description: string; cron: string; enabled: boolean; activeGroupIds: string[] }>({
     description: '',
     cron: '0 9 * * *',
     enabled: true,
+    activeGroupIds: [],
   });
   const [saving, setSaving] = useState(false);
 
@@ -53,12 +57,13 @@ export const ScheduledTasksPage: React.FC = () => {
 
   useEffect(() => {
     fetchList();
+    api.listGroups().then(res => setGroups(res.data)).catch(() => {});
     // 来自智能问答的"配置定时任务"预填
     const prefill = (location.state as any)?.prefill;
     const sourceSessionId = (location.state as any)?.sourceSessionId;
     if (prefill && typeof prefill === 'string') {
       setEditing({ __new: true, source_session_id: sourceSessionId || '' });
-      setEditForm({ description: prefill, cron: '0 9 * * *', enabled: true });
+      setEditForm({ description: prefill, cron: '0 9 * * *', enabled: true, activeGroupIds: projectGroupIds ?? [] });
       navigate(location.pathname, { replace: true, state: {} });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -66,12 +71,12 @@ export const ScheduledTasksPage: React.FC = () => {
 
   const openCreate = () => {
     setEditing({ __new: true });
-    setEditForm({ description: '', cron: '0 9 * * *', enabled: true });
+    setEditForm({ description: '', cron: '0 9 * * *', enabled: true, activeGroupIds: projectGroupIds ?? [] });
   };
 
   const openEdit = (t: any) => {
     setEditing(t);
-    setEditForm({ description: t.description, cron: t.cron, enabled: t.enabled });
+    setEditForm({ description: t.description, cron: t.cron, enabled: t.enabled, activeGroupIds: t.active_group_ids || [] });
   };
 
   const handleToggle = async (t: any, enabled: boolean) => {
@@ -111,11 +116,14 @@ export const ScheduledTasksPage: React.FC = () => {
     }
     setSaving(true);
     try {
+      const scopedGroupIds = projectGroupIds ?? editForm.activeGroupIds;
       if (editing?.__new) {
         await api.createScheduledTask({
           description: desc,
           cron,
           enabled: editForm.enabled,
+          active_group_ids: scopedGroupIds,
+          project_id: selectedProjectId || undefined,
           source_session_id: editing.source_session_id || null,
         });
         message.success('定时任务已创建');
@@ -124,6 +132,8 @@ export const ScheduledTasksPage: React.FC = () => {
           description: desc,
           cron,
           enabled: editForm.enabled,
+          active_group_ids: scopedGroupIds,
+          project_id: selectedProjectId || undefined,
         });
         message.success('已保存');
       }
@@ -136,6 +146,23 @@ export const ScheduledTasksPage: React.FC = () => {
     }
   };
 
+  const groupById = new Map(groups.map(group => [group.id, group]));
+  const visibleItems = selectedProjectId
+    ? items.filter(item => (item.active_group_ids || []).includes(selectedProjectId))
+    : items;
+  const renderScopeTags = (ids: string[] = []) => (
+    ids.length ? (
+      <Space wrap size={[2, 2]}>
+        {ids.map(id => {
+          const group = groupById.get(id);
+          return <Tag key={id} color={group?.color || 'default'}>{group?.name || id}</Tag>;
+        })}
+      </Space>
+    ) : (
+      <Tag>全局</Tag>
+    )
+  );
+
   const columns = [
     {
       title: '任务描述',
@@ -146,6 +173,12 @@ export const ScheduledTasksPage: React.FC = () => {
           <div style={{ maxWidth: 360, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{v}</div>
         </Tooltip>
       ),
+    },
+    {
+      title: '项目范围',
+      dataIndex: 'active_group_ids',
+      key: 'active_group_ids',
+      render: (ids: string[]) => renderScopeTags(ids || []),
     },
     {
       title: '执行时间/频率',
@@ -196,12 +229,12 @@ export const ScheduledTasksPage: React.FC = () => {
           showIcon
           style={{ marginBottom: 12 }}
           message="说明"
-          description={<span>cron 格式：<code>分 时 日 月 周</code>（周：0=周日…6=周六）。在智能问答中把会话类型选为"配置定时任务"可直接预填创建。</span>}
+          description={<span>cron 格式：<code>分 时 日 月 周</code>（周：0=周日…6=周六）。{selectedProject ? <>当前仅显示 <Tag color={selectedProject.color}>{selectedProject.name}</Tag> 的定时任务。</> : '在智能问答中把会话类型选为"配置定时任务"可直接预填创建。'}</span>}
         />
         <Table
           rowKey="id"
           loading={loading}
-          dataSource={items}
+          dataSource={visibleItems}
           columns={columns as any}
           pagination={{ pageSize: 10 }}
           locale={{ emptyText: '尚未创建定时任务' }}
@@ -253,6 +286,27 @@ export const ScheduledTasksPage: React.FC = () => {
           </div>
         </div>
         <div>
+          {selectedProject ? (
+            <div style={{ marginBottom: 12 }}>
+              <Text strong>项目范围</Text>
+              <div style={{ marginTop: 6 }}>
+                <Tag color={selectedProject.color}>{selectedProject.name}</Tag>
+                <Text type="secondary" style={{ fontSize: 12 }}>触发时只检索该项目知识库</Text>
+              </div>
+            </div>
+          ) : groups.length > 1 ? (
+            <div style={{ marginBottom: 12 }}>
+              <Text strong>项目范围</Text>
+              <div style={{ marginTop: 6 }}>
+                <Checkbox.Group
+                  value={editForm.activeGroupIds}
+                  onChange={(vals) => setEditForm(s => ({ ...s, activeGroupIds: vals as string[] }))}
+                  options={groups.map(group => ({ label: <Tag color={group.color}>{group.name}</Tag>, value: group.id }))}
+                />
+              </div>
+              <Text type="secondary" style={{ fontSize: 12 }}>不选择则作为全局定时任务保存</Text>
+            </div>
+          ) : null}
           <Checkbox
             checked={editForm.enabled}
             onChange={(e) => setEditForm(s => ({ ...s, enabled: e.target.checked }))}

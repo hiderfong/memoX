@@ -6,6 +6,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import axios from 'axios';
 import dayjs from 'dayjs';
 
+import { useProjectContext } from '../components/ProjectContext';
 import { useIsMobile, API_BASE, KnowledgeGroup, api } from '../shared';
 
 const { Header, Sider, Content } = Layout;
@@ -179,6 +180,45 @@ type TaskTraceSubtask = {
   events?: TaskTraceEvent[];
 };
 
+type TaskDebugSubtaskFlow = {
+  id: string;
+  description?: string;
+  status?: string;
+  assigned_agent?: string;
+  attempts?: number;
+  dependencies?: string[];
+  dependency_statuses?: { id: string; status: string }[];
+  blocked_dependencies?: { id: string; status: string }[];
+  risk?: 'ok' | 'warning' | 'error' | 'running' | string;
+  event_count?: number;
+  warning_count?: number;
+  failure_count?: number;
+  retry_count?: number;
+  tool_call_count?: number;
+  llm_tokens?: number;
+  last_event_at?: string;
+  last_event_label?: string;
+};
+
+type TaskDebuggerSummary = {
+  health?: {
+    status?: string;
+    failure_count?: number;
+    retry_count?: number;
+    tool_rejected_count?: number;
+    fallback_count?: number;
+  };
+  stage_counts?: Record<string, number>;
+  severity_counts?: Record<string, number>;
+  subtask_flow?: TaskDebugSubtaskFlow[];
+  agent_summaries?: any[];
+  tool_summaries?: any[];
+  provider_summaries?: any[];
+  decision_points?: TaskTraceEvent[];
+  hotspots?: TaskDebugSubtaskFlow[];
+  unassigned_event_count?: number;
+};
+
 type TaskDiagnosis = {
   level: 'ok' | 'warning' | 'critical';
   headline: string;
@@ -237,6 +277,19 @@ const metricBoxStyle: React.CSSProperties = {
 const compactText = (value = '', maxLength = 96) => (
   value.length > maxLength ? `${value.substring(0, maxLength)}...` : value
 );
+
+const debugRiskColor = (risk?: string) => {
+  if (risk === 'error') return 'red';
+  if (risk === 'warning') return 'orange';
+  if (risk === 'running') return 'blue';
+  return 'green';
+};
+
+const debugHealthText = (status?: string) => {
+  if (status === 'error') return '存在失败';
+  if (status === 'warning') return '存在风险';
+  return '运行正常';
+};
 
 const getScorePercent = (score: any) => {
   if (score === null || score === undefined || score === '') return null;
@@ -314,6 +367,183 @@ const renderTraceEventItems = (events: TaskTraceEvent[]) => (
     })}
   />
 );
+
+const TaskDebuggerPanel: React.FC<{
+  debuggerData?: TaskDebuggerSummary;
+  onFilterSubtask: (subtaskId: string) => void;
+  onFilterStage: (stage: string) => void;
+}> = ({ debuggerData, onFilterSubtask, onFilterStage }) => {
+  if (!debuggerData) return null;
+  const health = debuggerData.health || {};
+  const subtaskFlow = debuggerData.subtask_flow || [];
+  const hotspots = debuggerData.hotspots || [];
+  const stageCounts = debuggerData.stage_counts || {};
+  const decisionPoints = debuggerData.decision_points || [];
+
+  return (
+    <Space direction="vertical" size={12} style={{ width: '100%' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 10 }}>
+        <div style={metricBoxStyle}>
+          <Text type="secondary" style={{ fontSize: 12 }}>调试健康度</Text>
+          <div style={{ marginTop: 8 }}>
+            <Tag color={debugRiskColor(health.status)}>{debugHealthText(health.status)}</Tag>
+          </div>
+          <Text type="secondary" style={{ display: 'block', marginTop: 6, fontSize: 12 }}>
+            失败 {health.failure_count || 0} · 重试 {health.retry_count || 0}
+          </Text>
+        </div>
+        <div style={metricBoxStyle}>
+          <Text type="secondary" style={{ fontSize: 12 }}>工具风险</Text>
+          <div style={{ marginTop: 6 }}>
+            <Text strong style={{ fontSize: 22 }}>{health.tool_rejected_count || 0}</Text>
+          </div>
+          <Text type="secondary" style={{ fontSize: 12 }}>策略拦截</Text>
+        </div>
+        <div style={metricBoxStyle}>
+          <Text type="secondary" style={{ fontSize: 12 }}>Provider 切换</Text>
+          <div style={{ marginTop: 6 }}>
+            <Text strong style={{ fontSize: 22 }}>{health.fallback_count || 0}</Text>
+          </div>
+          <Text type="secondary" style={{ fontSize: 12 }}>fallback 次数</Text>
+        </div>
+        <div style={metricBoxStyle}>
+          <Text type="secondary" style={{ fontSize: 12 }}>未归属事件</Text>
+          <div style={{ marginTop: 6 }}>
+            <Text strong style={{ fontSize: 22 }}>{debuggerData.unassigned_event_count || 0}</Text>
+          </div>
+          <Text type="secondary" style={{ fontSize: 12 }}>任务级事件</Text>
+        </div>
+      </div>
+
+      <div>
+        <Space wrap style={{ marginBottom: 8 }}>
+          <Text strong>执行地图</Text>
+          {Object.entries(stageCounts).map(([stage, count]) => (
+            <Button key={stage} size="small" onClick={() => onFilterStage(stage)}>
+              {stage} {count}
+            </Button>
+          ))}
+        </Space>
+        {subtaskFlow.length ? (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: 10 }}>
+            {subtaskFlow.map((subtask) => (
+              <div
+                key={subtask.id}
+                style={{
+                  ...metricBoxStyle,
+                  borderColor: subtask.risk === 'error' ? '#ffccc7' : subtask.risk === 'warning' ? '#ffe58f' : '#f0f0f0',
+                  minHeight: 150,
+                }}
+              >
+                <Space direction="vertical" size={8} style={{ width: '100%' }}>
+                  <Space wrap size={4}>
+                    <Tag color={debugRiskColor(subtask.risk)}>{subtask.risk || 'ok'}</Tag>
+                    {traceStatusTag(subtask.status)}
+                    <Tag color="purple">{subtask.assigned_agent || '自动分配'}</Tag>
+                  </Space>
+                  <Text strong style={{ display: 'block', wordBreak: 'break-word' }}>
+                    {compactText(subtask.description || subtask.id, 82)}
+                  </Text>
+                  <Space wrap size={4}>
+                    <Tag>事件 {subtask.event_count || 0}</Tag>
+                    <Tag color={subtask.warning_count ? 'orange' : 'default'}>警告 {subtask.warning_count || 0}</Tag>
+                    <Tag color={subtask.failure_count ? 'red' : 'default'}>失败 {subtask.failure_count || 0}</Tag>
+                    <Tag>工具 {subtask.tool_call_count || 0}</Tag>
+                    <Tag>Token {subtask.llm_tokens || 0}</Tag>
+                  </Space>
+                  {subtask.blocked_dependencies?.length ? (
+                    <Text type="danger" style={{ fontSize: 12 }}>
+                      阻塞依赖：{subtask.blocked_dependencies.map(dep => dep.id).join(', ')}
+                    </Text>
+                  ) : subtask.dependencies?.length ? (
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      依赖：{subtask.dependencies.join(', ')}
+                    </Text>
+                  ) : null}
+                  {subtask.last_event_label && (
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      最近：{subtask.last_event_label}
+                      {subtask.last_event_at ? ` · ${dayjs(subtask.last_event_at).format('HH:mm:ss')}` : ''}
+                    </Text>
+                  )}
+                  <Button size="small" icon={<EyeOutlined />} onClick={() => onFilterSubtask(subtask.id)}>
+                    查看事件
+                  </Button>
+                </Space>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <Empty description="暂无执行地图" />
+        )}
+      </div>
+
+      {hotspots.length > 0 && (
+        <Alert
+          type={health.status === 'error' ? 'error' : health.status === 'warning' ? 'warning' : 'info'}
+          showIcon
+          message="热点子任务"
+          description={hotspots.map(item => `${item.id}: 失败 ${item.failure_count || 0}，警告 ${item.warning_count || 0}，重试 ${item.retry_count || 0}`).join('；')}
+        />
+      )}
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 10 }}>
+        <div style={metricBoxStyle}>
+          <Text strong>Agent 摘要</Text>
+          <Table
+            size="small"
+            pagination={false}
+            rowKey="agent"
+            dataSource={debuggerData.agent_summaries || []}
+            columns={[
+              { title: 'Agent', dataIndex: 'agent' },
+              { title: '子任务', dataIndex: 'subtask_count', width: 70 },
+              { title: '失败', dataIndex: 'failure_count', width: 60 },
+              { title: 'Token', dataIndex: 'llm_tokens', width: 80 },
+            ]}
+          />
+        </div>
+        <div style={metricBoxStyle}>
+          <Text strong>工具摘要</Text>
+          <Table
+            size="small"
+            pagination={false}
+            rowKey="tool"
+            dataSource={debuggerData.tool_summaries || []}
+            columns={[
+              { title: '工具', dataIndex: 'tool' },
+              { title: '调用', dataIndex: 'call_count', width: 60 },
+              { title: '拦截', dataIndex: 'rejected_count', width: 60 },
+              { title: '错误', dataIndex: 'error_count', width: 60 },
+            ]}
+          />
+        </div>
+        <div style={metricBoxStyle}>
+          <Text strong>Provider 摘要</Text>
+          <Table
+            size="small"
+            pagination={false}
+            rowKey={(item: any) => `${item.provider}:${item.model}`}
+            dataSource={debuggerData.provider_summaries || []}
+            columns={[
+              { title: 'Provider', dataIndex: 'provider' },
+              { title: '重试', dataIndex: 'retry_count', width: 60 },
+              { title: 'Fallback', dataIndex: 'fallback_count', width: 86 },
+              { title: 'Token', dataIndex: 'llm_tokens', width: 80 },
+            ]}
+          />
+        </div>
+      </div>
+
+      {decisionPoints.length > 0 && (
+        <div>
+          <Title level={5} style={{ marginTop: 0 }}>关键决策点</Title>
+          {renderTraceEventItems(decisionPoints.slice(0, 8))}
+        </div>
+      )}
+    </Space>
+  );
+};
 
 export const TaskTracePanel: React.FC<{
   taskId: string;
@@ -608,6 +838,12 @@ export const TaskTracePanel: React.FC<{
         {summary.last_event_at && <Text type="secondary">最近更新 {dayjs(summary.last_event_at).format('YYYY-MM-DD HH:mm:ss')}</Text>}
       </Space>
 
+      <TaskDebuggerPanel
+        debuggerData={trace.debugger}
+        onFilterSubtask={(subtaskId) => setFilters(prev => ({ ...prev, subtask_id: subtaskId }))}
+        onFilterStage={(stage) => setFilters(prev => ({ ...prev, stage }))}
+      />
+
       {taskEvents.length > 0 && (
         <div>
           <Title level={5} style={{ marginTop: 0 }}>任务级事件</Title>
@@ -893,6 +1129,7 @@ export const TasksPage: React.FC = () => {
   const [feedbackInfo, setFeedbackInfo] = useState<any>(null);
   const [feedbackText, setFeedbackText] = useState('');
   const [submittingFeedback, setSubmittingFeedback] = useState(false);
+  const { selectedProjectId, selectedProject, projectGroupIds } = useProjectContext();
 
   // 执行中轮询运行任务列表
   useEffect(() => {
@@ -966,9 +1203,14 @@ export const TasksPage: React.FC = () => {
     fetchTasks();
     api.listGroups().then(res => {
       setGroups(res.data);
-      setActiveGroupIds(res.data.map((g: KnowledgeGroup) => g.id));
+      const nextProjectGroupIds = selectedProjectId ? [selectedProjectId] : null;
+      setActiveGroupIds(nextProjectGroupIds ?? res.data.map((g: KnowledgeGroup) => g.id));
     }).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (projectGroupIds) setActiveGroupIds(projectGroupIds);
+  }, [selectedProjectId, groups.length]);
 
   const terminalStatuses = ['completed', 'failed', 'cancelled', 'timeout'];
 
@@ -1006,8 +1248,17 @@ export const TasksPage: React.FC = () => {
 
     try {
       const allGroupIds = groups.map(g => g.id);
-      const isAllSelected = activeGroupIds.length === allGroupIds.length;
-      const res = await api.createTask(taskInput, undefined, isAllSelected ? null : activeGroupIds);
+      const scopedGroupIds = projectGroupIds ?? activeGroupIds;
+      const isAllSelected = !selectedProjectId && scopedGroupIds.length === allGroupIds.length;
+      const context = selectedProject
+        ? { project_id: selectedProject.id, project_name: selectedProject.name }
+        : undefined;
+      const res = await api.createTask(
+        taskInput,
+        context,
+        isAllSelected ? null : scopedGroupIds,
+        selectedProjectId || undefined,
+      );
       const data = res.data;
 
       setCurrentTask(data);
@@ -1187,7 +1438,14 @@ export const TasksPage: React.FC = () => {
   return (
     <div>
       <Card title="任务执行">
-        {groups.length > 1 && (
+        {selectedProject && (
+          <div style={{ marginBottom: 12 }}>
+            <Text type="secondary" style={{ fontSize: 12, marginRight: 8 }}>当前项目：</Text>
+            <Tag color={selectedProject.color}>{selectedProject.name}</Tag>
+            <Text type="secondary" style={{ fontSize: 12 }}>任务执行将只检索该项目知识库</Text>
+          </div>
+        )}
+        {!selectedProjectId && groups.length > 1 && (
           <div style={{ marginBottom: 12 }}>
             <Text type="secondary" style={{ fontSize: 12, marginRight: 8 }}>激活知识库分组：</Text>
             <Checkbox.Group

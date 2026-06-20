@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import pytest
 
+from src.knowledge.knowledge_graph import GraphSearchResult, Triple
 from src.knowledge.rag_engine import (
     Citation,
     RAGEngine,
@@ -236,3 +237,90 @@ class TestBuildRagPromptCitations:
         # [ref-1] 对应第一个结果，[ref-2] 对应第二个
         assert "【文档 1】" in context
         assert "【文档 2】" in context
+
+
+# ── retrieval evidence payload 测试 ─────────────────────────────────────────
+
+
+class TestRetrievalEvidencePayload:
+    """RAG 证据解释 payload 测试"""
+
+    @pytest.fixture
+    def rag_engine(self):
+        return RAGEngine()
+
+    def test_build_evidence_payload_basic_retrieval(self, rag_engine):
+        result = SearchResult(
+            id="doc1_chunk_0",
+            content="MemoX 支持知识库问答。",
+            score=0.72,
+            metadata={"filename": "memo.md", "doc_id": "doc1", "chunk_index": 0},
+        )
+
+        payload = rag_engine.build_evidence_payload([result])
+
+        assert payload[0]["ref_id"] == "ref-1"
+        assert payload[0]["filename"] == "memo.md"
+        assert payload[0]["evidence_quality"] == "basic"
+        assert payload[0]["evidence_reason"] == "向量/关键词检索命中"
+        assert payload[0]["graph_boosted"] is False
+        assert payload[0]["graph_relations"] == []
+
+    def test_build_evidence_payload_includes_graph_boost_reason(self, rag_engine):
+        result = SearchResult(
+            id="doc1_chunk_0",
+            content="MemoX 支持知识图谱，并用于长期记忆。",
+            score=0.84,
+            metadata={"filename": "memo.md", "doc_id": "doc1", "chunk_index": 0},
+        )
+        graph_result = GraphSearchResult(
+            entity="MemoX",
+            triples=[
+                Triple("MemoX", "支持", "知识图谱", "doc1_chunk_0", 0.91),
+                Triple("MemoX", "用于", "长期记忆", "doc1_chunk_1", 0.86),
+            ],
+            connected_entities=["知识图谱", "长期记忆"],
+            degree=2,
+        )
+
+        payload = rag_engine.build_evidence_payload(
+            [result],
+            graph_result=graph_result,
+            graph_boosted_ids=["doc1_chunk_0"],
+        )
+
+        item = payload[0]
+        assert item["ref_id"] == "ref-1"
+        assert item["evidence_quality"] == "strong"
+        assert item["graph_boosted"] is True
+        assert item["graph_entity"] == "MemoX"
+        assert item["graph_degree"] == 2
+        assert item["matched_entities"] == ["MemoX", "知识图谱", "长期记忆"]
+        assert item["graph_relations"][0]["predicate"] == "支持"
+        assert "图谱实体" in item["evidence_reason"]
+
+    def test_build_citation_payload_uses_answer_refs_and_evidence(self, rag_engine):
+        results = [
+            SearchResult(
+                id="doc1_chunk_0",
+                content="第一段内容",
+                score=0.9,
+                metadata={"filename": "a.md", "doc_id": "doc1", "chunk_index": 0},
+            ),
+            SearchResult(
+                id="doc2_chunk_2",
+                content="第二段内容",
+                score=0.7,
+                metadata={"filename": "b.md", "doc_id": "doc2", "chunk_index": 2},
+            ),
+        ]
+        evidence = rag_engine.build_evidence_payload(results)
+
+        citations = RAGEngine.build_citation_payload(["ref-2"], results, evidence)
+
+        assert len(citations) == 1
+        assert citations[0]["ref_id"] == "ref-2"
+        assert citations[0]["filename"] == "b.md"
+        assert citations[0]["chunk_index"] == 2
+        assert "content" not in citations[0]
+        assert citations[0]["evidence_quality"] == "basic"

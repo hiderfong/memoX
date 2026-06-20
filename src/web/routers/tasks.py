@@ -21,6 +21,7 @@ class TaskRequest(BaseModel):
     context: dict | None = None
     generate_suggestions: bool = True
     active_group_ids: list[str] | None = None
+    project_id: str | None = None
     timeout_seconds: int | None = None  # 任务超时（秒）
 
 
@@ -50,6 +51,13 @@ def _get_task_job_runner() -> TaskJobRunner:
     if _task_job_runner is None or _task_job_runner_key != key:
         init_task_job_runner(orchestrator, task_planner, store, result_cache, config=config)
     return _task_job_runner
+
+
+def _resolve_active_group_ids(project_id: str | None, active_group_ids: list[str] | None) -> list[str] | None:
+    project_id = (project_id or "").strip()
+    if project_id:
+        return [project_id]
+    return active_group_ids
 
 
 def init_task_job_runner(orchestrator, task_planner, store, result_cache, config=None) -> TaskJobRunner:
@@ -485,6 +493,7 @@ def _build_task_trace(
         "first_event_at": filtered_events[0]["created_at"] if filtered_events else "",
         "last_event_at": filtered_events[-1]["created_at"] if filtered_events else "",
     }
+    debugger = _build_task_debugger_summary(subtasks, unassigned_events, filtered_events, summary)
 
     return {
         "task_id": task_id,
@@ -495,6 +504,7 @@ def _build_task_trace(
         "completed_at": task.get("completed_at") or checkpoint.get("completed_at", ""),
         "checkpoint_updated_at": checkpoint.get("updated_at", ""),
         "summary": summary,
+        "debugger": debugger,
         "subtasks": subtasks,
         "unassigned_events": unassigned_events,
         "timeline": filtered_events,
@@ -541,6 +551,224 @@ def _event_brief(event: dict[str, Any]) -> dict[str, Any]:
         "actor": event.get("actor", {}),
         "message": _preview_value(event.get("message"), limit=240),
         "details": event.get("details", {}),
+    }
+
+
+def _event_actor_value(event: dict[str, Any], *keys: str) -> str:
+    actor = event.get("actor") if isinstance(event.get("actor"), dict) else {}
+    details = event.get("details") if isinstance(event.get("details"), dict) else {}
+    for key in keys:
+        value = actor.get(key) or details.get(key)
+        if value:
+            return str(value)
+    return ""
+
+
+def _build_task_debugger_summary(
+    subtasks: list[dict[str, Any]],
+    unassigned_events: list[dict[str, Any]],
+    timeline: list[dict[str, Any]],
+    summary: dict[str, Any],
+) -> dict[str, Any]:
+    """Build an operator-friendly execution-debug summary from normalized trace events."""
+    stage_counts: dict[str, int] = {}
+    severity_counts: dict[str, int] = {}
+    for event in timeline:
+        stage = str(event.get("stage") or "unknown")
+        severity = str(event.get("severity") or "default")
+        stage_counts[stage] = stage_counts.get(stage, 0) + 1
+        severity_counts[severity] = severity_counts.get(severity, 0) + 1
+
+    subtask_status = {str(subtask.get("id") or ""): str(subtask.get("status") or "unknown") for subtask in subtasks}
+    subtask_flow: list[dict[str, Any]] = []
+    agent_map: dict[str, dict[str, Any]] = {}
+    tool_map: dict[str, dict[str, Any]] = {}
+    provider_map: dict[str, dict[str, Any]] = {}
+
+    for subtask in subtasks:
+        events = subtask.get("events") if isinstance(subtask.get("events"), list) else []
+        event_count = len(events)
+        warning_count = sum(1 for event in events if event.get("severity") == "warning")
+        failure_count = sum(1 for event in events if event.get("severity") == "error")
+        retry_count = sum(1 for event in events if "retry" in str(event.get("event_type") or ""))
+        tool_call_count = sum(1 for event in events if event.get("event_type") == "tool_call")
+        llm_tokens = 0
+        for event in events:
+            if event.get("event_type") not in {"llm_usage", "llm_call"}:
+                continue
+            details = event.get("details") if isinstance(event.get("details"), dict) else {}
+            llm_tokens += int(details.get("total_tokens") or 0) or (
+                int(details.get("input_tokens") or 0) + int(details.get("output_tokens") or 0)
+            )
+
+        dependencies = [str(dep) for dep in subtask.get("dependencies", []) if dep]
+        dependency_statuses = [
+            {"id": dep, "status": subtask_status.get(dep, "unknown")}
+            for dep in dependencies
+        ]
+        blocked_dependencies = [
+            dep
+            for dep in dependency_statuses
+            if dep["status"] not in {"completed", "success"}
+        ]
+        risk = "ok"
+        if failure_count or subtask.get("status") in {"failed", "timeout", "cancelled"} or subtask.get("error"):
+            risk = "error"
+        elif warning_count or retry_count or blocked_dependencies:
+            risk = "warning"
+        elif str(subtask.get("status") or "") in {"running", "processing"}:
+            risk = "running"
+
+        latest_event = events[-1] if events else {}
+        subtask_flow.append({
+            "id": subtask.get("id", ""),
+            "description": subtask.get("description", ""),
+            "status": subtask.get("status", "unknown"),
+            "assigned_agent": subtask.get("assigned_agent", ""),
+            "attempts": subtask.get("attempts", 0),
+            "dependencies": dependencies,
+            "dependency_statuses": dependency_statuses,
+            "blocked_dependencies": blocked_dependencies,
+            "risk": risk,
+            "event_count": event_count,
+            "warning_count": warning_count,
+            "failure_count": failure_count,
+            "retry_count": retry_count,
+            "tool_call_count": tool_call_count,
+            "llm_tokens": llm_tokens,
+            "first_event_at": events[0].get("created_at", "") if events else "",
+            "last_event_at": latest_event.get("created_at", "") if latest_event else "",
+            "last_event_label": latest_event.get("label", "") if latest_event else "",
+        })
+
+        agent_name = str(subtask.get("assigned_agent") or "自动分配")
+        agent = agent_map.setdefault(
+            agent_name,
+            {
+                "agent": agent_name,
+                "subtask_count": 0,
+                "event_count": 0,
+                "tool_call_count": 0,
+                "failure_count": 0,
+                "warning_count": 0,
+                "retry_count": 0,
+                "llm_tokens": 0,
+            },
+        )
+        agent["subtask_count"] += 1
+        agent["event_count"] += event_count
+        agent["tool_call_count"] += tool_call_count
+        agent["failure_count"] += failure_count
+        agent["warning_count"] += warning_count
+        agent["retry_count"] += retry_count
+        agent["llm_tokens"] += llm_tokens
+
+    for event in timeline:
+        if event.get("event_type") == "tool_call":
+            details = event.get("details") if isinstance(event.get("details"), dict) else {}
+            tool = str(details.get("tool") or "tool")
+            status = str(details.get("status") or "unknown")
+            item = tool_map.setdefault(
+                tool,
+                {"tool": tool, "call_count": 0, "success_count": 0, "rejected_count": 0, "error_count": 0},
+            )
+            item["call_count"] += 1
+            if status == "success":
+                item["success_count"] += 1
+            elif status == "rejected":
+                item["rejected_count"] += 1
+            else:
+                item["error_count"] += 1
+
+        provider = _event_actor_value(event, "provider")
+        if provider:
+            model = _event_actor_value(event, "model")
+            key = f"{provider}:{model}"
+            item = provider_map.setdefault(
+                key,
+                {
+                    "provider": provider,
+                    "model": model,
+                    "event_count": 0,
+                    "retry_count": 0,
+                    "fallback_count": 0,
+                    "llm_call_count": 0,
+                    "llm_tokens": 0,
+                },
+            )
+            item["event_count"] += 1
+            if event.get("event_type") == "provider_retry":
+                item["retry_count"] += 1
+            if event.get("event_type") == "provider_fallback":
+                item["fallback_count"] += 1
+            if event.get("event_type") in {"llm_usage", "llm_call"}:
+                details = event.get("details") if isinstance(event.get("details"), dict) else {}
+                item["llm_call_count"] += 1
+                item["llm_tokens"] += int(details.get("total_tokens") or 0) or (
+                    int(details.get("input_tokens") or 0) + int(details.get("output_tokens") or 0)
+                )
+
+    decision_event_types = {
+        "planned",
+        "iteration_started",
+        "provider_retry",
+        "provider_fallback",
+        "subtask_retry_scheduled",
+        "retry_queued",
+        "auto_retry_scheduled",
+        "auto_retry_queued",
+        "failed_retryable",
+        "failed_non_retryable",
+        "timeout",
+        "lease_lost",
+    }
+    decision_points = [
+        _event_brief(event)
+        for event in timeline
+        if event.get("event_type") in decision_event_types or event.get("severity") in {"warning", "error"}
+    ][:20]
+
+    hotspots = sorted(
+        subtask_flow,
+        key=lambda item: (
+            item["failure_count"],
+            item["warning_count"],
+            item["retry_count"],
+            item["llm_tokens"],
+            item["event_count"],
+        ),
+        reverse=True,
+    )[:5]
+
+    return {
+        "stage_counts": stage_counts,
+        "severity_counts": severity_counts,
+        "subtask_flow": subtask_flow,
+        "agent_summaries": sorted(
+            agent_map.values(),
+            key=lambda item: (item["failure_count"], item["warning_count"], item["event_count"]),
+            reverse=True,
+        ),
+        "tool_summaries": sorted(
+            tool_map.values(),
+            key=lambda item: (item["rejected_count"], item["error_count"], item["call_count"]),
+            reverse=True,
+        ),
+        "provider_summaries": sorted(
+            provider_map.values(),
+            key=lambda item: (item["retry_count"], item["fallback_count"], item["llm_tokens"]),
+            reverse=True,
+        ),
+        "decision_points": decision_points,
+        "hotspots": hotspots,
+        "unassigned_event_count": len(unassigned_events),
+        "health": {
+            "status": "error" if summary.get("failure_count", 0) else "warning" if summary.get("retry_count", 0) or summary.get("tool_rejected_count", 0) else "ok",
+            "failure_count": summary.get("failure_count", 0),
+            "retry_count": summary.get("retry_count", 0),
+            "tool_rejected_count": summary.get("tool_rejected_count", 0),
+            "fallback_count": summary.get("fallback_count", 0),
+        },
     }
 
 
@@ -900,12 +1128,16 @@ def _build_task_diagnosis_report(
 async def create_task(request: TaskRequest) -> dict:
     """创建后台任务，并立即返回可轮询的任务记录。"""
     runner = _get_task_job_runner()
+    active_group_ids = _resolve_active_group_ids(request.project_id, request.active_group_ids)
+    context = dict(request.context or {})
+    if request.project_id:
+        context.setdefault("project_id", request.project_id)
     return runner.submit(
         TaskJobRequest(
             description=request.description,
-            context=request.context or {},
+            context=context,
             generate_suggestions=request.generate_suggestions,
-            active_group_ids=request.active_group_ids,
+            active_group_ids=active_group_ids,
             timeout_seconds=request.timeout_seconds,
         )
     )

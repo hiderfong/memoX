@@ -6,6 +6,8 @@ import { useNavigate } from 'react-router-dom';
 
 import dayjs from 'dayjs';
 import { I2VModal } from '../components/I2VModal';
+import { GraphRelation, RagEvidenceMeta } from '../components/RagEvidenceMeta';
+import { useProjectContext } from '../components/ProjectContext';
 
 import { useIsMobile, API_BASE, KnowledgeGroup, api } from '../shared';
 import ReactMarkdown from 'react-markdown';
@@ -40,6 +42,13 @@ interface Citation {
   chunk_index: number;
   content_preview: string;
   score: number;
+  evidence_reason?: string;
+  evidence_quality?: string;
+  graph_boosted?: boolean;
+  matched_entities?: string[];
+  graph_entity?: string;
+  graph_degree?: number;
+  graph_relations?: GraphRelation[];
 }
 
 export const ChatPage: React.FC = () => {
@@ -65,6 +74,7 @@ export const ChatPage: React.FC = () => {
   const [clarify, setClarify] = useState<{ question: string; options: string[] } | null>(null);
   const [i2vModalOpen, setI2vModalOpen] = useState(false);
   const [i2vSourceUrl, setI2vSourceUrl] = useState<string>('');
+  const { selectedProjectId, selectedProject, projectGroupIds } = useProjectContext();
   const navigate = useNavigate();
 
   const scrollToBottom = () => {
@@ -162,13 +172,15 @@ export const ChatPage: React.FC = () => {
   const saveSessionGroups = (sid: string, ids: string[]) => {
     try { localStorage.setItem(groupsStorageKey(sid), JSON.stringify(ids)); } catch {}
   };
+  const defaultActiveGroupIds = () => projectGroupIds ?? groups.map(g => g.id);
+  const effectiveActiveGroupIds = () => projectGroupIds ?? activeGroupIds;
 
   const handleNewSession = () => {
     setSessionId('');
     setMessages([]);
     setSources([]);
     setCitations([]);
-    setActiveGroupIds(groups.map(g => g.id));
+    setActiveGroupIds(defaultActiveGroupIds());
   };
 
   const handleResumeSession = async (sid: string) => {
@@ -200,8 +212,11 @@ export const ChatPage: React.FC = () => {
       setMessages(msgs);
       setSources([]);
       setCitations([]);
+      const scopedIds = defaultActiveGroupIds();
       const stored = loadSessionGroups(sid);
-      if (stored) {
+      if (projectGroupIds) {
+        setActiveGroupIds(scopedIds);
+      } else if (stored) {
         const valid = stored.filter(id => groups.some(g => g.id === id));
         setActiveGroupIds(valid.length ? valid : groups.map(g => g.id));
       } else {
@@ -227,10 +242,18 @@ export const ChatPage: React.FC = () => {
   useEffect(() => {
     api.listGroups().then(res => {
       setGroups(res.data);
-      setActiveGroupIds(res.data.map((g: KnowledgeGroup) => g.id));
+      const nextProjectGroupIds = selectedProjectId ? [selectedProjectId] : null;
+      setActiveGroupIds(nextProjectGroupIds ?? res.data.map((g: KnowledgeGroup) => g.id));
     }).catch(() => {});
     api.listWorkers().then(res => setWorkers(res.data)).catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (!projectGroupIds) return;
+    setActiveGroupIds(projectGroupIds);
+    if (sessionId) saveSessionGroups(sessionId, projectGroupIds);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedProjectId, groups.length, sessionId]);
 
   const handleSend = async () => {
     if (!input.trim() || loading) return;
@@ -263,7 +286,8 @@ export const ChatPage: React.FC = () => {
 
     try {
       const allGroupIds = groups.map(g => g.id);
-      const isAllSelected = activeGroupIds.length === allGroupIds.length;
+      const scopedGroupIds = effectiveActiveGroupIds();
+      const isAllSelected = !selectedProjectId && scopedGroupIds.length === allGroupIds.length;
       const token = localStorage.getItem('memox_token');
       const resp = await fetch(`${API_BASE}/chat/stream`, {
         method: 'POST',
@@ -276,7 +300,8 @@ export const ChatPage: React.FC = () => {
           session_id: sessionId || undefined,
           use_rag: true,
           stream: true,
-          active_group_ids: isAllSelected ? null : activeGroupIds,
+          active_group_ids: isAllSelected ? null : scopedGroupIds,
+          project_id: selectedProjectId || undefined,
           worker_id: selectedWorkerId || undefined,
         }),
       });
@@ -382,7 +407,7 @@ export const ChatPage: React.FC = () => {
 
       if (finalSessionId && !sessionId) {
         setSessionId(finalSessionId);
-        saveSessionGroups(finalSessionId, activeGroupIds);
+        saveSessionGroups(finalSessionId, scopedGroupIds);
       }
       fetchSessions();
     } catch (err: any) {
@@ -578,7 +603,8 @@ export const ChatPage: React.FC = () => {
                     if (msg.citations && msg.citations.length > 0) {
                       lines.push('\n**引用来源：**\n');
                       msg.citations.forEach((c: Citation) => {
-                        lines.push(`- [${c.ref_id}] ${c.filename} (#${c.chunk_index}) — ${c.content_preview.slice(0, 80)}...`);
+                        const reason = c.evidence_reason ? `；${c.evidence_reason}` : '';
+                        lines.push(`- [${c.ref_id}] ${c.filename} (#${c.chunk_index}) — ${c.content_preview.slice(0, 80)}...${reason}`);
                       });
                     }
                   });
@@ -703,7 +729,7 @@ export const ChatPage: React.FC = () => {
                     )}
                     {msg.citations && msg.citations.length > 0 && (
                       <div style={{ marginTop: 8 }}>
-                        <Text type="secondary" style={{ fontSize: 12 }}>🔗 引用来源：</Text>
+                        <Text type="secondary" style={{ fontSize: 12 }}>引用来源：</Text>
                         {msg.citations.map((c: Citation, i: number) => (
                           <Card key={i} size="small" style={{ marginTop: 4, background: '#fafafa' }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
@@ -718,6 +744,7 @@ export const ChatPage: React.FC = () => {
                                     ? c.content_preview.slice(0, 120) + '...'
                                     : c.content_preview}
                                 </div>
+                                <RagEvidenceMeta item={c} />
                               </div>
                               <Tag color="green" style={{ marginLeft: 8, flexShrink: 0 }}>
                                 {Math.round(c.score * 100)}%
@@ -729,9 +756,16 @@ export const ChatPage: React.FC = () => {
                     )}
                     {msg.sources && msg.sources.length > 0 && !msg.citations && (
                       <div style={{ marginTop: 8 }}>
-                        <Text type="secondary" style={{ fontSize: 12 }}>📚 参考来源：</Text>
+                        <Text type="secondary" style={{ fontSize: 12 }}>参考来源：</Text>
                         {msg.sources.map((s: any, i: number) => (
-                          <Tag key={i} style={{ marginTop: 4 }}>{s.filename || s.doc_name || '未知'} ({Math.round((s.score || 0) * 100)}%)</Tag>
+                          <Tooltip key={i} title={s.evidence_reason || '检索命中'}>
+                            <Tag
+                              color={s.graph_boosted ? 'geekblue' : 'default'}
+                              style={{ marginTop: 4 }}
+                            >
+                              {s.ref_id ? `${s.ref_id} · ` : ''}{s.filename || s.doc_name || '未知'} ({Math.round((s.score || 0) * 100)}%)
+                            </Tag>
+                          </Tooltip>
                         ))}
                       </div>
                     )}
@@ -771,11 +805,12 @@ export const ChatPage: React.FC = () => {
                 dataSource={citations}
                 renderItem={(c: Citation) => (
                   <List.Item style={{ padding: '4px 0' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', alignItems: 'center' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', alignItems: 'flex-start', gap: 8 }}>
                       <div>
                         <Tag color="blue" style={{ marginRight: 4 }}>{c.ref_id}</Tag>
                         <Text>{c.filename}</Text>
                         <Tag style={{ marginLeft: 4 }}>#{c.chunk_index}</Tag>
+                        <RagEvidenceMeta item={c} compact />
                       </div>
                       <Tag color="green">{Math.round(c.score * 100)}%</Tag>
                     </div>
@@ -795,8 +830,11 @@ export const ChatPage: React.FC = () => {
                 dataSource={sources}
                 renderItem={(s: any) => (
                   <List.Item style={{ padding: '4px 0' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%' }}>
-                      <Text>{s.filename || s.doc_name || '未知文档'}</Text>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', width: '100%', alignItems: 'flex-start', gap: 8 }}>
+                      <div>
+                        <Text>{s.ref_id ? `${s.ref_id} · ` : ''}{s.filename || s.doc_name || '未知文档'}</Text>
+                        <RagEvidenceMeta item={s} compact />
+                      </div>
                       <Tag color="green">{Math.round((s.score || 0) * 100)}% 匹配</Tag>
                     </div>
                   </List.Item>
@@ -808,7 +846,14 @@ export const ChatPage: React.FC = () => {
           />
         )}
 
-        {groups.length > 1 && (
+        {selectedProject && (
+          <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 12, marginBottom: 4 }}>
+            <Text type="secondary" style={{ fontSize: 12, marginRight: 8 }}>当前项目：</Text>
+            <Tag color={selectedProject.color}>{selectedProject.name}</Tag>
+            <Text type="secondary" style={{ fontSize: 12 }}>问答将只检索该项目知识库</Text>
+          </div>
+        )}
+        {!selectedProjectId && groups.length > 1 && (
           <div style={{ borderTop: '1px solid #f0f0f0', paddingTop: 12, marginBottom: 4 }}>
             <Text type="secondary" style={{ fontSize: 12, marginRight: 8 }}>激活分组：</Text>
             <Checkbox.Group
@@ -874,7 +919,10 @@ export const ChatPage: React.FC = () => {
                         const time = m.created_at ? dayjs(m.created_at).format('MM/DD HH:mm') : '';
                         let text = `${role} ${time}\n\n${m.content}`;
                         if (m.citations && m.citations.length > 0) {
-                          text += '\n\n**引用来源：**\n' + m.citations.map((c: any) => `- [${c.filename} #${c.chunk_index}] ${c.content_preview.slice(0, 80)}...`).join('\n');
+                          text += '\n\n**引用来源：**\n' + m.citations.map((c: Citation) => {
+                            const reason = c.evidence_reason ? `；${c.evidence_reason}` : '';
+                            return `- [${c.ref_id}] ${c.filename} #${c.chunk_index}: ${c.content_preview.slice(0, 80)}...${reason}`;
+                          }).join('\n');
                         }
                         return text;
                       }).join('\n\n---\n\n');

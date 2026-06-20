@@ -11,6 +11,7 @@ router = APIRouter(prefix="/api", tags=["documents"])
 
 class URLRequest(BaseModel):
     url: str
+    group_id: str | None = None
 
 
 class DocumentResponse(BaseModel):
@@ -943,6 +944,7 @@ async def import_url(request: URLRequest) -> DocumentResponse:
     from web.api import WebPageParser, _rag_engine
 
     url = request.url.strip()
+    group_id = request.group_id or "ungrouped"
     if not re.match(r"^https?://", url):
         raise HTTPException(status_code=400, detail="URL 必须以 http:// 或 https:// 开头")
 
@@ -968,7 +970,7 @@ async def import_url(request: URLRequest) -> DocumentResponse:
         chunk.metadata["doc_id"] = doc_id
         chunk.metadata["filename"] = url
         chunk.metadata["type"] = "webpage"
-        chunk.metadata["group_id"] = "ungrouped"
+        chunk.metadata["group_id"] = group_id
         chunk.metadata["created_at"] = created_at
         chunk.metadata["file_size"] = file_size
         chunk.metadata["chunk_count"] = len(chunks)
@@ -984,6 +986,7 @@ async def import_url(request: URLRequest) -> DocumentResponse:
         chunk_count=len(chunks),
         created_at=created_at,
         size=file_size,
+        group_id=group_id,
     )
     _rag_engine._documents[doc_id] = doc_info
     _record_knowledge_graph_quality_after_document({
@@ -1001,6 +1004,7 @@ async def import_url(request: URLRequest) -> DocumentResponse:
         chunk_count=doc_info.chunk_count,
         created_at=doc_info.created_at,
         size=doc_info.size,
+        group_id=doc_info.group_id,
     )
 
 
@@ -1221,21 +1225,35 @@ async def search_documents(q: str, group_ids: str | None = None) -> dict:
     if not q.strip():
         raise HTTPException(status_code=400, detail="搜索关键词不能为空")
     gids = group_ids.split(",") if group_ids else None
-    results = await _rag_engine.search(q, group_ids=gids, top_k=20)
+    rag_search = await _rag_engine.search_with_graph(q, group_ids=gids, top_k=20)
+    results = rag_search["search_results"]
+    evidence_payload = _rag_engine.build_evidence_payload(
+        results,
+        rag_search.get("graph_result"),
+        rag_search.get("graph_boosted_ids", []),
+    )
+    evidence_by_id = {
+        result.id: evidence
+        for result, evidence in zip(results, evidence_payload, strict=False)
+    }
     valid_docs = {d.id: d.filename for d in _rag_engine.list_documents()}
     seen_docs: dict[str, dict] = {}
     for r in results:
         doc_id = r.metadata.get("doc_id", "")
         if doc_id not in valid_docs:
             continue
+        evidence = dict(evidence_by_id.get(r.id) or {})
         if doc_id not in seen_docs or r.score > seen_docs[doc_id]["score"]:
-            seen_docs[doc_id] = {
+            evidence.update({
                 "doc_id": doc_id,
                 "filename": valid_docs[doc_id],
                 "content": r.content,
                 "score": r.score,
                 "chunk_index": r.metadata.get("chunk_index", 0),
                 "group_id": r.metadata.get("group_id", "ungrouped"),
+            })
+            seen_docs[doc_id] = {
+                **evidence,
             }
     return {
         "query": q,

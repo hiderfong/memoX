@@ -15,6 +15,7 @@ class ScheduledTaskCreate(BaseModel):
     cron: str
     enabled: bool = True
     active_group_ids: list[str] | None = None
+    project_id: str | None = None
     source_session_id: str | None = None
 
 
@@ -23,6 +24,14 @@ class ScheduledTaskUpdate(BaseModel):
     cron: str | None = None
     enabled: bool | None = None
     active_group_ids: list[str] | None = None
+    project_id: str | None = None
+
+
+def _resolve_active_group_ids(project_id: str | None, active_group_ids: list[str] | None) -> list[str] | None:
+    project_id = (project_id or "").strip()
+    if project_id:
+        return [project_id]
+    return active_group_ids
 
 
 def _serialize_scheduled(t: dict) -> dict:
@@ -73,7 +82,7 @@ async def create_scheduled_task(
         task_id=tid,
         description=description,
         cron=request.cron,
-        active_group_ids=request.active_group_ids or [],
+        active_group_ids=_resolve_active_group_ids(request.project_id, request.active_group_ids) or [],
         source_session_id=request.source_session_id or "",
         next_run_at=next_iso,
         enabled=request.enabled,
@@ -118,7 +127,7 @@ async def update_scheduled_task(
         description=desc,
         cron=request.cron,
         enabled=request.enabled,
-        active_group_ids=request.active_group_ids,
+        active_group_ids=_resolve_active_group_ids(request.project_id, request.active_group_ids),
         next_run_at=next_iso,
     )
     return _serialize_scheduled(store.get_scheduled_task(task_id))

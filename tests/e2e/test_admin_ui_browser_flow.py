@@ -30,8 +30,8 @@ pytestmark = [
 
 ROOT = Path(__file__).resolve().parents[2]
 FRONTEND_DIR = ROOT / "frontend_wip"
-BACKEND_PORT = 8080
-FRONTEND_PORT = 3000
+BACKEND_PORT = int(os.getenv("MEMOX_BROWSER_E2E_BACKEND_PORT", "18080"))
+FRONTEND_PORT = int(os.getenv("MEMOX_BROWSER_E2E_FRONTEND_PORT", "3100"))
 USERNAME = "admin"
 PASSWORD = "pw"
 
@@ -50,6 +50,11 @@ def _tail(path: Path, line_count: int = 100) -> str:
 
 
 def _assert_port_free(host: str, port: int) -> None:
+    try:
+        with socket.create_connection((host, port), timeout=0.25):
+            pytest.skip(f"{host}:{port} is already in use")
+    except OSError:
+        pass
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
@@ -134,7 +139,7 @@ def _write_browser_config(root: Path, *, enable_graph: bool = False) -> Path:
         "server": {
             "host": "127.0.0.1",
             "port": BACKEND_PORT,
-            "cors_origins": ["http://127.0.0.1:3000", "http://localhost:3000"],
+            "cors_origins": [f"http://127.0.0.1:{FRONTEND_PORT}", f"http://localhost:{FRONTEND_PORT}"],
         },
         "coordinator": {
             "provider": "openai",
@@ -286,9 +291,10 @@ def _start_frontend(tmp_path: Path) -> ManagedProcess:
         pytest.skip("frontend dependencies are missing; run `npm ci` in frontend_wip/ first")
     managed = _popen(
         "frontend",
-        ["npm", "run", "dev", "--", "--host", "127.0.0.1", "--port", str(FRONTEND_PORT)],
+        ["npm", "run", "dev", "--", "--host", "127.0.0.1", "--port", str(FRONTEND_PORT), "--strictPort"],
         cwd=FRONTEND_DIR,
         log_path=tmp_path / "frontend.log",
+        env={"MEMOX_FRONTEND_PROXY_TARGET": f"http://127.0.0.1:{BACKEND_PORT}"},
     )
     _wait_for_http(f"http://127.0.0.1:{FRONTEND_PORT}/", managed)
     return managed
@@ -343,6 +349,128 @@ def _assert_saved_policy(base_url: str, token: str, expected_max_results: int) -
     assert response.json()["web"]["max_search_results"] == expected_max_results
 
 
+def _seed_project_context(base_url: str, token: str) -> dict[str, str]:
+    headers = {"Authorization": f"Bearer {token}"}
+    group = httpx.post(
+        f"{base_url}/api/groups",
+        headers=headers,
+        json={"name": "Alpha Project", "color": "#1677ff"},
+        timeout=10,
+    )
+    group.raise_for_status()
+    project_id = group.json()["id"]
+
+    upload = httpx.post(
+        f"{base_url}/api/documents",
+        headers=headers,
+        data={"group_id": project_id},
+        files={
+            "file": (
+                "alpha-project.md",
+                b"# Alpha Project\n\nAlpha launch notes for browser project context validation.\n",
+                "text/markdown",
+            )
+        },
+        timeout=30,
+    )
+    upload.raise_for_status()
+
+    scheduled = httpx.post(
+        f"{base_url}/api/scheduled-tasks",
+        headers=headers,
+        json={
+            "description": "Alpha weekly review",
+            "cron": "0 9 * * *",
+            "enabled": True,
+            "project_id": project_id,
+        },
+        timeout=10,
+    )
+    scheduled.raise_for_status()
+    assert scheduled.json()["active_group_ids"] == [project_id]
+    return {"project_id": project_id}
+
+
+def test_project_context_selector_browser_flow(tmp_path: Path) -> None:
+    config_path = _write_browser_config(tmp_path)
+    backend: ManagedProcess | None = None
+    frontend: ManagedProcess | None = None
+    backend_base_url = f"http://127.0.0.1:{BACKEND_PORT}"
+    frontend_base_url = f"http://127.0.0.1:{FRONTEND_PORT}"
+
+    try:
+        backend = _start_backend(tmp_path, config_path)
+        frontend = _start_frontend(tmp_path)
+        token = _login_and_token(backend_base_url)
+        _seed_project_context(backend_base_url, token)
+
+        console_errors: list[str] = []
+        playwright = None
+        browser = None
+        try:
+            playwright = sync_playwright().start()
+            browser = playwright.chromium.launch(headless=True)
+        except PlaywrightError as exc:
+            if playwright is not None:
+                playwright.stop()
+            pytest.skip(f"Playwright browser is not available in this environment: {str(exc).splitlines()[0]}")
+
+        try:
+            page = browser.new_page(viewport={"width": 1280, "height": 720})
+            page.on(
+                "console",
+                lambda message: console_errors.append(message.text) if message.type == "error" else None,
+            )
+
+            page.goto(f"{frontend_base_url}/login")
+            expect(page.get_by_role("heading", name="MemoX")).to_be_visible()
+            page.get_by_placeholder("用户名").fill(USERNAME)
+            page.get_by_placeholder("密码").fill(PASSWORD)
+            page.get_by_role("button", name=re.compile(r"登\s*录")).click()
+            expect(page).to_have_url(re.compile(r".*/projects$"))
+            expect(page.get_by_role("heading", name="项目")).to_be_visible()
+            expect(page.get_by_text("Alpha Project").first).to_be_visible()
+
+            project_select = page.get_by_test_id("project-context-select")
+            project_select.click()
+            page.locator(".ant-select-dropdown").get_by_text("Alpha Project", exact=True).click()
+            expect(project_select).to_contain_text("Alpha Project")
+
+            page.get_by_role("menuitem").filter(has_text="知识库").click()
+            expect(page).to_have_url(re.compile(r".*/documents$"))
+            expect(page.get_by_text("当前项目：Alpha Project")).to_be_visible()
+            expect(page.get_by_text("上传、导入和搜索默认进入该项目")).to_be_visible()
+            expect(page.get_by_text("alpha-project.md")).to_be_visible()
+            page.get_by_placeholder("搜索文档内容...").fill("Alpha launch")
+            page.get_by_placeholder("搜索文档内容...").press("Enter")
+            expect(page.get_by_text(re.compile(r"搜索结果"))).to_be_visible()
+            expect(page.get_by_text("alpha-project.md")).to_be_visible()
+
+            page.goto(f"{frontend_base_url}/tasks")
+            expect(page.get_by_text("当前项目：")).to_be_visible()
+            expect(page.get_by_text("任务执行将只检索该项目知识库")).to_be_visible()
+
+            page.goto(f"{frontend_base_url}/scheduled-tasks")
+            expect(page.get_by_text("当前仅显示")).to_be_visible()
+            expect(page.get_by_text("Alpha weekly review")).to_be_visible()
+            expect(page.get_by_text("Alpha Project").first).to_be_visible()
+
+            page.set_viewport_size({"width": 390, "height": 844})
+            page.goto(f"{frontend_base_url}/documents")
+            expect(page.get_by_text("当前项目：Alpha Project")).to_be_visible()
+            expect(page.get_by_text("alpha-project.md")).to_be_visible()
+
+            assert console_errors == []
+        finally:
+            if browser is not None:
+                browser.close()
+            if playwright is not None:
+                playwright.stop()
+    finally:
+        _stop_process(frontend)
+        _stop_process(backend)
+
+
 def test_admin_settings_web_policy_and_tool_audit_browser_flow(tmp_path: Path) -> None:
     config_path = _write_browser_config(tmp_path)
     backend: ManagedProcess | None = None
@@ -378,7 +506,7 @@ def test_admin_settings_web_policy_and_tool_audit_browser_flow(tmp_path: Path) -
             page.get_by_placeholder("用户名").fill(USERNAME)
             page.get_by_placeholder("密码").fill(PASSWORD)
             page.get_by_role("button", name=re.compile(r"登\s*录")).click()
-            expect(page).to_have_url(re.compile(r".*/documents$"))
+            expect(page).to_have_url(re.compile(r".*/projects$"))
 
             page.goto(f"{frontend_base_url}/settings")
             tool_policy_card = page.get_by_test_id("tool-policy-card")
@@ -475,7 +603,7 @@ def test_knowledge_graph_governance_status_deeplink_and_resolution_browser_flow(
             page.get_by_placeholder("用户名").fill(USERNAME)
             page.get_by_placeholder("密码").fill(PASSWORD)
             page.get_by_role("button", name=re.compile(r"登\s*录")).click()
-            expect(page).to_have_url(re.compile(r".*/documents$"))
+            expect(page).to_have_url(re.compile(r".*/projects$"))
 
             page.goto(f"{frontend_base_url}/system")
             expect(page.get_by_text("知识图谱治理任务待处理")).to_be_visible()

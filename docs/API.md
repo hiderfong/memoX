@@ -28,8 +28,8 @@ Authorization: Bearer <token>
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| `POST` | `/api/chat` | 非流式聊天，支持 RAG 和指定 Worker |
-| `POST` | `/api/chat/stream` | SSE 流式聊天 |
+| `POST` | `/api/chat` | 非流式聊天，支持 RAG、指定 Worker、`active_group_ids` 和 `project_id`；`project_id` 会优先限定到对应项目知识库。RAG 响应中的 `citations`/`sources` 包含 `ref_id`、`evidence_quality`、`evidence_reason`、`graph_boosted`、`matched_entities` 与 `graph_relations`，用于解释回答依据 |
+| `POST` | `/api/chat/stream` | SSE 流式聊天；支持与 `/api/chat` 一致的 `project_id`/`active_group_ids` 范围参数，`sources` 事件和最终 `done.citations` 使用一致的证据解释 payload |
 | `GET` | `/api/chat/sessions` | 列出会话 |
 | `PATCH` | `/api/chat/sessions/{session_id}` | 更新会话标题或归档状态 |
 | `DELETE` | `/api/chat/sessions/{session_id}` | 删除会话 |
@@ -58,14 +58,16 @@ Authorization: Bearer <token>
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
+| `GET` | `/api/projects` | 列出项目化工作区视图；当前以知识库分组为项目边界，聚合文档、任务、定时任务、健康状态、最近任务和最近文档 |
+| `GET` | `/api/projects/{project_id}` | 获取单个项目工作区摘要 |
 | `GET` | `/api/documents` | 列出文档 |
 | `POST` | `/api/documents` | 上传文档，支持 `group_id` 表单字段 |
-| `POST` | `/api/documents/url` | 抓取网页并导入知识库 |
+| `POST` | `/api/documents/url` | 抓取网页并导入知识库，支持请求体 `group_id` 将网页直接放入指定项目/分组 |
 | `DELETE` | `/api/documents/{doc_id}` | 删除文档，仅管理员 |
 | `GET` | `/api/documents/{doc_id}/chunks` | 获取文档分块 |
 | `GET` | `/api/documents/{doc_id}/media-assets` | 获取文档预览中可用的图片资产，不泄露本地文件路径 |
 | `PUT` | `/api/documents/{doc_id}/group` | 移动文档到指定分组，仅管理员 |
-| `GET` | `/api/documents/search` | 搜索文档，支持 `q` 和 `group_ids` |
+| `GET` | `/api/documents/search` | 搜索文档，支持 `q` 和 `group_ids`；结果保留 `doc_id`、`filename`、`content`、`score`、`chunk_index`，并附带 RAG 证据解释字段与图谱增强关系 |
 | `GET` | `/api/knowledge/graph` | 获取知识图谱探索 payload，支持 `entity`、`q`、`depth`、`limit`、`min_confidence`、`predicate` 筛选，返回节点、关系、统计、核心实体、关系 facets 与来源 chunk |
 | `GET` | `/api/knowledge/graph/quality` | 获取知识图谱质量审核候选，支持 `confidence_threshold`、`limit` 和 `status`；返回候选内容指纹、过期旧决策标记、身份冲突与来源簇分歧拆分建议，以及 `quality_metrics` 抽取质量指标、`quality_gate` 门禁结果、导入触发追踪和阈值告警，并将告警状态去重写入 `knowledge_graph_quality_alert` 运维事件；门禁失败或健康分明显下降时同步生成 `knowledge_graph_governance_task` 治理事件，治理操作恢复后写入 resolved 事件 |
 | `GET` | `/api/knowledge/graph/quality/history` | 获取最近知识图谱质量指标快照，支持 `limit`，用于趋势监控 |
@@ -87,11 +89,15 @@ Worker 创建、更新和删除接口会持久化修改 `config.yaml` 中的 `wo
 | 方法 | 路径 | 说明 |
 |------|------|------|
 | `GET` | `/api/tasks` | 列出任务 |
-| `POST` | `/api/tasks` | 提交后台执行任务，立即返回可轮询的任务记录 |
+| `POST` | `/api/tasks` | 提交后台执行任务，立即返回可轮询的任务记录；支持 `project_id` 或 `active_group_ids` 限定任务 RAG 上下文，`project_id` 优先 |
 | `GET` | `/api/tasks/running` | 列出运行中任务 |
 | `GET` | `/api/tasks/{task_id}` | 获取任务详情 |
 | `GET` | `/api/tasks/{task_id}/files` | 获取任务 shared 目录文件 |
 | `GET` | `/api/tasks/{task_id}/events` | 获取任务生命周期事件、子任务进度、失败原因和租约状态 |
+| `GET` | `/api/tasks/{task_id}/trace` | 获取归一化执行树，支持 `subtask_id`、`worker_id`、`tool_name`、`stage`、`severity`、`event_type`、`failure_type` 筛选；返回 `debugger` 调试汇总，包含子任务执行地图、Agent/工具/Provider 摘要、热点子任务与关键决策点 |
+| `GET` | `/api/tasks/{task_id}/diagnosis` | 获取任务排障诊断摘要，包含可能原因、建议动作、关键证据和 LLM/工具/重试指标 |
+| `GET` | `/api/tasks/{task_id}/retry-suggestion` | 获取失败任务的重试建议，区分可直接重试、需等待自动重试、需修复后强制重试和不建议重试 |
+| `GET` | `/api/tasks/{task_id}/diagnosis-report` | 导出 Markdown 格式任务诊断报告 |
 | `POST` | `/api/tasks/{task_id}/cancel` | 取消运行中任务 |
 | `POST` | `/api/tasks/{task_id}/retry` | 将可重试失败任务重新入队，或手动恢复无活跃租约的未完成任务 |
 | `POST` | `/api/tasks/{task_id}/feedback` | 提交 Human-in-the-Loop 反馈 |
@@ -126,8 +132,8 @@ Worker 创建、更新和删除接口会持久化修改 `config.yaml` 中的 `wo
 | `POST` | `/api/workflows/runs/{run_id}/resume` | 恢复 workflow |
 | `DELETE` | `/api/workflows/runs/{run_id}` | 删除 workflow 运行记录 |
 | `GET` | `/api/scheduled-tasks` | 列出定时任务 |
-| `POST` | `/api/scheduled-tasks` | 创建定时任务，仅管理员 |
-| `PATCH` | `/api/scheduled-tasks/{task_id}` | 更新定时任务，仅管理员 |
+| `POST` | `/api/scheduled-tasks` | 创建定时任务，仅管理员；支持 `project_id` 或 `active_group_ids` 设置触发时的知识库范围 |
+| `PATCH` | `/api/scheduled-tasks/{task_id}` | 更新定时任务，仅管理员；支持 `project_id` 或 `active_group_ids` 调整知识库范围 |
 | `DELETE` | `/api/scheduled-tasks/{task_id}` | 删除定时任务，仅管理员 |
 
 ## 媒体、系统与实时通信

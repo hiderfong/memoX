@@ -1,6 +1,8 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
+const proxyTarget = process.env.MEMOX_FRONTEND_PROXY_TARGET || 'http://127.0.0.1:8080';
+
 export default defineConfig({
   plugins: [react()],
   build: {
@@ -33,7 +35,7 @@ export default defineConfig({
     allowedHosts: ['.trycloudflare.com', '23.236.66.33'],
     proxy: {
       '/api': {
-        target: 'http://localhost:8080',
+        target: proxyTarget,
         changeOrigin: true,
       },
     },
@@ -44,7 +46,7 @@ export default defineConfig({
     allowedHosts: ['.trycloudflare.com', '23.236.66.33'],
     proxy: {
       '/api': {
-        target: 'http://localhost:8080',
+        target: proxyTarget,
         changeOrigin: true,
       },
     },

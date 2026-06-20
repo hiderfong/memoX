@@ -5,8 +5,10 @@ import { useNavigate, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthContext, TOKEN_KEY, USER_KEY, api, type AuthUser } from './shared';
 
 import { AppLayout } from './components/AppLayout';
+import { ProjectProvider } from './components/ProjectContext';
 
 const LoginPage = lazy(() => import('./pages/LoginPage').then(({ LoginPage }) => ({ default: LoginPage })));
+const ProjectsPage = lazy(() => import('./pages/ProjectsPage').then(({ ProjectsPage }) => ({ default: ProjectsPage })));
 const DocumentsPage = lazy(() => import('./pages/DocumentsPage').then(({ DocumentsPage }) => ({ default: DocumentsPage })));
 const ChatPage = lazy(() => import('./pages/ChatPage').then(({ ChatPage }) => ({ default: ChatPage })));
 const TasksPage = lazy(() => import('./pages/TasksPage').then(({ TasksPage }) => ({ default: TasksPage })));
@@ -82,23 +84,26 @@ const App: FC = () => {
   return (
     <AuthContext.Provider value={{ user, token, login, logout }}>
       <Routes>
-        <Route path="/login" element={user ? <Navigate to="/documents" replace /> : lazyRoute(<LoginPage />)} />
+        <Route path="/login" element={user ? <Navigate to="/projects" replace /> : lazyRoute(<LoginPage />)} />
         <Route path="/*" element={
           <RequireAuth>
-            <AppLayout>
-              <Routes>
-                <Route path="/" element={<Navigate to="/documents" replace />} />
-                <Route path="/documents" element={lazyRoute(<DocumentsPage />)} />
-                <Route path="/chat" element={lazyRoute(<ChatPage />)} />
-                <Route path="/tasks" element={lazyRoute(<TasksPage />)} />
-                <Route path="/scheduled-tasks" element={lazyRoute(<ScheduledTasksPage />)} />
-                <Route path="/workflows" element={lazyRoute(<WorkflowsPage />)} />
-                <Route path="/media" element={lazyRoute(<MediaStudioPage />)} />
-                <Route path="/workers" element={lazyRoute(<WorkersPage />)} />
-                <Route path="/system" element={lazyRoute(<SystemStatusPage />)} />
-                <Route path="/settings" element={lazyRoute(<SettingsPage />)} />
-              </Routes>
-            </AppLayout>
+            <ProjectProvider>
+              <AppLayout>
+                <Routes>
+                  <Route path="/" element={<Navigate to="/projects" replace />} />
+                  <Route path="/projects" element={lazyRoute(<ProjectsPage />)} />
+                  <Route path="/documents" element={lazyRoute(<DocumentsPage />)} />
+                  <Route path="/chat" element={lazyRoute(<ChatPage />)} />
+                  <Route path="/tasks" element={lazyRoute(<TasksPage />)} />
+                  <Route path="/scheduled-tasks" element={lazyRoute(<ScheduledTasksPage />)} />
+                  <Route path="/workflows" element={lazyRoute(<WorkflowsPage />)} />
+                  <Route path="/media" element={lazyRoute(<MediaStudioPage />)} />
+                  <Route path="/workers" element={lazyRoute(<WorkersPage />)} />
+                  <Route path="/system" element={lazyRoute(<SystemStatusPage />)} />
+                  <Route path="/settings" element={lazyRoute(<SettingsPage />)} />
+                </Routes>
+              </AppLayout>
+            </ProjectProvider>
           </RequireAuth>
         } />
       </Routes>
