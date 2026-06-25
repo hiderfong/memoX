@@ -16,6 +16,12 @@ const { Dragger } = Upload;
 import { TaskEventsPanel } from '../pages/TasksPage';
 // ==================== 系统状态页面 ====================
 
+// 中文：系统状态页是生产运维控制台，集中展示健康、备份、生命周期清理、
+// 工具审计和恢复动作。这里避免把每个卡片拆成独立路由，便于值班人员一次扫描。
+// English: System Status is the production operations console, combining
+// health, backups, lifecycle cleanup, tool audit, and recovery actions. Keeping
+// these cards on one page helps operators scan the deployment in one pass.
+
 export const SystemStatusPage: React.FC = () => {
   const { user } = useContext(AuthContext);
   const isMobile = useIsMobile();
@@ -124,6 +130,9 @@ export const SystemStatusPage: React.FC = () => {
     setEventsLoading(true);
     setToolAuditLoading(true);
     try {
+      // 中文：首屏并行拉取多个独立面板，单个慢接口不应阻塞其他 API 请求发起。
+      // English: The first screen fetches independent panels in parallel so one
+      // slow endpoint does not delay starting the other requests.
       const [healthRes, backupsRes, eventsRes, toolAuditRes, tasksRes] = await Promise.all([
         api.systemHealth(),
         api.listBackups(),
@@ -166,6 +175,9 @@ export const SystemStatusPage: React.FC = () => {
   useEffect(() => {
     if (user?.role === 'admin') fetchReport();
     else {
+      // 中文：非管理员无法查看运维数据；直接解除 loading，避免空白页面。
+      // English: Non-admin users cannot view operations data; stop loading
+      // immediately instead of leaving the page blank.
       setLoading(false);
       setBackupsLoading(false);
       setEventsLoading(false);

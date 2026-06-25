@@ -149,10 +149,15 @@ uv run --extra dev python scripts/smoke_test.py --frontend
 
 # 可选：运行真实浏览器管理后台 E2E（需要 frontend_wip/node_modules 和 Playwright Chromium）
 MEMOX_BROWSER_E2E=1 uv run --extra dev pytest tests/e2e/test_admin_ui_browser_flow.py
+
+# 可选：对已部署环境执行模拟人工浏览器巡检（只读轻交互，输出截图和报告）
+export MEMOX_ADMIN_PASSWORD="..."
+uv run --extra dev python scripts/run_simulated_manual_browser_test.py \
+  --base-url http://127.0.0.1:18080
 ```
 
 冒烟脚本会使用临时数据目录和确定性的本地 embedding 替身，不需要真实模型 API Key；它会覆盖登录、文档检索、系统健康、备份清单、索引修复、诊断包导出、运维事件、备份校验、恢复预检、真实恢复拒绝闸门和临时恢复演练。`--frontend` 模式要求已执行过 `cd frontend_wip && npm ci`。
-浏览器 E2E 会启动临时后端和 Vite 前端，覆盖管理后台登录、设置页 Web 工具策略保存、策略持久化校验、系统状态页工具调用审计和移动宽度回归检查。
+浏览器 E2E 会启动临时后端和 Vite 前端，覆盖管理后台登录、设置页 Web 工具策略保存、策略持久化校验、系统状态页工具调用审计和移动宽度回归检查。模拟人工浏览器巡检面向已部署环境，会保存桌面/移动截图、Markdown/JSON 报告，并捕获 console error、page error、关键网络失败和 HTTP 5xx。
 
 ### 5. 常用检查
 

@@ -7,6 +7,11 @@ import { api, KnowledgeGraphEntity, KnowledgeGraphLink, KnowledgeGraphPayload, K
 
 const { Text } = Typography;
 
+// 中文：知识图谱页面同时承载“图浏览”和“质量治理”两条工作流。
+// English: This component hosts both graph exploration and quality-governance
+// workflows, so the state below is intentionally grouped by graph filters,
+// review queue state, and modal mutation state.
+
 const emptyPayload: KnowledgeGraphPayload = {
   nodes: [],
   links: [],
@@ -292,6 +297,9 @@ export const KnowledgeGraphView = ({
   const activeCandidate = useRef<ActiveQualityCandidate | null>(null);
 
   const fetchGraph = useCallback(async (overrides: GraphFetchOverrides = {}) => {
+    // 中文：筛选控件和质量队列共享一次刷新，避免图谱与治理候选使用不同版本的数据。
+    // English: Filters and the quality queue refresh together so the graph and
+    // governance candidates do not drift across different snapshots.
     const nextFocusedEntity = overrides.focusedEntity ?? focusedEntity;
     const nextSearchValue = overrides.searchValue ?? searchValue;
     const nextDepth = overrides.depth ?? depth;
@@ -337,6 +345,9 @@ export const KnowledgeGraphView = ({
 
   useEffect(() => {
     if (!autoFocusQualityQueue || loading || !qualityQueueRef.current) return undefined;
+    // 中文：来自系统状态页的深链需要等图谱和质量队列渲染完成后再滚动。
+    // English: Deep links from System Status wait until the graph and quality
+    // queue have rendered before scrolling.
     const timer = window.setTimeout(() => {
       qualityQueueRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }, 120);
@@ -369,6 +380,9 @@ export const KnowledgeGraphView = ({
   );
 
   const relationRows = useMemo<RelationRow[]>(
+    // 中文：关系表只展示前 100 条，避免大型图谱在表格和 force graph 间双重放大渲染成本。
+    // English: Limit the relation table to the first 100 edges to keep large
+    // graphs from paying both table and force-graph rendering costs.
     () => graphData.links.slice(0, 100).map((link, index) => ({
       ...link,
       key: `${endpointId(link.source)}-${link.predicate}-${endpointId(link.target)}-${index}`,

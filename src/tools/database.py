@@ -1,3 +1,14 @@
+"""Policy-aware database tool for Agent executions.
+
+中文：该工具允许 Agent 访问数据库，但必须先经过 SQL 语句分类、连接串来源校验、
+最大返回行数限制和工具策略检查。这里的注释重点说明安全边界，避免后续维护时
+误把“能执行 SQL”理解成“可以无约束执行 SQL”。
+English: This tool lets agents query databases, but every query is first
+classified and checked against connection-source policy, row limits, and access
+mode rules. The comments below document the safety boundary, not SQL behavior
+itself.
+"""
+
 import asyncio
 import json
 import re
@@ -70,6 +81,12 @@ def _database_policy() -> DatabaseToolPolicyConfig:
 
 
 def _mask_sql_literals_and_comments(sql: str) -> str:
+    """Mask literals/comments before token scanning.
+
+    中文：安全判断只看 SQL 结构，不应被字符串里的 `drop table` 或注释里的关键词误导。
+    English: Policy checks inspect SQL structure; keywords inside literals or
+    comments must not affect classification.
+    """
     masked: list[str] = []
     i = 0
     state: str | None = None
@@ -133,6 +150,12 @@ def _mask_sql_literals_and_comments(sql: str) -> str:
 
 
 def _split_sql_statements(sql: str) -> list[str]:
+    """Split SQL by semicolons that are outside literals and comments.
+
+    中文：多语句开关依赖这里的结果，因此必须先复用 masked SQL 避免误切字符串内容。
+    English: The multiple-statement guard depends on this result, so splitting
+    uses the masked form to avoid semicolons inside strings/comments.
+    """
     masked = _mask_sql_literals_and_comments(sql)
     statements: list[str] = []
     start = 0
@@ -156,6 +179,12 @@ def _sql_tokens(sql: str) -> list[str]:
 
 
 def _statement_access(statement: str) -> str:
+    """Classify one statement into read_only, write, or admin.
+
+    中文：这是“最小必要权限”的核心。无法识别的命令默认拒绝，而不是默认放行。
+    English: This is the least-privilege gate. Unknown statements are rejected
+    by default rather than allowed by default.
+    """
     tokens = _sql_tokens(statement)
     if not tokens:
         raise DatabaseSafetyError("SQL query is empty")
@@ -189,6 +218,7 @@ def _statement_access(statement: str) -> str:
 
 
 def _validate_sql_policy(query: str, access_mode: str, policy: DatabaseToolPolicyConfig) -> str:
+    """Validate requested access against the configured database tool policy."""
     if access_mode not in {"read_only", "write", "admin"}:
         raise DatabaseSafetyError("access_mode must be read_only, write, or admin")
 
@@ -222,6 +252,12 @@ def _validate_sql_policy(query: str, access_mode: str, policy: DatabaseToolPolic
 
 
 def _resolve_connection_string(arguments: dict, policy: DatabaseToolPolicyConfig) -> str:
+    """Resolve the connection target from a named data source or raw string.
+
+    中文：生产环境推荐 data_source；raw connection string 只有在策略显式允许时可用。
+    English: Production deployments should prefer named data sources; raw
+    connection strings are usable only when policy explicitly allows them.
+    """
     data_source = str(arguments.get("data_source") or "").strip()
     if data_source:
         connection_string = policy.data_sources.get(data_source)
@@ -254,7 +290,12 @@ def _bounded_max_rows(arguments: dict, policy: DatabaseToolPolicyConfig) -> int:
 
 
 class DatabaseQueryTool(BaseTool):
-    """通用数据库查询工具。"""
+    """通用数据库查询工具 / General database query tool.
+
+    中文：默认只读；写入和 DDL 必须同时满足用户请求的 access_mode 与管理员配置策略。
+    English: Read-only by default; writes and DDL require both the requested
+    access_mode and the administrator-configured policy to allow them.
+    """
 
     @property
     def name(self) -> str:

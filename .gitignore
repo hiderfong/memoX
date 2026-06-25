@@ -61,6 +61,7 @@ ssl/
 
 # ---- Test / scratch artifacts ----
 .docker-smoke/
+artifacts/manual-browser-tests/
 backups/
 test_output.txt
 *.log

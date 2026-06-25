@@ -3,6 +3,12 @@
 
 This script is meant for trusted external runners or manual CI dispatches with
 real provider secrets injected through environment variables.
+
+中文：该脚本面向发布验收和外部 Agent 执行，会统一调度本地基线、浏览器、
+真实模型、多媒体任务等 phase，并在报告中脱敏密钥形状和签名 URL。
+English: This script is the release-gate dispatcher for trusted runners. It
+coordinates baseline, browser, real-provider, and media phases, then writes a
+report that redacts key-shaped strings and signed URLs.
 """
 
 from __future__ import annotations
@@ -42,10 +48,15 @@ DEFAULT_PHASES = [
     "i2v-direct",
     "media-job",
 ]
+# 中文：默认 phase 是发布前的“足够广”验收；manual-browser 需显式选择，
+# 因为它依赖一个已部署 URL 和管理员密码。
+# English: Defaults are the broad release-gate checks. manual-browser is
+# opt-in because it targets a deployed URL and needs admin credentials.
 PHASE_ALIASES = {
     "all": DEFAULT_PHASES,
     "smoke": DEFAULT_PHASES,
     "quick": ["preflight", "baseline", "frontend-build", "browser-e2e", "mixed", "collab", "qwen-smoke"],
+    "manual": ["manual-browser"],
 }
 PROVIDER_HOSTS = ["api.deepseek.com", "api.minimaxi.com", "dashscope.aliyuncs.com"]
 PHASE_SECRETS = {
@@ -54,6 +65,7 @@ PHASE_SECRETS = {
     "qwen-smoke": ["QWEN_API_KEY"],
     "i2v-direct": ["DASHSCOPE_API_KEY"],
     "media-job": ["DASHSCOPE_API_KEY", "MEMOX_FILE_SIGNING_SECRET"],
+    "manual-browser": ["MEMOX_ADMIN_PASSWORD"],
 }
 SECRET_NAME_RE = re.compile(r"(?:API[_-]?KEY|TOKEN|SECRET|PASSWORD)", re.IGNORECASE)
 KEY_PREFIX = "s" "k"
@@ -186,7 +198,7 @@ def resolve_phases(raw: str) -> list[str]:
             values.extend(PHASE_ALIASES[name])
         else:
             values.append(name)
-    allowed = set(DEFAULT_PHASES) | {"full-sweep"}
+    allowed = set(DEFAULT_PHASES) | {"full-sweep", "manual-browser"}
     unknown = sorted(set(values) - allowed)
     if unknown:
         raise SystemExit(f"Unknown phase(s): {', '.join(unknown)}")
@@ -242,6 +254,41 @@ def phase_browser_e2e(args: argparse.Namespace) -> PhaseResult:
             "-s",
         ],
         env={"MEMOX_BROWSER_E2E": "1"},
+        timeout_s=args.browser_timeout,
+        dry_run=args.dry_run,
+    )
+
+
+def phase_manual_browser(args: argparse.Namespace) -> PhaseResult:
+    skipped = ensure_secrets("manual-browser", args.allow_missing_secrets)
+    if skipped:
+        return skipped
+    output_dir = args.manual_browser_output_dir
+    if not output_dir:
+        output_dir = str(Path(args.report_path).resolve().parent / "manual-browser")
+    cmd = [
+        "uv",
+        "run",
+        "--extra",
+        "dev",
+        "python",
+        "scripts/run_simulated_manual_browser_test.py",
+        "--base-url",
+        args.manual_browser_base_url,
+        "--username",
+        args.manual_browser_username,
+        "--password-env",
+        args.manual_browser_password_env,
+        "--output-dir",
+        output_dir,
+        "--trace",
+        args.manual_browser_trace,
+    ]
+    if args.manual_browser_headful:
+        cmd.append("--headful")
+    return run_command(
+        "manual-browser",
+        cmd,
         timeout_s=args.browser_timeout,
         dry_run=args.dry_run,
     )
@@ -561,6 +608,7 @@ PHASE_RUNNERS: dict[str, Callable[[argparse.Namespace], PhaseResult]] = {
     "baseline": phase_baseline,
     "frontend-build": phase_frontend_build,
     "browser-e2e": phase_browser_e2e,
+    "manual-browser": phase_manual_browser,
     "mixed": phase_mixed,
     "collab": phase_collab,
     "qwen-smoke": phase_qwen_smoke,
@@ -614,6 +662,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--command-timeout", type=int, default=900)
     parser.add_argument("--browser-timeout", type=int, default=600)
     parser.add_argument("--real-e2e-timeout", type=int, default=1_800)
+    parser.add_argument(
+        "--manual-browser-base-url",
+        default=os.getenv("MEMOX_MANUAL_TEST_BASE_URL", "http://127.0.0.1:18080"),
+        help="Base URL used by the optional manual-browser phase.",
+    )
+    parser.add_argument(
+        "--manual-browser-username",
+        default=os.getenv("MEMOX_ADMIN_USERNAME", "admin"),
+        help="Admin username used by the optional manual-browser phase.",
+    )
+    parser.add_argument(
+        "--manual-browser-password-env",
+        default=os.getenv("MEMOX_MANUAL_TEST_PASSWORD_ENV", "MEMOX_ADMIN_PASSWORD"),
+        help="Environment variable name containing the admin password for the manual-browser phase.",
+    )
+    parser.add_argument("--manual-browser-output-dir", default="", help="Output directory for the manual-browser phase.")
+    parser.add_argument("--manual-browser-trace", choices=["off", "on-failure", "always"], default="on-failure")
+    parser.add_argument("--manual-browser-headful", action="store_true", help="Run manual-browser with a visible Chromium window.")
     return parser.parse_args()
 
 

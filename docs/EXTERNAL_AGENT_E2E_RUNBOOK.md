@@ -78,6 +78,7 @@ uv run --extra dev python scripts/run_external_e2e.py \
 - `--phases quick`：跳过真实 I2V 和媒体后台任务，只跑基线、浏览器 E2E、三模型编排、MiniMax 最小协作、Qwen smoke。
 - `--phases smoke`：默认发布验收，覆盖 P0-P4。
 - `--phases all,full-sweep`：在默认发布验收后追加完整 E2E sweep。
+- `--phases manual-browser`：对已部署的 MemoX URL 执行模拟人工浏览器巡检；需要 `MEMOX_ADMIN_PASSWORD`。
 - `--full-collab`：把 MiniMax 协作从最小场景扩展为整个 `test_e2e_collab.py`。
 - `--allow-missing-secrets`：本地预演时允许缺 secret 的 phase 被 skip；正式发布验收和 `Release Gate` 禁止使用。
 - `--dry-run`：只生成执行计划，不调用模型、不启动服务。
@@ -111,6 +112,36 @@ uv run --extra dev python scripts/run_external_e2e.py \
 - `I2V_TEST_EDIT_MODEL`，默认 `wan2.7-videoedit`。
 - `I2V_TEST_RESOLUTION`，默认 `720P`。
 - `I2V_TEST_DURATION`，默认 `5`。
+
+## 模拟人工浏览器巡检
+
+仓库提供 `scripts/run_simulated_manual_browser_test.py`，用于部分替代人工在浏览器中巡检测试服务器。它会用真实登录表单进入系统，按桌面和移动视口访问项目、知识库、智能问答、任务执行、定时任务、工作流、媒体创作、Agent 监控、系统状态和设置页面，执行只读或无提交的轻交互，保存截图，并采集 console error、page error、关键网络失败和 HTTP 5xx。
+
+直接运行：
+
+```bash
+export MEMOX_ADMIN_PASSWORD="..."
+uv run --extra dev python scripts/run_simulated_manual_browser_test.py \
+  --base-url http://192.168.3.187:18080 \
+  --output-dir /tmp/memox-manual-browser
+```
+
+通过统一 E2E 脚本运行：
+
+```bash
+export MEMOX_ADMIN_PASSWORD="..."
+uv run --extra dev python scripts/run_external_e2e.py \
+  --phases manual-browser \
+  --manual-browser-base-url http://192.168.3.187:18080 \
+  --report-path /tmp/memox-external-e2e-report.md
+```
+
+输出目录包含：
+
+- `manual-browser-report.md`：适合人工查看的巡检结果表。
+- `manual-browser-report.json`：适合 CI/外部 Agent 解析。
+- `desktop-*.png` / `mobile-*.png`：各页面截图。
+- `*-trace.zip`：默认只在失败视口保存 Playwright trace。
 
 触发方式：
 

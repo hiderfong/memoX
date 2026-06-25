@@ -1088,6 +1088,10 @@ const TaskExecutionOverview: React.FC<{
 
 // ==================== 任务执行页面 ====================
 
+// 中文：该页面是任务提交、后台执行状态、Agent trace、人工反馈和历史任务的汇合点。
+// English: This page brings together task submission, background execution
+// status, Agent traces, human feedback, and task history.
+
 export const TasksPage: React.FC = () => {
   const isMobile = useIsMobile();
   const location = useLocation();
@@ -1103,7 +1107,8 @@ export const TasksPage: React.FC = () => {
     if (prefill && typeof prefill === 'string') {
       setTaskInput(prefill);
       message.info('已从会话提炼任务描述，请确认后点击"执行任务"');
-      // 清除 state 防止刷新再次触发
+      // 中文：清除 state 防止刷新再次触发预填。
+      // English: Clear navigation state so refresh does not re-apply the prefill.
       navigate(location.pathname, { replace: true, state: {} });
     } else if (taskId && typeof taskId === 'string') {
       api.getTask(taskId)
@@ -1131,7 +1136,9 @@ export const TasksPage: React.FC = () => {
   const [submittingFeedback, setSubmittingFeedback] = useState(false);
   const { selectedProjectId, selectedProject, projectGroupIds } = useProjectContext();
 
-  // 执行中轮询运行任务列表
+  // 中文：执行中轮询运行任务列表，用于取消按钮和顶部运行态提示。
+  // English: Poll running task ids while executing; the cancel action and
+  // running-state indicator both depend on this lightweight list.
   useEffect(() => {
     if (!executing) { setRunningTaskIds([]); return; }
     const interval = setInterval(async () => {
@@ -1144,6 +1151,9 @@ export const TasksPage: React.FC = () => {
   }, [executing]);
 
   useEffect(() => {
+    // 中文：WebSocket 只在有活跃执行时连接，用来接收需要人工补充输入的事件。
+    // English: Connect the WebSocket only during active execution to receive
+    // events that require human input.
     const token = localStorage.getItem('memox_token');
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}/ws?token=${token}`;
@@ -1204,6 +1214,9 @@ export const TasksPage: React.FC = () => {
     api.listGroups().then(res => {
       setGroups(res.data);
       const nextProjectGroupIds = selectedProjectId ? [selectedProjectId] : null;
+      // 中文：项目上下文优先限制知识库分组；未选择项目时默认使用全部分组。
+      // English: Project context constrains knowledge groups first; without a
+      // project, all groups are selected by default.
       setActiveGroupIds(nextProjectGroupIds ?? res.data.map((g: KnowledgeGroup) => g.id));
     }).catch(() => {});
   }, []);

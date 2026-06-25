@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Run read-only production monitoring checks against a MemoX deployment."""
+"""Run read-only production monitoring checks against a MemoX deployment.
+
+中文：用于部署后的轻量巡检，只读取健康、队列、审计和备份状态，不触发修复动作。
+English: Post-deployment lightweight monitoring. It reads health, queue, audit,
+and backup state only; it does not perform repairs or mutations.
+"""
 
 from __future__ import annotations
 
@@ -51,6 +56,12 @@ def _safe_int(value: Any) -> int:
 
 
 def evaluate_snapshot(snapshot: dict[str, Any], thresholds: Thresholds) -> dict[str, Any]:
+    """Evaluate one collected deployment snapshot against operational thresholds.
+
+    中文：阈值偏保守，目标是尽早提示人工介入，而不是自动判定系统不可用。
+    English: Thresholds are intentionally conservative: they should prompt a
+    human look before declaring the deployment unusable.
+    """
     checks: list[dict[str, Any]] = []
 
     public_health = snapshot.get("public_health") or {}

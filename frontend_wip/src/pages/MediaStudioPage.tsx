@@ -154,6 +154,9 @@ function formatAssetTime(value?: string) {
 
 export const MediaStudioPage: React.FC = () => {
   const isMobile = useIsMobile();
+  // 中文：表单态、已提交资产和作品库列表分开维护，避免用户编辑中的草稿被轮询结果覆盖。
+  // English: Form draft state, submitted assets, and the media library are kept
+  // separate so polling updates do not overwrite what the user is editing.
   const [batchItems, setBatchItems] = useState<BatchItem[]>([defaultBatchItem()]);
   const [submittedBatchAssets, setSubmittedBatchAssets] = useState<MediaAsset[]>([]);
   const [batchLoading, setBatchLoading] = useState(false);
@@ -185,6 +188,9 @@ export const MediaStudioPage: React.FC = () => {
   );
 
   const submittedBatchAssetsLive = useMemo(
+    // 中文：提交后立即展示本地资产快照，轮询到新状态后再用服务端记录替换。
+    // English: Show the local submitted snapshot immediately, then replace it
+    // with the server record as polling returns newer status.
     () => submittedBatchAssets.map(asset => (
       mediaAssets.find(item => item.id === asset.id) || asset
     )),
@@ -211,6 +217,9 @@ export const MediaStudioPage: React.FC = () => {
   );
 
   const loadMediaAssets = useCallback(async () => {
+    // 中文：作品库和队列状态一起刷新，保证“当前队列负载”和资产列表来自同一轮观察。
+    // English: Refresh the asset library and queue status together so current
+    // load and asset rows come from the same observation cycle.
     setAssetLoading(true);
     try {
       const params: Record<string, any> = { limit: 50, kind: 'video' };
@@ -235,6 +244,9 @@ export const MediaStudioPage: React.FC = () => {
 
   useEffect(() => {
     if (!hasActiveAssets) return undefined;
+    // 中文：只有存在 queued/running 项时才轮询，空闲时避免无意义请求。
+    // English: Poll only while queued/running assets exist; stay quiet when the
+    // media pipeline is idle.
     const timer = window.setInterval(() => {
       void loadMediaAssets();
     }, 5000);

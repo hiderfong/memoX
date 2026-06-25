@@ -1,4 +1,10 @@
-"""Background task job runner with persistent task history updates."""
+"""Background task job runner with persistent task history updates.
+
+中文：这里负责把一次 HTTP 提交转成可恢复的后台任务，并把状态、事件、租约、
+检查点和自动重试信息写入持久化存储。
+English: This module turns an HTTP task submission into a recoverable
+background job and persists status, events, leases, checkpoints, and retries.
+"""
 
 from __future__ import annotations
 
@@ -59,7 +65,16 @@ class TaskJobRequest:
 
 
 class TaskJobRunner:
-    """Submit task execution as in-process background jobs and persist state."""
+    """Submit task execution as in-process background jobs and persist state.
+
+    中文：Runner 采用“数据库记录为事实来源，进程内 asyncio.Task 为执行载体”的模型。
+    如果进程重启，recover_pending() 会从持久化记录恢复；如果租约丢失，本地执行会
+    主动停止，避免两个进程同时处理同一个任务。
+    English: The database record is the source of truth, while the in-process
+    asyncio.Task is only the execution vehicle. After a restart, recover_pending()
+    restores jobs from storage; if the lease is lost, local execution stops to
+    avoid duplicate processing.
+    """
 
     def __init__(
         self,
@@ -159,6 +174,9 @@ class TaskJobRunner:
             recovered_record = self._store.mark_task_job_recovered(request.task_id) or record
             checkpoint = self._store.get_task_checkpoint(request.task_id)
             if checkpoint:
+                # 中文：恢复执行时把上次检查点作为隐藏上下文交给编排器。
+                # English: On recovery, pass the previous checkpoint as hidden
+                # context so the orchestrator can resume instead of starting cold.
                 request.context = {
                     **(request.context or {}),
                     "_resume_checkpoint": checkpoint,
@@ -313,6 +331,9 @@ class TaskJobRunner:
 
     def _start(self, request: TaskJobRequest, created_at: str) -> None:
         task_id = request.task_id or f"task_{uuid.uuid4().hex[:8]}"
+        # 中文：_jobs 只追踪当前进程内的执行体；持久化状态仍由 store 负责。
+        # English: _jobs only tracks in-process tasks; durable state remains in
+        # the persistence store.
         job = asyncio.create_task(self._run(request, created_at), name=f"task_job:{task_id}")
         self._jobs[task_id] = job
         job.add_done_callback(lambda _done, tid=task_id: self._jobs.pop(tid, None))
@@ -334,6 +355,9 @@ class TaskJobRunner:
         )
 
         try:
+            # 中文：编排器可能长时间运行，所以外层只负责生命周期和持久化边界。
+            # English: The orchestrator can run for a long time; this outer
+            # layer owns lifecycle, persistence, and retry boundaries.
             result = await self._execute_orchestrator(request)
             status = result.status if result.status in TERMINAL_STATUSES else "completed"
             if result.result_summary == "(任务已取消)":
@@ -357,6 +381,9 @@ class TaskJobRunner:
                 }
             suggestions = []
             if status == "completed" and request.generate_suggestions and self._task_planner:
+                # 中文：优化建议不是任务成功的必要条件，失败应避免影响主结果落库。
+                # English: Optimization suggestions are ancillary; they should
+                # not change the persisted task outcome.
                 placeholder_task = Task(
                     id=result.task_id,
                     description=request.description,
@@ -486,6 +513,9 @@ class TaskJobRunner:
             refreshed = self._store.refresh_task_job_lease(task_id, self._owner_id, self._lease_seconds)
             if refreshed:
                 continue
+            # 中文：租约刷新失败表示另一个执行器可能已经接管，立即取消本地任务。
+            # English: A failed lease refresh means another runner may have
+            # taken ownership, so local execution must stop immediately.
             logger.error(f"[TaskJobRunner] 任务 {task_id} 租约刷新失败，取消本地执行以避免重复运行")
             job = self._jobs.get(task_id)
             if job and not job.done():
@@ -543,6 +573,9 @@ class TaskJobRunner:
             self._store.clear_task_job_auto_retry(task_id)
             return
 
+        # 中文：自动重试只针对可恢复故障，且重试次数记录在原始请求上，方便重启后延续。
+        # English: Auto retry is limited to recoverable failures, and the retry
+        # count lives on the original request so it survives process restarts.
         request_record = self._store.get_task_job_request(task_id)
         if not request_record:
             return
